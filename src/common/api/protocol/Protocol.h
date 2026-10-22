@@ -106,7 +106,8 @@ enum MsgId : uint8_t {
     G_ENEX = 109,             // reliable: entrances the host's scripts opened or closed
 
     G_WORLD_STATE = 110,      // time, weather, gravity... (host -> all)
-    G_WANTED = 111,
+    G_WANTED = 111,           // reliable: the sender's wanted level rose by a crime: u8 level, vec position, u8 area;
+                              // the players within 100 m get at least as many stars (unused before, so ignored by 0.2.7)
 
     G_MISSION_START = 120,
     G_MISSION_END = 121,
