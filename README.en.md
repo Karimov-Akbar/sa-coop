@@ -61,7 +61,8 @@ both. Horseshoes, oysters, snapshots and tags count toward the shared world.
 ### Cars
 
 Each player drives on their own or rides as a passenger with the other. A passenger can shoot from the window: the
-right mouse button leans out with the gun, the left one fires. Tuning and damage are visible to the other player.
+right mouse button leans out with the gun, the left one fires. The car radio is shared: the driver picks the
+station, and the passenger hears the same song from the same point. Tuning and damage are visible to the other player.
 Plane landing gear and nozzles, tank and fire truck turrets, hydraulics, the horn, the police helicopter's
 searchlight, trailers, the tow truck and the airport tug all work. Explosions, rockets, grenades, tank shells,
 fire truck water, NPC drive-bys, trains and RC toys are seen by both players. Either player can leave a car in the
@@ -170,6 +171,8 @@ The chat supports the `/help`, `/players` and `/tp` (go to your partner) command
 - You see the other player's train but cannot get into it: it is driven by the player whose game made it.
 - The other player's parachute canopy is not shown, only their animations. Each player hears their own
   pedestrians' chatter outside missions.
+- If the driver listens to their own MP3s (User Track Player), the passenger hears their own User Track Player, not
+  the driver's music.
 - The partner gets story progress (new areas, gyms, mission markers) by loading the host's world after every
   mission the host passes. Loading takes a few seconds, and the partner keeps their position, weapons and
   progress.

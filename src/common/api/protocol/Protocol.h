@@ -144,6 +144,9 @@ enum MsgId : uint8_t {
                               // (state: model, holder, how it hangs, look, own animation; gone)
     G_PED_SPEECH = 146,       // reliable: u8 player/ped, u16 net id, the line it starts (context, bank, sound, delay,
                               // volume, forced)
+    G_RADIO = 147,            // reliable, from a driver with players in its car: u16 vehicle, i8 station, u8 n,
+                              // n x {i32 track, i8 type, i8 index} queued, u8 track flags, i32 ms into the first, i32 its
+                              // length (no tracks: the radio off or the User Track Player)
 
     G_VOICE = 200,            // unreliable: voice frame
     G_LAST = 255,
