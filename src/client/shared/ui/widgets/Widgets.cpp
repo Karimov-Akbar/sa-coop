@@ -251,11 +251,11 @@ bool Checkbox(const char* id, float x, float y, const std::string& label, bool& 
     return false;
 }
 
-void DrawCursor() {
+void DrawCursor() { DrawCursorAt(In().State().mouseX, In().State().mouseY); }
+
+void DrawCursorAt(float x, float y) {
     auto& g = Gfx();
-    auto& st = In().State();
     float s = std::max(1.0f, g.Scale());
-    float x = st.mouseX, y = st.mouseY;
     // simple arrow made of rectangles
     for (int i = 0; i < 14; ++i) {
         float len = (float)(i < 10 ? i + 1 : 14 - i) * s;

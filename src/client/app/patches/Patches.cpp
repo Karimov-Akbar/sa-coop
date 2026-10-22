@@ -44,6 +44,21 @@ void __cdecl HookIdleMouseSetPos(void* pos) {
 using PadFn = void(__fastcall*)(void*, void*);
 PadFn g_origUpdateMouse = nullptr;
 void __fastcall HookUpdateMouse(void* self, void* edx) {
+    if (ui::In().MouseRelative() && !ui::In().MouseCaptured()) {
+        g_origUpdateMouse(self, edx);  // the device is read: nothing is left there for the camera later
+        // CMouseControllerState: X at +0x0C, Y at +0x10, DirectInput's lX and lY times -1 where the controls menu
+        // inverts them (CMousePointerStateHelper at 0xBA6744: horizontally, 0xBA6745: vertically; not while the menu
+        // is open, 0xBA67A4): see 0x53F427 in CPad::UpdateMouse. Taken back to DirectInput's own, y down.
+        float x = game::Ref<float>(0xB73418 + 0x0C), y = game::Ref<float>(0xB73418 + 0x10);
+        if (!game::Ref<uint8_t>(0xBA67A4)) {
+            if (game::Ref<uint8_t>(0xBA6744)) x = -x;
+            if (game::Ref<uint8_t>(0xBA6745)) y = -y;
+        }
+        ui::In().AddMouseMotion(x, y);
+        memset((void*)0xB73418, 0, 0x14);  // CPad::NewMouseControllerState: no camera turn, no shot
+        memset((void*)0xB7342C, 0, 0x14);  // CPad::OldMouseControllerState
+        return;
+    }
     if (ui::In().MouseCaptured()) {
         memset((void*)0xB73418, 0, 0x14);  // CPad::NewMouseControllerState
         memset((void*)0xB7342C, 0, 0x14);  // CPad::OldMouseControllerState

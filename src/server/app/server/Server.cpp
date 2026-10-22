@@ -392,6 +392,10 @@ void Server::HandleCommand(Player* p, const std::string& text) {
                   "For the host: /kick <nickname or number> [reason], /say <text>");
         reply(kColorServer, "В игре: /tp (переместиться к напарнику), /tphere (позвать напарника к себе)",
               "In the game: /tp (go to your partner), /tphere (bring your partner to you)");
+        reply(kColorServer, "Эмоции: /e — список всех, /dance — танцевать, /wave — помахать, /sit — сесть, /e стоп — "
+                            "остановить. Колесо эмоций: зажмите J и выберите мышью",
+              "Emotes: /e lists them all, /dance to dance, /wave to wave, /sit to sit, /e stop to stop. The emote wheel: "
+              "hold J and pick with the mouse");
     } else if (cmd == "players" || cmd == "status") {
         for (auto& o : m_players) {
             if (!o.joined) continue;
@@ -429,7 +433,8 @@ void Server::HandleCommand(Player* p, const std::string& text) {
         SendChat(nullptr, kServerId, kColorServer, "[Сервер] " + rest, "[Server] " + rest);
     } else if (cmd == "quit" && !p) {
         Stop();
-    } else if (cmd == "tp" || cmd == "tphere" || cmd == "voice" || cmd == "save" || cmd == "skin") {
+    } else if (cmd == "tp" || cmd == "tphere" || cmd == "voice" || cmd == "save" || cmd == "skin" || cmd == "e" ||
+               cmd == "emote" || cmd == "emotes") {
         // handled by the game client locally; nothing to do on the server
     } else {
         reply(kColorError, "Такой команды нет. Чтобы увидеть список команд, напишите /help.",

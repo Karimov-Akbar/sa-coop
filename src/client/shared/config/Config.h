@@ -43,6 +43,7 @@ struct ClientConfig {
     int chatKey = 0x54;               // T
     int passengerKey = 0x47;          // G
     int playerListKey = 0x71;         // F2
+    int emoteKey = 0x4A;              // J, the emote wheel while held
 
     // [debug]
     bool debugOverlay = false;
@@ -63,3 +64,5 @@ ClientConfig& Cfg();
 
 // A text of the interface in both languages, where it is used: TR("Подключиться", "Connect").
 #define TR(ru, en) (::coop::Cfg().english ? (en) : (ru))
+// Both texts at once, where either language is taken (the names of an emote in /e): {TR_BOTH("танец", "dance")}.
+#define TR_BOTH(ru, en) ru, en

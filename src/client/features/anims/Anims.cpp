@@ -11,16 +11,21 @@
 // a script or an attractor plays these on the player, never its pad. The owner reports the one it plays (IFP block and
 // index, as for the mirrored peds) and the other game plays it on its copy of the player.
 //
-// The same channel (G_PLAYER_ANIM) carries both.
+// An emote (Emotes.cpp) goes the same way: while the player plays one, the animation of its block is the activity.
+// The blocks this side streamed in for the copies go back to the streamer once no copy plays them.
+//
+// The same channel (G_PLAYER_ANIM) carries them all.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/player/Players.h"
+#include "features/anims/Emotes.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Anim.h"
 #include "shared/game/Game.h"
@@ -67,13 +72,14 @@ struct Activity {
     float time = 0.0f;
 };
 
-// the activity animation the player plays now: the strongest one of those blocks
+// the activity animation the player plays now: the strongest one of those blocks or of the emote's
 bool CurrentActivity(CPed* ped, Activity& out) {
     void* best = nullptr;
+    int emote = emotes::PlayingBlock();
     for (void* a = anim::First(ped->RwObject()); a; a = anim::Next(a)) {
         int block, idx;
         if (anim::BlendDelta(a) < 0.0f || anim::BlendAmount(a) < 0.3f || !anim::Locate(anim::Hierarchy(a), block, idx) ||
-            !IsActivityBlock(block))
+            (block != emote && !IsActivityBlock(block)))
             continue;
         if (best && anim::BlendAmount(a) <= anim::BlendAmount(best)) continue;
         best = a;
@@ -168,9 +174,16 @@ public:
         m_lastGroup = m_lastId = -1;
         m_sent = Activity{};
         m_remote.clear();
+        m_streamed.clear();  // a new world
     }
-    void OnSessionEnd() override { m_remote.clear(); }
-    void OnPeerLeave(uint8_t id) override { m_remote.erase(id); }
+    void OnSessionEnd() override {
+        m_remote.clear();
+        ReleaseUnused();
+    }
+    void OnPeerLeave(uint8_t id) override {
+        m_remote.erase(id);
+        ReleaseUnused();
+    }
 
     static Anims& Instance() {
         static Anims a;
@@ -243,7 +256,10 @@ private:
             if (!rp || !rp->ped || rp->mode != RemotePlayer::Mode::OnFoot || !rp->ped->RwObject()) continue;
             void* clump = rp->ped->RwObject();
             void* h = nullptr;
-            if (w.a.block >= 0 && !(h = anim::Resolve(w.a.block, w.a.idx))) continue;  // its IFP is being loaded
+            if (w.a.block >= 0 && !(h = anim::Resolve(w.a.block, w.a.idx))) {  // its IFP is being loaded
+                if (w.a.block < Ref<int32_t>(0xB4EA30) && !anim::BlockLoaded(w.a.block)) m_streamed.insert(w.a.block);
+                continue;
+            }
             if (w.applied)
                 for (void* a = anim::First(clump); a; a = anim::Next(a))
                     if (anim::Hierarchy(a) == w.applied && anim::BlendDelta(a) >= 0.0f) anim::FadeOut(a);
@@ -261,6 +277,21 @@ private:
             }
             w.applied = h;
             w.appliedSeq = w.seq;
+            ReleaseUnused();
+        }
+    }
+
+    // the blocks streamed in for the copies that no copy wants any more (the associations still blending out hold theirs)
+    void ReleaseUnused() {
+        for (auto it = m_streamed.begin(); it != m_streamed.end();) {
+            bool used = false;
+            for (auto& [id, w] : m_remote) used |= w.a.block == *it;
+            if (used) {
+                ++it;
+                continue;
+            }
+            Call<0x409C10>(anim::kIfpBase + *it);  // CStreaming::SetModelIsDeletable
+            it = m_streamed.erase(it);
         }
     }
 
@@ -268,6 +299,7 @@ private:
     Activity m_sent;
     float m_lastTime = 0.0f;
     std::map<uint8_t, Wanted> m_remote;
+    std::set<int> m_streamed;  // IFP blocks requested here for the copies, not in memory before
 };
 
 struct Reg {

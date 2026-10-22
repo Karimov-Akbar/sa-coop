@@ -29,8 +29,26 @@ public:
     void SetKeyboardCapture(bool on);
     // While set, the game does not receive mouse input and the cursor is free.
     void SetMouseCapture(bool on);
+    // While set, the game's own mouse reading (DirectInput, CPad::UpdateMouse) goes on, but its movement is handed to
+    // us (TakeMouseMotion) instead of the camera and its buttons are dropped: an in-game overlay with a cursor of its
+    // own (the emote wheel). The OS cursor stays the game's. Not reading the device would pile the motion up there for
+    // the camera to take in one go afterwards.
+    void SetMouseRelative(bool on) {
+        m_mouseRelative = on;
+        m_motionX = m_motionY = 0;
+    }
     bool KeyboardCaptured() const { return m_kbCapture; }
     bool MouseCaptured() const { return m_mouseCapture; }
+    bool MouseRelative() const { return m_mouseRelative; }
+    void AddMouseMotion(float dx, float dy) {  // DirectInput counts, x right, y down
+        m_motionX += dx;
+        m_motionY += dy;
+    }
+    void TakeMouseMotion(float& dx, float& dy) {  // since the last call
+        dx = m_motionX;
+        dy = m_motionY;
+        m_motionX = m_motionY = 0;
+    }
 
     InputState& State() { return m_state; }
     void EndFrame();  // clears per-frame events
@@ -47,6 +65,8 @@ private:
     void* m_hwnd = nullptr;
     bool m_kbCapture = false;
     bool m_mouseCapture = false;
+    bool m_mouseRelative = false;
+    float m_motionX = 0, m_motionY = 0;
     InputState m_state;
 };
 

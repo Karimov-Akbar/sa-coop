@@ -3,8 +3,9 @@
 Checks that the game client shows no Russian text without its English one (python tools/i18n_check.py, exit code 1
 when one is found).
 
-A Russian string literal in src/client must stand inside TR("...", "...") (shared/config/Config.h), inside a log call
-(LOGI, LOGW, LOGE, LOGD: the log is for us) or in the comments of the default coop.ini. The server needs no check of
+A Russian string literal in src/client must stand inside TR("...", "...") or TR_BOTH("...", "...")
+(shared/config/Config.h), inside a log call (LOGI, LOGW, LOGE, LOGD: the log is for us) or in the comments of the
+default coop.ini. The server needs no check of
 this kind: it sends its texts in both languages and the compiler sees each pair together.
 """
 import re
@@ -12,7 +13,7 @@ import sys
 from pathlib import Path
 
 CLIENT = Path(__file__).resolve().parent.parent / "src" / "client"
-ALLOWED = {"TR", "LOGI", "LOGW", "LOGE", "LOGD"}
+ALLOWED = {"TR", "TR_BOTH", "LOGI", "LOGW", "LOGE", "LOGD"}
 RUSSIAN = re.compile("[А-Яа-яЁё]")
 TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|L?"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|[(){}]|[A-Za-z_]\w*', re.S)
 

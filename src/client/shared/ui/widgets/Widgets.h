@@ -36,6 +36,7 @@ void Pointer(float cx, float cy, float size, uint32_t argb);
 void SetFocus(const char* id);
 bool AnyTextFocused();
 void DrawCursor();
+void DrawCursorAt(float x, float y);
 std::wstring ClipboardText();
 
 }  // namespace coop::ui::w

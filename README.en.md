@@ -158,10 +158,16 @@ guide describes.
 | G | get into the nearest car as a passenger |
 | Right mouse button | as a passenger: lean out of the window with the gun, fire with the left button |
 | F2 | the player list |
+| J (hold) | the emote wheel: pick with the mouse, release the key to play. The key is set in `coop.ini` (`[keys] emote_wheel`) |
 | Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
 The chat supports the `/help`, `/players` and `/tp` (go to your partner) commands. The host can kick a player with
 `/kick <nickname> [reason]`.
+
+Emotes: `/e <name>` plays an emote, `/e` lists them, `/e stop` stops one. The popular ones have short commands:
+`/dance`, `/wave`, `/sit`, `/lie`, `/clap`, `/laugh`, `/facepalm`, and the Russian names work too. A looped emote
+(dance, clap, sit, lie) goes on until you move, jump or aim. Emotes are not available in a car, in the water, in
+a jump or during scenes. Your partners see your emote.
 
 ## Limitations
 

@@ -69,6 +69,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     chatKey = ini.GetInt("keys", "chat", chatKey);
     passengerKey = ini.GetInt("keys", "enter_as_passenger", passengerKey);
     playerListKey = ini.GetInt("keys", "player_list", playerListKey);
+    emoteKey = ini.GetInt("keys", "emote_wheel", emoteKey);
 
     debugOverlay = ini.GetBool("debug", "overlay", debugOverlay);
     verboseLog = ini.GetBool("debug", "verbose_log", verboseLog);
