@@ -1407,9 +1407,45 @@ void Players::OnRender() {
 bool Players::OnCommand(const std::string& cmd, const std::vector<std::string>& args) {
     if (cmd != "tp" && cmd != "tphere") return false;
     if (!core::IsPlayerReady()) return true;
+    // whom: /tp <nickname or number>; without one the host (for a partner) or the only other player. It used to take
+    // the last player of the list whatever was typed.
     RemotePlayer* target = nullptr;
+    int inGame = 0;
     for (auto& [id, rp] : m_remote)
-        if (rp.hasState) target = &rp;
+        if (rp.hasState) ++inGame, target = &rp;
+    if (!args.empty()) {
+        target = nullptr;
+        std::string want = ToLower(args[0]);
+        bool number = !want.empty() && want.size() <= 3 && std::all_of(want.begin(), want.end(), [](char c) { return c >= '0' && c <= '9'; });  // a nickname may be UTF-8
+        RemotePlayer* prefix = nullptr;
+        int prefixes = 0;
+        for (auto& [id, rp] : m_remote) {
+            std::string name = ToLower(Net().PeerName(id));
+            if ((number && id == std::stoi(want)) || name == want) {
+                target = &rp;
+                break;
+            }
+            if (name.rfind(want, 0) == 0) ++prefixes, prefix = &rp;
+        }
+        if (!target && prefixes == 1) target = prefix;
+        if (!target) {
+            ui::TheChat().AddError(Format(TR("Нет игрока «%s». Список игроков: /players.", "No player \"%s\". The player list: /players."),
+                                          args[0].c_str()));
+            return true;
+        }
+        if (!target->hasState) {
+            ui::TheChat().AddError(Format(TR("%s ещё не в игре.", "%s is not in the game yet."), Net().PeerName(target->id).c_str()));
+            return true;
+        }
+    } else if (inGame > 1) {
+        RemotePlayer* host = Get(Net().HostId());
+        if (Net().IsHost() || !host || !host->hasState) {
+            ui::TheChat().AddError(TR("Укажите игрока: /tp <ник или номер> (список: /players).",
+                                      "Name the player: /tp <nickname or number> (the list: /players)."));
+            return true;
+        }
+        target = host;
+    }
     if (!target) {
         ui::TheChat().AddError(TR("Напарник ещё не в игре.", "Your partner is not in the game yet."));
         return true;

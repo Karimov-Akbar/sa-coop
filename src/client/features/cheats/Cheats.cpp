@@ -58,8 +58,10 @@ int Matched(const char* s) {
 // cutscene flag's address out of them and crashed on a hook there.
 using IncrementStatFn = void(__cdecl*)(uint16_t, float);
 IncrementStatFn g_origIncrementStat = nullptr;
+int g_matched = 0;  // cheats matched so far (/cheat tells whether its code matched)
 void __cdecl HookCheatCounted(uint16_t stat, float value) {
     g_origIncrementStat(stat, value);
+    ++g_matched;
     if (!flow::InSharedWorld()) return;
     int id = Matched((const char*)kCheatString);
     if (id < 0 || !WorldCheat(id)) return;
@@ -85,6 +87,35 @@ public:
                 Format(TR("Чит-код от %s действует и у вас.", "The cheat %s entered works for you too."), Net().PeerName(from).c_str()));
             LOGI("Cheat %d from player %d applied", id, from);
         });
+    }
+
+    // /cheat CODE: the letter T opens the chat, so a code with a T could not be typed in the game. The command feeds the
+    // code to the game the way its own keyboard check does (CCheat::DoCheats: AddToCheatString per pressed key, the
+    // uppercase letter), so the match, the effect and the sharing of world cheats are the game's own.
+    bool OnCommand(const std::string& cmd, const std::vector<std::string>& args) override {
+        if (cmd != "cheat" && cmd != "c") return false;
+        std::string code;
+        for (const std::string& a : args)
+            for (char c : a) {
+                if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+                if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) code += c;
+            }
+        if (code.empty()) {
+            ui::TheChat().AddError(TR("Введите код латиницей: /cheat <код>, например /cheat HESOYAM.",
+                                      "Type the code in Latin letters: /cheat <code>, for example /cheat HESOYAM."));
+            return true;
+        }
+        if (!core::IsPlayerReady()) {
+            ui::TheChat().AddError(TR("Сначала дождитесь загрузки игры.", "Wait until the game has loaded first."));
+            return true;
+        }
+        int before = g_matched;
+        for (char c : code) Call<0x438480>(c);  // CCheat::AddToCheatString
+        bool worked = g_matched != before;
+        if (worked) ui::TheChat().AddSystem(Format(TR("Чит-код %s введён.", "The cheat %s was entered."), code.c_str()));
+        else ui::TheChat().AddError(Format(TR("Код %s не подошёл.", "The code %s did not match."), code.c_str()));
+        LOGI("Cheat typed by command: %s (%s)", code.c_str(), worked ? "matched" : "no match");
+        return true;
     }
 
     static Cheats& Instance() {

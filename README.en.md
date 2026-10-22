@@ -160,7 +160,8 @@ guide describes.
 | F2 | the player list |
 | Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
-The chat supports the `/help`, `/players` and `/tp` (go to your partner) commands. The host can kick a player with
+The chat supports the `/help`, `/players`, `/tp [nickname]` (go to a player), `/tphere [nickname]` (bring a player
+to you) and `/cheat <code>` (type a cheat, one with the letter T too) commands. The host can kick a player with
 `/kick <nickname> [reason]`.
 
 ## Limitations
