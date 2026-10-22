@@ -12,6 +12,9 @@
 //      cutscenes   - the partner loads and plays the same cutscene (G_CUTSCENE);
 //      screen      - fades and widescreen borders (G_FADE), onscreen timers/counters (G_ONSCREEN).
 // Mission peds and vehicles are ordinary host entities (Peds/Vehicles).
+#include <windows.h>
+#undef GetObject  // windows.h renames it GetObjectA: game::GetObject is the script handle lookup
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -194,6 +197,17 @@ uint64_t g_waitMs = 0;      // host: the last time a trigger was refused for tha
 bool g_waitSent = false;
 bool g_hostWaits = false;   // partner
 Area g_waitArea{};
+
+// The other way round: a partner stands in a mission marker, but only the host starts missions. The partner's game tells
+// the host (the same G_MISSION_WAIT, from a partner: a host of an older version ignores it), the host is told in the chat
+// and on screen, and sees that marker lit.
+struct PartnerWait {
+    Area area{};
+    uint64_t sinceMs = 0;
+};
+std::map<uint8_t, PartnerWait> g_partnersWaiting;  // host
+bool g_atMarkerSent = false;                       // partner
+uint64_t g_atMarkerCheckMs = 0;
 
 // partner
 struct PartnerBlip {
@@ -419,7 +433,24 @@ void HandleMissionWait(uint8_t from, Reader& r) {
     bool on = r.U8() != 0;
     Area a{};
     if (on) a = {0x40000001u, r.F32(), r.F32(), r.F32(), r.F32(), r.F32(), 0};
-    if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    if (!r.Ok() || from == Net().MyId()) return;
+    if (Net().IsHost()) {  // a partner at a mission marker
+        bool was = g_partnersWaiting.count(from) != 0;
+        if (on) {
+            g_partnersWaiting[from] = {a, was ? g_partnersWaiting[from].sinceMs : NowMs()};
+            if (!was) {
+                LOGI("Player %u waits at a mission marker (%.1f,%.1f)", from, (a.x1 + a.x2) * 0.5f, (a.y1 + a.y2) * 0.5f);
+                ui::TheChat().AddSystem(Format(TR("%s хочет начать миссию: встаньте в маркер, который он ждёт.",
+                                                  "%s wants to start a mission: stand in the marker they are waiting at."),
+                                               Net().PeerName(from).c_str()));
+            }
+        } else if (was) {
+            g_partnersWaiting.erase(from);
+            LOGI("Player %u does not wait at the marker any more", from);
+        }
+        return;
+    }
+    if (from != Net().HostId()) return;
     if (on != g_hostWaits) LOGI(on ? "The host waits at a mission marker" : "The host does not wait at the marker any more");
     g_hostWaits = on;
     g_waitArea = a;  // the partner's game may not have this marker yet (story progress comes on reconnect)
@@ -1281,6 +1312,160 @@ void HandleBlip(uint8_t from, Reader& r) {
     }
 }
 
+// ---------------------------------------------------------------- scenes on the engine
+// A mission's scene on the engine (no cutscene file: its script moves the camera and the actors, "Ryder" after the
+// haircut) showed on the host's screen only: the partners kept their own camera. While the host's mission script holds
+// the camera (CCamera::m_bLookingAtPlayer off, no cutscene), the host sends where it looks from, and a partner close by on
+// foot or in a car watches through it: its camera follows, its player stands still (a car it drives coasts). Space gives
+// it its own camera back, and Space again (standing still: Space is also the sprint and the handbrake) lets it watch
+// again; one far away is only told (it can come over with /tp). The actors are the host's peds and the host's CJ,
+// which its game mirrors anyway.
+constexpr float kSceneWatchDist = 100.0f;
+bool g_sceneSent = false;  // host
+uint64_t g_sceneSentMs = 0;
+CVector g_sceneLastSrc;
+
+struct SceneCam {
+    CVector src, front, up;
+    float fov = 70.0f;
+};
+bool g_sceneOn = false;        // partner: the host's scene runs
+uint64_t g_sceneRecvMs = 0;
+SceneCam g_sceneWant, g_sceneShown;
+bool g_sceneWatching = false, g_sceneOptOut = false, g_sceneCut = false, g_spaceWasDown = false;
+uint64_t g_sceneShownMs = 0, g_sceneOffMs = 0;
+
+bool ScriptHoldsCamera() {
+    return !Ref<uint8_t>(addr::TheCamera + 0x2B) && !Ref<uint8_t>(0xB5F851);  // !m_bLookingAtPlayer, !CCutsceneMgr::ms_running
+}
+
+void HostSceneUpdate(bool replicating) {
+    bool on = replicating && ScriptHoldsCamera();
+    uint64_t now = NowMs();
+    if (on) {
+        if (now - g_sceneSentMs < 50) return;
+        g_sceneSentMs = now;
+        CVector src = cam::Source();
+        bool cut = !g_sceneSent || (src - g_sceneLastSrc).Length() > 3.0f;  // a new shot: the partner jumps there
+        g_sceneLastSrc = src;
+        Writer w(proto::G_SCENE_CAMERA);
+        w.U8(1);
+        w.Vec({src.x, src.y, src.z});
+        w.Vec({cam::Front().x, cam::Front().y, cam::Front().z});
+        w.Vec({cam::Up().x, cam::Up().y, cam::Up().z});
+        w.F32(cam::Fov());
+        w.U8(cut);
+        Net().Send(proto::CH_STATE, w);
+        if (!g_sceneSent) LOGI("Scene on the engine: its camera goes to the partners");
+        g_sceneSent = true;
+    } else if (g_sceneSent) {
+        g_sceneSent = false;
+        Writer w(proto::G_SCENE_CAMERA);
+        w.U8(0);
+        Net().Send(proto::CH_RELIABLE, w);
+        LOGI("Scene on the engine over");
+    }
+}
+
+void StopWatchingScene() {
+    if (!g_sceneWatching) return;
+    g_sceneWatching = false;
+    Cmd(0x02EB).Run();                 // RESTORE_CAMERA_JUMPCUT
+    Cmd(0x0373).Run();                 // SET_CAMERA_BEHIND_PLAYER
+    Cmd(0x01B4).I(0).I(1).Run();       // SET_PLAYER_CONTROL on
+    LOGI("Own camera again");
+}
+
+void HandleSceneCamera(uint8_t from, Reader& r) {
+    bool on = r.U8() != 0;
+    SceneCam c;
+    bool cut = false;
+    if (on) {
+        Vec3 s0 = r.Vec(), f = r.Vec(), u = r.Vec();
+        c.src = {s0.x, s0.y, s0.z};
+        c.front = {f.x, f.y, f.z};
+        c.up = {u.x, u.y, u.z};
+        c.fov = r.F32();
+        cut = r.U8() != 0;
+    }
+    if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady()) return;
+    if (!on) {
+        if (g_sceneOn) LOGI("The host's scene is over");
+        g_sceneOn = g_sceneOptOut = false;
+        g_sceneOffMs = NowMs();
+        StopWatchingScene();
+        return;
+    }
+    // its camera comes unreliably, its end reliably: one more camera update can arrive after the end (the channels keep
+    // no order between them) and would start the scene again for a second
+    if (!g_sceneOn && NowMs() - g_sceneOffMs < 500) return;
+    if (!g_sceneOn) LOGI("The host's scene on the engine started");
+    g_sceneOn = true;
+    g_sceneRecvMs = NowMs();
+    g_sceneWant = c;
+    g_sceneCut = g_sceneCut || cut;
+}
+
+bool CanWatchScene() {
+    CPlayerPed* me = FindPlayerPed(0);
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    return me && host && host->hasState && host->state.area == me->AreaCode() &&
+           (host->state.pos - me->GetPosition()).Length() < kSceneWatchDist && g_csState == 0;
+}
+
+// the player stands still (on foot or in a car that has stopped): Space is no sprint or handbrake then
+bool StandingStill() {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me) return false;
+    CVector v = me->InVehicle() && me->Vehicle() ? me->Vehicle()->MoveSpeed() : me->MoveSpeed();
+    return v.Length() * 50.0f < 0.5f;  // m/s
+}
+
+void PartnerSceneUpdate() {
+    uint64_t now = NowMs();
+    if (g_sceneOn && now - g_sceneRecvMs > 1000) {  // the host is gone or its game stalls
+        g_sceneOn = g_sceneOptOut = false;
+        StopWatchingScene();
+    }
+    bool space = game::IsForeground() && (GetAsyncKeyState(VK_SPACE) & 0x8000);
+    bool pressed = space && !g_spaceWasDown;
+    g_spaceWasDown = space;
+    if (g_sceneWatching && pressed) {
+        g_sceneOptOut = true;
+        StopWatchingScene();
+        return;
+    }
+    if (pressed && g_sceneOn && g_sceneOptOut && StandingStill()) {
+        g_sceneOptOut = false;  // back to the scene
+        LOGI("Back to the host's scene");
+    }
+    bool watch = g_sceneOn && !g_sceneOptOut && CanWatchScene();
+    if (!watch) {
+        StopWatchingScene();
+        return;
+    }
+    if (!g_sceneWatching) {
+        g_sceneWatching = true;
+        g_sceneCut = true;
+        Cmd(0x01B4).I(0).I(0).Run();  // SET_PLAYER_CONTROL off: the player stands while it watches
+        LOGI("Watching the host's scene");
+    }
+    // a new shot far from this player (the scene shows another place): the world there is loaded first, as the host's
+    // script did for its own camera
+    if (g_sceneCut)
+        if (CPlayerPed* me = FindPlayerPed(0); me && (g_sceneWant.src - me->GetPosition()).Length() > 150.0f)
+            Cmd(0x03CB).F(g_sceneWant.src.x).F(g_sceneWant.src.y).F(g_sceneWant.src.z).Run();  // LOAD_SCENE
+    // follow the host's camera smoothly between its updates (20 a second), jump on a new shot
+    float k = g_sceneCut ? 1.0f : 1.0f - std::exp(-(float)(now - g_sceneShownMs) * 0.012f);
+    g_sceneShownMs = now;
+    g_sceneShown.src = g_sceneShown.src + (g_sceneWant.src - g_sceneShown.src) * k;
+    g_sceneShown.front = g_sceneShown.front + (g_sceneWant.front - g_sceneShown.front) * k;
+    g_sceneCut = false;
+    CVector at = g_sceneShown.src + g_sceneShown.front * 5.0f;
+    Cmd(0x015F).F(g_sceneShown.src.x).F(g_sceneShown.src.y).F(g_sceneShown.src.z).F(0).F(0).F(0).Run();  // SET_FIXED_CAMERA_POSITION
+    Cmd(0x0160).F(at.x).F(at.y).F(at.z).I(2).Run();  // POINT_CAMERA_AT_POINT, jump cut
+}
+
 // ---------------------------------------------------------------- screen state, timers
 
 // The host's fades the partner sees are those of its scripts (a fade started while a script runs). Its other
@@ -1519,6 +1704,16 @@ public:
         Net().SetHandler(proto::G_MISSION_REWARD, &HandleReward);
         Net().SetHandler(proto::G_MISSION_WEAPON, &HandleMissionWeapon);
         Net().SetHandler(proto::G_CHECKPOINTS, &HandleMarked);
+        Net().SetHandler(proto::G_SCENE_CAMERA, &HandleSceneCamera);
+    }
+
+    // The markers partners wait at are lit in the host's game before its frame: a 3D marker shows only when it was placed
+    // before C3dMarkers::Update (CSpecialFX::Update, in CGame::Process), which makes it active; the rendering draws the
+    // active ones and then clears them, so one placed after the frame was cleared unseen.
+    void OnPreProcess() override {
+        if (!Net().Online() || !core::IsPlayerReady() || !Net().IsHost() || g_active) return;
+        for (auto& [id, w] : g_partnersWaiting)
+            g_origHighlight(w.area.id ^ 0x20000000u, w.area.x1, w.area.y1, w.area.x2, w.area.y2, w.area.z);
     }
 
     void OnPostProcess() override {
@@ -1593,6 +1788,10 @@ private:
         g_partnerMission = g_weFaded = g_weWide = g_onscreenSet = false;
         g_waitSent = g_hostWaits = false;
         g_waitMs = 0;
+        g_partnersWaiting.clear();
+        g_atMarkerSent = false;
+        if (g_sceneWatching) StopWatchingScene();
+        g_sceneOn = g_sceneOptOut = g_sceneSent = false;
         g_csState = 0;
         g_inScene = false;
         g_csCar = g_csSeat = -1;
@@ -1672,6 +1871,10 @@ private:
             flow::WorldProgressed();
         }
 
+        // the markers partners wait at are lit here too (OnPreProcess, before the game's frame); gone with a partner who left
+        for (auto it = g_partnersWaiting.begin(); it != g_partnersWaiting.end();)
+            it = Net().Peers().count(it->first) ? std::next(it) : g_partnersWaiting.erase(it);
+
         // the partner's screen shows where the host waits
         bool waiting = !active && NowMs() - g_waitMs < 1500;
         if (waiting != g_waitSent) {
@@ -1682,6 +1885,7 @@ private:
         }
 
         HostSkipUpdate();
+        HostSceneUpdate(active || Replicating());
         // cutscene end
         bool cs = CutsceneRunning();
         if (g_hostCutscene && !cs) {
@@ -1755,6 +1959,7 @@ private:
 
     static void PartnerUpdate() {
         UpdatePartnerCutscene();
+        PartnerSceneUpdate();
         // The host's vote to skip while no cutscene runs here (it never started): nothing here can answer it, and the
         // host waited 15 s for this player. A scene a little late here gets 3 s to start and be watched.
         static uint64_t voteWithoutScene = 0;
@@ -1769,6 +1974,24 @@ private:
             if (name.empty()) LOGI("Own mission ended (%s)", own.c_str());
             else LOGI("Own mission started (%s)", name.c_str());
             own = name;
+        }
+        // in a mission marker the host is told (its game starts the mission once the host stands in it too)
+        if (NowMs() - g_atMarkerCheckMs >= 250) {
+            g_atMarkerCheckMs = NowMs();
+            Area at{};
+            CPlayerPed* me = FindPlayerPed(0);
+            bool atMarker = me && flow::InHostWorld() && !HostMissionRecent(0) && !g_hostWaits && !me->InVehicle() &&
+                            MarkerAt(me->GetPosition(), at);
+            if (atMarker != g_atMarkerSent) {
+                g_atMarkerSent = atMarker;
+                LOGI(atMarker ? "At a mission marker (%.1f,%.1f): the host is told" : "Left the mission marker", (at.x1 + at.x2) * 0.5f,
+                     (at.y1 + at.y2) * 0.5f);
+                Writer w(proto::G_MISSION_WAIT);
+                w.U8(atMarker);
+                if (atMarker)
+                    for (float f : {at.x1, at.y1, at.x2, at.y2, at.z}) w.F32(f);
+                Net().Send(proto::CH_RELIABLE, w);
+            }
         }
         if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
         // markers are drawn every frame while the host keeps them (stale after 1 s: host gone/paused)
@@ -1834,10 +2057,24 @@ bool CutsceneSkipDecline() {
 
 std::string MissionWaitText() {
     if (!Net().Online()) return "";
-    if (Net().IsHost()) return g_waitSent ? TR("Ждём напарника", "Waiting for your partner") : "";
-    return g_hostWaits ? Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"),
-                                Net().PeerName(Net().HostId()).c_str())
-                       : "";
+    if (Net().IsHost()) {
+        if (g_waitSent) return TR("Ждём напарника", "Waiting for your partner");
+        for (auto& [id, w] : g_partnersWaiting)
+            if (Net().Peers().count(id))
+                return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(id).c_str());
+        return "";
+    }
+    if (g_sceneWatching) return TR("Сцена хоста · Пробел — своя камера", "The host's scene · Space: your own camera");
+    if (g_sceneOn && g_sceneOptOut)
+        return TR("Сцена хоста · Пробел на месте — смотреть", "The host's scene · Space standing still: watch it");
+    if (g_sceneOn)
+        return TR("Хост смотрит сцену миссии · /tp — к хосту", "The host watches a mission scene · /tp: go to the host");
+    if (g_hostWaits)
+        return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(Net().HostId()).c_str());
+    if (g_atMarkerSent)
+        return Format(TR("Миссии начинает хост: %s получил приглашение", "The host starts missions: %s has been invited"),
+                      Net().PeerName(Net().HostId()).c_str());
+    return "";
 }
 
 bool HostReplicating() { return Replicating(); }

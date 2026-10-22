@@ -144,6 +144,8 @@ enum MsgId : uint8_t {
                               // (state: model, holder, how it hangs, look, own animation; gone)
     G_PED_SPEECH = 146,       // reliable: u8 player/ped, u16 net id, the line it starts (context, bank, sound, delay,
                               // volume, forced)
+    G_SCENE_CAMERA = 147,     // host: its mission's script holds the camera (a scene on the engine, not a cutscene):
+                              // u8 on[, vec source, vec front, vec up, f32 fov, u8 cut]; unreliable while on, reliable off
 
     G_VOICE = 200,            // unreliable: voice frame
     G_LAST = 255,
