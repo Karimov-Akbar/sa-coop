@@ -144,6 +144,8 @@ enum MsgId : uint8_t {
                               // (state: model, holder, how it hangs, look, own animation; gone)
     G_PED_SPEECH = 146,       // reliable: u8 player/ped, u16 net id, the line it starts (context, bank, sound, delay,
                               // volume, forced)
+    G_RACE = 148,             // a race together: u8 op (lobby, cancel, join, start, countdown, progress, finish,
+                              // standings, end) and its data (see features/race/Race.cpp)
 
     G_VOICE = 200,            // unreliable: voice frame
     G_LAST = 255,

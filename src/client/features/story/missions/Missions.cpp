@@ -85,7 +85,8 @@ bool SideMission(void* script) {
 
 bool HostOnMission() {
     void* s = FindMissionScript();
-    if (s && (!strncmp(Field<char[8]>(s, 0x08), "buypro1", 8) || SideMission(s))) return false;
+    // a race together is the race's, not the host's mission (features/race shows it to those who race)
+    if (s && (!strncmp(Field<char[8]>(s, 0x08), "buypro1", 8) || SideMission(s) || OwnRaceTogether())) return false;
     if (!core::IsOnMission()) g_saveFlag = false;
     return s || (core::IsOnMission() && !g_saveFlag);
 }
@@ -393,7 +394,7 @@ bool __fastcall HookCanPlayerStartMission(CPlayerPed* player, void* edx) {
     };
     const char* thread = Field<char[8]>(g_currentScript, 0x08);
     for (const char* side : kSideThreads)
-        if (!strcmp(thread, side)) return Net().IsHost() || !HostMissionRecent(0);
+        if (!strcmp(thread, side)) return (Net().IsHost() || !HostMissionRecent(0)) && SideStartAllowed(thread);
     auto* ip = Field<uint8_t*>(g_currentScript, 0x14);
     // main.scm threads ask it in mission triggers (not only inside markers, so no hint here)
     if (ip < (uint8_t*)addr::ScriptSpace || ip >= (uint8_t*)addr::ScriptSpace + Ref<int32_t>(kMainScriptSize)) return ok;

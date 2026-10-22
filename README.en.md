@@ -104,7 +104,9 @@ F9 window, and each player picks their own: the host can play in Russian while t
 ### Everything else
 
 Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
-quarry are played by each player in their own game. There is text chat and voice chat, and the farther away the
+quarry are played by each player in their own game. The 8-Track race at the Los Santos stadium (now 8 laps instead of 12) can be raced
+together: whoever stands at its marker within 15 seconds of the first player lines up for the same race, and the
+first of the players gets the prize. There is text chat and voice chat, and the farther away the
 partner is, the quieter they sound. A waypoint one player sets on the map shows up on the other player's radar,
 and a house one player buys appears for both. Above the partner's head you see their health, armour, weapon and
 wanted stars. Only the host starts turf wars, but both players' kills of rival gang members provoke them. Cheats
