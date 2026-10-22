@@ -225,7 +225,7 @@ src/
 │   ├── features/  story and cutscenes, progress, garages, voice, weather and more
 │   ├── entities/  session, player, vehicle, ped, mission, profile
 │   └── shared/    engine wrappers, network, drawing and input, config
-├── server/        coop-server.exe, the server for two players
+├── server/        coop-server.exe, the server for 2-8 players
 ├── loader/        vorbisFile.dll, the ASI loader for a clean game
 └── common/        protocol, network, log and utilities for all three
 ```

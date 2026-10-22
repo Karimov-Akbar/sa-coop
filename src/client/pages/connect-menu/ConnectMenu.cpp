@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "common/api/nat-traversal/NatTraversal.h"
+#include "common/api/protocol/Protocol.h"
 #include "common/config/version/Version.h"
 #include "common/lib/util/Util.h"
 #include "entities/session/Flow.h"
@@ -23,6 +24,7 @@ namespace {
 using w::kSaBlue, w::kSaSlate, w::kSaMuted, w::kSaRed, w::kSaLine, w::kSaGreen;
 constexpr uint32_t kText = 0xFFE6E9EF;
 constexpr uint32_t kGold = 0xFFE2C063;  // the game's mission-title cream
+constexpr int kManyPlayers = 7;         // from here on the host is warned: never tested, heavy
 
 bool g_visible = false;
 bool g_autoShown = false;
@@ -136,7 +138,9 @@ void RenderConnectMenu() {
     float lh = g.LineHeight(FONT_NORMAL), sh = g.LineHeight(FONT_SMALL), mh = g.LineHeight(FONT_MENU),
           ch = g.LineHeight(FONT_MENU_SMALL), bh = g.LineHeight(FONT_BIG);
     float rowH = lh + 14 * s;
-    float W = 820 * s, H = 690 * s;
+    // the host tab with many players has a warning line more
+    bool manyWarning = !online && !busy && g_tab == 1 && Cfg().maxPlayers >= kManyPlayers;
+    float W = 820 * s, H = (manyWarning ? 690 + 50 : 690) * s;
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     float cx = x + 52 * s, cw = W - 104 * s;
     float room = mh * 1.6f;  // space for the pointer left of a menu item
@@ -298,6 +302,11 @@ void RenderConnectMenu() {
         cy += rowH + 22 * s;
         if (g_tab == 1) {  // the host decides for the whole game; saved with the other settings when the server starts
             w::Checkbox("ff", cx, cy, TR("Урон по напарнику", "Friendly fire"), Cfg().friendlyFire);
+            // the number of players, the host included: right of the checkbox, centred on its line
+            float selW = 280 * s;
+            int d = w::Selector("players", cx + cw - selW, cy + (lh * 0.8f - rowH) * 0.5f, selW, rowH,
+                                Format(TR("Игроков: %d", "Players: %d"), Cfg().maxPlayers));
+            if (d) Cfg().maxPlayers = std::clamp(Cfg().maxPlayers + d, 2, proto::kMaxPlayers);
             cy += lh * 0.8f + 22 * s;
         }
 
@@ -313,6 +322,14 @@ void RenderConnectMenu() {
         cy += bh + 10 * s + 14 * s;
 
         std::string error = !g_formError.empty() ? g_formError : flow::LastError();
+        if (error.empty() && g_tab == 1 && Cfg().maxPlayers >= kManyPlayers) {
+            para(TR("7 игроков и больше не проверены: возможны рассинхроны, высокая нагрузка на компьютер и сеть, "
+                    "нестабильная работа.",
+                    "7 players and more are not tested: expect desyncs, a heavy load on the computer and the network, "
+                    "unstable play."),
+                 kGold, FONT_SMALL, true);
+            cy += 6 * s;
+        }
         if (!error.empty()) para(error, kSaRed, FONT_NORMAL, true);
         else if (g_tab == 0 && inGame)
             para(TR("Текущая игра закроется. Вместо неё загрузится мир друга.",

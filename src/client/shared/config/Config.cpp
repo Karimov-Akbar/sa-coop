@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
+
+#include "common/api/protocol/Protocol.h"
 #include "common/config/version/Version.h"
 #include "common/lib/ini/Ini.h"
 #include "common/lib/util/Util.h"
@@ -44,6 +47,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     wantsHost = ToLower(ini.Get("connect", "mode", "join")) == "host";
     loadSlot = ini.GetInt("connect", "load_slot", 0);
     friendlyFire = ini.GetBool("connect", "friendly_fire", friendlyFire);
+    maxPlayers = std::clamp(ini.GetInt("connect", "max_players", maxPlayers), 2, proto::kMaxPlayers);
 
     windowed = ini.GetBool("game", "windowed", windowed);
     windowedStrict = ini.GetBool("game", "windowed_strict", windowedStrict);

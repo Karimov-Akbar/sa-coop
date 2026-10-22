@@ -40,6 +40,9 @@ struct RemotePlayer {
     uint64_t heardMs = 0;       // its last voice frame was played (set by the voice feature)
     bool lookStale = false;     // a script here took its special character's slot: it went back to CJ, the look again
     uint64_t duckOffMs = 0;     // since when the copy's crouch differs from its owner's (a lost crouch press)
+    // its own CPlayerPedData (0xAC bytes: chosen weapon, look pitch, fight moves, wanted, clothes...): every remote
+    // player is made in the same CWorld::Players slot, whose data they all shared (see Players.cpp)
+    uint8_t* ownData = nullptr;
 };
 
 class Players : public Module {

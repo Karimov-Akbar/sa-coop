@@ -1,7 +1,7 @@
 // coop-server.exe — SA:COOP relay server.
 //
 //   coop-server.exe [--port N] [--name "..."] [--password X] [--world <save file> | --new-game] [--host <nick>]
-//                   [--friendly-fire 0|1] [--config server.ini] [--data <dir>]
+//                   [--friendly-fire 0|1] [--max 2..8] [--config server.ini] [--data <dir>]
 #include <windows.h>
 
 #include <cstdio>
@@ -36,7 +36,9 @@ static void WriteDefaultConfig(const std::wstring& path) {
         "port = 7788\r\n"
         "; Оставьте пустым, если пароль не нужен.\r\n"
         "password =\r\n"
-        "max_players = 2\r\n"
+        "; Сколько игроков в игре, вместе с хостом: от 2 до 8. С 7 и больше возможны рассинхроны и высокая нагрузка.\r\n"
+        "; Сервер, который запускает игра (меню F9), берёт число из её настройки.\r\n"
+        "max_players = 4\r\n"
         "; Ник игрока, который всегда будет хостом. Если пусто, хостом становится тот, кто зашёл первым.\r\n"
         "host =\r\n"
         "motd = Добро пожаловать! Чтобы увидеть список команд, напишите /help.\r\n"
@@ -77,7 +79,7 @@ int wmain(int argc, wchar_t** argv) {
     cfg.name = ini.Get("server", "name", cfg.name);
     cfg.port = (uint16_t)ini.GetInt("server", "port", kDefaultPort);
     cfg.password = ini.Get("server", "password", "");
-    cfg.maxPlayers = ini.GetInt("server", "max_players", 2);
+    cfg.maxPlayers = ini.GetInt("server", "max_players", cfg.maxPlayers);
     cfg.hostName = ini.Get("server", "host", "");
     cfg.motd = ini.Get("server", "motd", cfg.motd);
     cfg.friendlyFire = ini.GetBool("server", "friendly_fire", false);

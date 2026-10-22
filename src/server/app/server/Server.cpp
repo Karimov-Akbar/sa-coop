@@ -20,10 +20,10 @@ static constexpr uint32_t kColorError = 0xFF6464FF;
 bool Server::Start(const Config& cfg) {
     m_cfg = cfg;
     if (m_cfg.maxPlayers < 1) m_cfg.maxPlayers = 1;
-    if (m_cfg.maxPlayers > kGamePlayers) {
-        LOGW("В max_players указано %d, но игра поддерживает только %d игроков. Мест будет %d.", m_cfg.maxPlayers, kGamePlayers,
-             kGamePlayers);
-        m_cfg.maxPlayers = kGamePlayers;
+    if (m_cfg.maxPlayers > kMaxPlayers) {
+        LOGW("В max_players указано %d, но игра поддерживает только %d игроков. Мест будет %d.", m_cfg.maxPlayers, kMaxPlayers,
+             kMaxPlayers);
+        m_cfg.maxPlayers = kMaxPlayers;
     }
     EnsureDirectory(m_cfg.dataDir + L"profiles");
     EnsureDirectory(m_cfg.dataDir + L"world");

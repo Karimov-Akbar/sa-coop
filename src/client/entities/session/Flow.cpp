@@ -103,6 +103,7 @@ bool StartServerProcess(const std::wstring& worldPath, bool newGame) {
     if (!worldPath.empty()) cmd += L" --world \"" + worldPath + L"\"";
     if (newGame) cmd += L" --new-game";
     cmd += cfg.friendlyFire ? L" --friendly-fire 1" : L" --friendly-fire 0";  // the checkbox wins over server.ini
+    cmd += L" --max " + std::to_wstring(cfg.maxPlayers);                      // so does the number of players
 
     if (!g_serverJob) {
         g_serverJob = CreateJobObjectW(nullptr, nullptr);
@@ -204,6 +205,7 @@ void SaveConnectSettings() {
     ini.SetInt("connect", "port", cfg.port);
     ini.Set("connect", "password", cfg.password);
     ini.SetInt("connect", "friendly_fire", cfg.friendlyFire);
+    ini.SetInt("connect", "max_players", cfg.maxPlayers);
     ini.Save(cfg.iniPath);
 }
 
