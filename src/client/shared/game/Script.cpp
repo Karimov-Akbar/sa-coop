@@ -10,6 +10,7 @@ constexpr size_t kRunningScriptSize = 0xE0;
 constexpr uintptr_t kRunningScriptInit = 0x4648E0;        // CRunningScript::Init
 constexpr uintptr_t kProcessOneCommand = 0x469EB0;        // CRunningScript::ProcessOneCommand
 constexpr uintptr_t kScriptParams = 0xA43C78;             // ScriptParams[32]
+constexpr uintptr_t kMissionLocals = 0xA48960;            // CTheScripts::LocalVariablesForCurrentMission
 constexpr int kOffBaseIP = 0x10, kOffCurIP = 0x14, kOffLocals = 0x3C, kOffCondResult = 0xC5;
 constexpr int kOffUseMissionCleanup = 0xC6, kOffIsMission = 0xDC, kOffName = 0x08;
 
@@ -85,6 +86,39 @@ Cmd& Cmd::End() {
     uint8_t t = 0;
     Put(&t, 1);
     return *this;
+}
+
+const uint8_t* NextArg(const uint8_t* a) {
+    switch (a[0]) {
+        case 0x01: case 0x06: return a + 5;                                               // int32, float
+        case 0x02: case 0x03: case 0x0A: case 0x0B: case 0x10: case 0x11: return a + 3;  // variables
+        case 0x04: return a + 2;                                                          // int8
+        case 0x05: return a + 3;                                                          // int16
+        case 0x07: case 0x08: case 0x0C: case 0x0D: case 0x12: case 0x13: return a + 7;  // arrays
+        case 0x09: return a + 9;                                                          // 8-byte string
+        case 0x0E: return a + 2 + a[1];                                                   // string of a length
+        case 0x0F: return a + 17;                                                         // 16-byte string
+    }
+    return nullptr;
+}
+
+int32_t* OutVar(const uint8_t* a) {
+    if (!a) return nullptr;
+    uint16_t n = *(const uint16_t*)(a + 1);
+    if (a[0] == 0x02) return (int32_t*)(addr::ScriptSpace + n);
+    if (a[0] == 0x03) return (int32_t*)(kMissionLocals + (uintptr_t)n * 4);  // CTheScripts::LocalVariablesForCurrentMission
+    return nullptr;
+}
+
+bool ArgValue(const uint8_t* a, int32_t& value) {
+    if (!a) return false;
+    switch (a[0]) {
+        case 0x01: return value = *(const int32_t*)(a + 1), true;
+        case 0x04: return value = (int8_t)a[1], true;
+        case 0x05: return value = *(const int16_t*)(a + 1), true;
+    }
+    int32_t* var = OutVar(a);
+    return var && (value = *var, true);
 }
 
 bool Running() { return g_depth > 0; }

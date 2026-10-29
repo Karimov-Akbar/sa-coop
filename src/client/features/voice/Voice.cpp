@@ -42,6 +42,9 @@ constexpr int kInBuffers = 8, kOutBuffers = 16;
 constexpr size_t kMaxQueue = 12;  // 240 ms: older audio is dropped
 constexpr size_t kStartQueue = 3;  // 60 ms of buffering before a stream starts
 using Frame = std::array<int16_t, kFrame>;
+// the microphone's icon (ui/microphone.svg, in coop.rc as MICROPHONE): a character of the fonts (ui::kMicIcon)
+using ui::kMicIcon;
+using ui::kMicIconUtf8;
 
 WAVEFORMATEX Format16k() {
     WAVEFORMATEX f{};
@@ -92,6 +95,13 @@ public:
 
     void OnInstallHooks() override {
         Net().SetHandler(proto::G_VOICE, [](uint8_t from, Reader& r) { Instance().Handle(from, r); });
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)&kMicIcon, &self);
+        if (HRSRC res = self ? FindResourceW(self, L"MICROPHONE", (LPCWSTR)RT_RCDATA) : nullptr)
+            if (HGLOBAL data = LoadResource(self, res))
+                m_micIcon = ui::Gfx().SetIcon(kMicIcon, std::string_view((const char*)LockResource(data), SizeofResource(self, res)));
+        if (!m_micIcon) LOGW("Voice: the microphone's icon could not be read: a dot instead");
         Ini ini;  // test setups: a 440 Hz tone instead of the microphone (no device needed), transmitted all the time
         ini.Load(Cfg().iniPath);
         m_testTone = ini.GetBool("debug", "voice_test_tone", false);
@@ -120,6 +130,11 @@ public:
 
     void OnPostProcess() override {
         if (!Net().Online()) return;
+        if (m_audioOk < 0 && !m_audioOffTold) {
+            m_audioOffTold = true;
+            ui::TheChat().AddError(TR("Голосовой чат выключен: звуковой драйвер Windows падает при открытии микрофона. Обновите драйвер звука.",
+                                      "Voice chat is off: the Windows sound driver crashes when the microphone opens. Update the sound driver."));
+        }
         PumpCapture();
         if (m_rxFrames && NowMs() - m_rxLogMs > 5000) {
             m_rxLogMs = NowMs();
@@ -134,12 +149,13 @@ public:
         auto& g = ui::Gfx();
         float s = g.Scale(), y = g.Height() * 0.62f;
         if (m_transmitting) {
-            g.Text(ui::FONT_SMALL, 24 * s, y, TR("{FF5050}●{FFFFFF} Микрофон", "{FF5050}●{FFFFFF} Mic"), 0xFFFFFFFF, ui::TEXT_OUTLINE);
+            g.Text(ui::FONT_SMALL, 24 * s, y, Format("{FF5050}%s{FFFFFF} %s", m_micIcon ? kMicIconUtf8 : "●", TR("Микрофон", "Mic")),
+                   0xFFFFFFFF, ui::TEXT_OUTLINE);
             y += g.LineHeight(ui::FONT_SMALL);
         }
         for (auto& [id, heard] : m_heard)  // who is heard now, wherever they are (the name tag needs them in sight)
             if (Speaking(id)) {
-                g.Text(ui::FONT_SMALL, 24 * s, y, "{FFDC50}((•)){FFFFFF} " + Net().PeerName(id), 0xFFFFFFFF, ui::TEXT_OUTLINE);
+                g.Text(ui::FONT_SMALL, 24 * s, y, ui::TalkingMark() + Net().PeerName(id), 0xFFFFFFFF, ui::TEXT_OUTLINE);
                 y += g.LineHeight(ui::FONT_SMALL);
             }
     }
@@ -160,12 +176,37 @@ private:
         if (m_threadStarted) return;
         m_threadStarted = true;
         std::thread([this] {
-            for (;;) {
+            m_audioOk = ProbeAudio() ? 1 : -1;
+            while (m_audioOk > 0) {
                 Sleep(5);
                 CaptureWork();
                 PlaybackWork();
             }
         }).detach();
+    }
+
+    // The first WinMM call loads Windows' audio drivers into the game (winmmbase.dll, wdmaud.drv): on some machines they
+    // crash there, and the game went down the moment its player joined (#80, 0.2.7 the same). coop-server.exe makes the
+    // same calls first in a process of its own: its crash keeps the voice off here. A check that cannot run or hangs
+    // changes nothing (a hang would stall this thread only).
+    static bool ProbeAudio() {
+        std::wstring exe = Cfg().coopDir + L"coop-server.exe";
+        std::wstring cmd = L"\"" + exe + L"\" --probe-audio";
+        STARTUPINFOW si{};
+        si.cb = sizeof si;
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            LOGW("Voice: the sound check did not start (error %lu)", GetLastError());
+            return true;
+        }
+        DWORD wait = WaitForSingleObject(pi.hProcess, 8000), code = 0;
+        if (wait == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 0);
+        else GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        if (code < 0xC0000000) return true;
+        LOGW("Voice: Windows' sound drivers crashed in the sound check (%08lX): the voice chat stays off", code);
+        return false;
     }
 
     // ---- the audio thread
@@ -379,8 +420,8 @@ private:
         uint16_t seq = r.U16();
         std::vector<uint8_t> data = r.Bytes(1024);
         std::vector<int16_t> pcm;
-        if (!r.Ok() || from == Net().MyId() || !Cfg().voiceEnabled || !adpcm::Decode(data.data(), data.size(), pcm) ||
-            pcm.size() != kFrame)
+        if (!r.Ok() || from == Net().MyId() || !Cfg().voiceEnabled || m_audioOk < 0 ||
+            !adpcm::Decode(data.data(), data.size(), pcm) || pcm.size() != kFrame)
             return;
         Heard& h = m_heard[from];
         if (h.hasSeq && (int16_t)(seq - h.lastSeq) <= 0) return;  // late or duplicate
@@ -416,6 +457,9 @@ private:
     bool m_captureGap = false;     // a buffer came back short: the encoder starts over
     std::map<uint8_t, Incoming> m_incoming;
     std::atomic<bool> m_wantMic{false}, m_keyHeld{false}, m_micFailed{false};
+    std::atomic<int> m_audioOk{0};  // the sound check: 0 not yet, 1 the devices may be used, -1 they crash
+    bool m_micIcon = false;          // the icon is in the fonts
+    bool m_audioOffTold = false;
     bool m_threadStarted = false;  // the game's thread's
 
     // the audio thread's

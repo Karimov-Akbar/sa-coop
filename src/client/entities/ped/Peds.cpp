@@ -158,6 +158,21 @@ void* FindTask(CPed* ped, int type) {
     return intel ? CallMethod<0x681740, void*>((uint8_t*)intel + 4, type) : nullptr;
 }
 
+// a player getting in at the wheel of this vehicle here, ours or the other one's copy (its enter task's car at +0x0C):
+// the vehicle's own count (CVehicle::m_nNumGettingIn) starts only at the door
+bool PlayerGettingIn(CVehicle* v) {
+    if (Field<uint8_t>(v, 0x485)) return true;
+    auto entering = [v](CPed* p) {
+        for (int t : {TASK_ENTER_CAR_AS_DRIVER, 713 /* TASK_ENTER_CAR_AS_DRIVER_TIMED */})
+            if (void* task = p ? FindTask(p, t) : nullptr; task && Field<CVehicle*>(task, 0x0C) == v) return true;
+        return false;
+    };
+    if (entering(FindPlayerPed(0))) return true;
+    for (auto& [id, rp] : Players::Instance().All())
+        if (entering(rp.ped)) return true;
+    return false;
+}
+
 // The action animation the ped plays: anything but its own walk/run/idle set (CPed::m_nAnimGroup).
 // Full-body animations while moving are turns and start/stop steps, also locomotion. A partial one (a punch, a guard)
 // plays over a full-body one (the fight stance) and is the action while it lasts: the mirror keeps the stance under it.
@@ -278,14 +293,34 @@ void __fastcall HookVehCollisionResponse(void* handler, void* edx, void* e, void
 
 // What a script other than the host's story mission makes, the same script makes in the other game for its own player
 // (Ammu-Nation's seller, the range's shooters, a casino's dealers, the gym's boxers, an airport's guard): announced as
-// well, each player saw two of everyone on the same spots. Each game keeps its own, as with pickups.
+// well, each player saw two of everyone on the same spots. Each game keeps its own, as with pickups. Big Smoke's
+// courier runs in the host's game alone (Courier.cpp): its people go over as the host's others do.
 using SetCreatedByFn = void(__fastcall*)(CPed*, void*, uint8_t);
 SetCreatedByFn g_origSetCreatedBy = nullptr;
 void __fastcall HookSetCharCreatedBy(CPed* ped, void* edx, uint8_t by) {
     g_origSetCreatedBy(ped, edx, by);
     void* s = CurrentScript();
-    if (by == 2 /* PED_MISSION */ && s && !game::script::Running() && !StoryMission(s))
+    // A burglary house's residents (InteriorGroup_c::SetupHousePeds: a BURGLAR brain each) come with the house in both
+    // games, and the other game's copies stood in the same beds: the resident twice, one floating. Each game keeps its
+    // own outside the host's story mission ("Home Invasion" shares the colonel's family as before).
+    if (by == 2 && !(Net().IsHost() ? HostReplicating() : HostMissionRecent(0)) &&
+        CallMethod<0x598240, void*>((void*)0xBAF670, ped))  // InteriorManager_c::GetPedsInteriorGroup (g_interiorMan)
+        Peds::Instance().MarkLocal(ped, false);
+    else if (by == 2 /* PED_MISSION */ && s && !game::script::Running() && !StoryMission(s) && !CourierThread(s))
         Peds::Instance().MarkLocal(ped, Field<uint8_t>(s, 0xDC) != 0);  // m_bIsMission: a side job's
+}
+
+// A ped's shot. Its owner's game told its shots by the clip emptying, and the infinite ammo cheat (FULLCLIP,
+// CCheat::m_aCheatsActive[72], each game its own) keeps every ped's clip full (0x7428A6): the host's people only aimed in
+// the partner's game (Holder, 29.10), and that game's count of its copies' shots read 0.
+using WeaponFireFn = bool(__fastcall*)(CWeapon*, void*, CEntity*, CVector*, CVector*, CEntity*, CVector*, CVector*);
+WeaponFireFn g_origWeaponFire = nullptr;
+bool __fastcall HookWeaponFire(CWeapon* w, void* edx, CEntity* by, CVector* origin, CVector* muzzle, CEntity* target,
+                               CVector* at, CVector* alt) {
+    bool fired = g_origWeaponFire(w, edx, by, origin, muzzle, target, at, alt);
+    if (fired && w->type >= 22 && w->type <= 38 && by && by->IsPed() && Net().Online())  // the guns: pistol to minigun
+        Peds::Instance().ShotFired((CPed*)by);
+    return fired;
 }
 
 // The frame update of a ped's animations takes the first one without looking (velocity extraction, 0x4D1750), so a
@@ -296,6 +331,18 @@ bool HasLastingBodyAnim(CPed* ped) {
     for (void* a = anim::First(ped->RwObject()); a; a = anim::Next(a))
         if (!(anim::Flags(a) & anim::F_PARTIAL) && anim::BlendDelta(a) >= 0.0f) return true;
     return false;
+}
+
+// Our gym (GYMLS, GYMSF, GYMLV) has its trainer in the ring with our player: the fight (TASK_KILL_CHAR_ON_FOOT at the
+// player after SET_CHAR_HEALTH 1000; LS's sparring pair, going for a player in its corner, keeps 100) and, after the
+// first win, a new trainer for the lesson (widescreen, nobody else within 8 m). Kept local as the gym's other people,
+// ours boxed nobody in the other game ("дерёшься с невидимым", 28.10).
+bool GymOpponent(CPed* ped, CPed* me) {
+    void* m = RunningMission();
+    if (!me || !m || _strnicmp((const char*)m + 0x08, "gym", 3)) return false;
+    void* kill = FindTask(ped, 1000);  // TASK_COMPLEX_KILL_PED_ON_FOOT
+    if (kill && Field<CPed*>(kill, 0x10) == me && ped->Health() > 100.0f) return true;  // its target
+    return cam::WideScreenOn() && !IsPedDead(me) && (ped->GetPosition() - me->GetPosition()).Length() < 8.0f;
 }
 }  // namespace
 
@@ -362,6 +409,7 @@ void Peds::OnInstallHooks() {
     mem::HookFn(0x4C0BD0, &HookVehCollisionResponse, &g_origVehCollision, "CEventHandler::ComputeVehiclePotentialCollisionResponse");
     mem::HookFn(0x444530, &HookTellGangMembersTo, &g_origTellGang, "CGangWars::TellGangMembersTo");
     mem::HookFn(0x5E47E0, &HookSetCharCreatedBy, &g_origSetCreatedBy, "CPed::SetCharCreatedBy");
+    mem::HookFn(0x742300, &HookWeaponFire, &g_origWeaponFire, "CWeapon::Fire");
     Net().SetHandler(proto::G_PED_CREATE, [](uint8_t from, Reader& r) { Instance().HandleCreate(from, r); });
     Net().SetHandler(proto::G_PED_REMOVE, [](uint8_t from, Reader& r) { Instance().HandleRemove(from, r); });
     Net().SetHandler(proto::G_PED_SYNC, [](uint8_t from, Reader& r) { Instance().HandleSync(from, r); });
@@ -458,15 +506,18 @@ PedSyncState Peds::Capture(NetPed& np) {
     if (!enter) enter = FindTask(ped, TASK_ENTER_CAR_AS_PASSENGER);
     if (enter) {
         auto* target = Field<CVehicle*>(enter, 0x0C);  // CTaskComplexEnterCar::m_Car
-        if (target && IsVehicleValid(target) && IsSyncableVehicle(target))
+        // m_TargetDoor once at the door, before that the door the go-to-door task was given (m_TargetSeat). Neither for
+        // a passenger of any seat (AMBULAN's patients, seat -1): the game picks the door at the car. Sent as seat 0, the
+        // copy went to the front door and was warped to the back seat later (28.10): until then it walks after its owner.
+        int door = Field<int32_t>(enter, 0x14) ? Field<int32_t>(enter, 0x14) : Field<int32_t>(enter, 0x1C);
+        if (target && IsVehicleValid(target) && IsSyncableVehicle(target) && (asDriver || door))
             if (NetVehicle* nv = Vehicles::Instance().EnsureNetworked(target)) {
                 s.flags |= PedSyncState::F_ENTERING;
                 s.vehNetId = nv->netId;
-                // m_TargetDoor once at the door, before that the door the go-to-door task was given (m_TargetSeat)
-                int door = Field<int32_t>(enter, 0x14) ? Field<int32_t>(enter, 0x14) : Field<int32_t>(enter, 0x1C);
                 s.seat = asDriver ? -1 : (int8_t)SeatOfTargetDoor(door);
+                return s;
             }
-        return s;
+        if (target && (asDriver || door)) return s;
     }
 
     if (void* gun = FindTask(ped, TASK_SIMPLE_USE_GUN)) {
@@ -533,6 +584,7 @@ void Peds::ScanOwned() {
     uint64_t now = NowMs();
 
     for (auto it = m_local.begin(); it != m_local.end();) it = GetPed(it->first) ? std::next(it) : m_local.erase(it);
+    HideTwins();
 
     // peds this game would have dropped (CPopulation::ManagePed) while the partner is nearer go to the partner's game
     for (auto& [ped, to] : m_giveAway)
@@ -581,8 +633,10 @@ void Peds::ScanOwned() {
                 ped->GetPosition().z > 500.0f && (!me || me->AreaCode() == 0))
                 continue;
             // made by a script each game runs for its own player (MarkLocal); one that drives off is ours to show, and a
-            // side job's people (a taxi fare, the vigilante's criminals) are shown out in the street
-            if (auto it = m_local.find(GetPedRef(ped)); it != m_local.end() && !ped->InVehicle() && (!it->second || AreaOf(ped) != 0))
+            // side job's people (a taxi fare, the vigilante's criminals) are shown out in the street, the gym's trainer in
+            // its ring with our player
+            if (auto it = m_local.find(GetPedRef(ped)); it != m_local.end() && !ped->InVehicle() &&
+                (!it->second || (AreaOf(ped) != 0 && !GymOpponent(ped, me))))
                 continue;
             if (CVehicle* v = ped->VehicleIfIn(); v && !IsSyncableVehicle(v)) continue;
             uint16_t id;
@@ -669,14 +723,17 @@ CPed* Peds::SpawnMirror(NetPed& np) {
         if (told.insert(model).second) LOGW("Ped %04X of player %d has model %d this game lacks: its copy is not shown", np.netId, np.owner, model);
         return nullptr;
     }
+    bool missionPed = np.pedType >= 24 /* PED_TYPE_MISSION1.. */ || (np.model >= kSpecialFirst && np.model <= kSpecialLast);
     if (!IsModelLoaded(model)) {
-        // streamed in the background, the spawn is retried (a blocking load per ped stalls the frame)
-        RequestModel(model, 0);
+        // streamed in the background, the spawn is retried (a blocking load per ped stalls the frame). A request with no
+        // flag lasts one CStreaming::Update (its PurgeRequestList): the model of a mission's person this game has nowhere
+        // lost that race for a minute (the dealer of "Cleaning the Hood", BMYDRUG, 28.10). Such one goes first; the flag
+        // clears once its read starts.
+        RequestModel(model, missionPed ? 0x10 /* PRIORITY_REQUEST */ : 0);
         return nullptr;
     }
     // the other game's passers-by leave room for its mission's people: the soldiers of "Robbing Uncle Sam", announced last,
     // never came while the street's copies filled the pool
-    bool missionPed = np.pedType >= 24 /* PED_TYPE_MISSION1.. */ || (np.model >= kSpecialFirst && np.model <= kSpecialLast);
     if (!HasRoom(PedPool(), missionPed ? kKeepPeds : kKeepPeds + 6, "ped") && !FreeRandomPed() && !(missionPed && EvictRandomCopy()))
         return nullptr;
     // A copy is of its owner's type where the class stays a civilian's (CREATE_CHAR makes a CCivilianPed for all but
@@ -799,8 +856,9 @@ bool Peds::QueueGiveAway(CPed* ped, uint8_t to, bool noGround) {
 }
 
 // Our player wants one of the other game's people: a Grove member at the group key (CPlayerPed::ProcessGroupBehaviour
-// recruits only its own game's PED_TYPE_GANG2, a copy is a civilian), a hooker next to our stopped car (she solicits
-// only FindPlayerPed). Its owner hands it over (G_PED_OWNER naming ourselves is the request), and it joins us here.
+// recruits PED_TYPE_GANG2, and a copy has its owner's type since 0.3.0: Players keeps the game's own recruit off copies),
+// a hooker next to our stopped car (she solicits only FindPlayerPed). Its owner hands it over (G_PED_OWNER naming
+// ourselves is the request), and it joins us here.
 void Peds::AskForTheirs() {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me || !core::IsPlayerReady()) return;
@@ -942,6 +1000,10 @@ void Peds::ApplyMirror(NetPed& np) {
     if (st.flags & PedSyncState::F_DEAD) {
         if (!np.deadApplied) {
             np.deadApplied = true;
+            // dead on foot in its game (a cyclist shot falls off its bike there), still riding here: it died in the seat,
+            // and the body sat on the bike's copy and flew about with it (Hh hh, 26.10). Off first, where its body lies.
+            if (ped->InVehicle() && !(st.flags & PedSyncState::F_IN_VEHICLE))
+                Cmd(0x0362).I(np.handle).F(st.pos.x).F(st.pos.y).F(st.pos.z - 1.0f).Run();  // WARP_CHAR_FROM_CAR_TO_COORD (feet)
             Cmd(0x02AB).I(np.handle).I(0).I(0).I(0).I(0).I(0).Run();  // proofs off so it can die
             bool ours = now - np.lastHitMs < 2000;
             if (ours) {  // our player killed it: the loot falls here (its owner drops none)
@@ -978,7 +1040,6 @@ void Peds::ApplyMirror(NetPed& np) {
     // took the mission's bike over, and on the owner Smoke sat on what had become a copy and went nowhere
     uint32_t& pf = ped->PedFlags();
     pf = (st.flags & PedSyncState::F_NO_DRAG) ? pf | (1u << 29) : pf & ~(1u << 29);
-    if (CWeapon& w = ped->ActiveWeapon(); w.type == np.lastWeapon && w.ammoInClip < np.lastClip) ++m_mirrorShots;
     np.lastClip = ped->ActiveWeapon().ammoInClip;
     np.lastWeapon = (uint8_t)ped->ActiveWeapon().type;
 
@@ -988,10 +1049,14 @@ void Peds::ApplyMirror(NetPed& np) {
             int wmodel = -1;
             Cmd(0x0781).I(st.weapon).Out(&wmodel).Run();  // GET_WEAPONTYPE_MODEL
             if (wmodel > 0 && !IsModelLoaded(wmodel)) {
-                RequestModel(wmodel, 0);
+                // a mission person's gun goes first: with no flag the request lasts one streaming update (see SpawnMirror)
+                bool missionPed = np.pedType >= 24 /* PED_TYPE_MISSION1.. */ || (np.model >= kSpecialFirst && np.model <= kSpecialLast);
+                RequestModel(wmodel, missionPed ? 0x10 /* PRIORITY_REQUEST */ : 0);
                 return;
             }
-            Cmd(0x01B2).I(np.handle).I(st.weapon).I(500).Run();  // GIVE_WEAPON_TO_CHAR
+            // 25000: a ped's ammo from there on is never spent (0x7428BA), its owner decides when it shoots; 500 ran out
+            // in a long fight, and the copy only aimed after it
+            Cmd(0x01B2).I(np.handle).I(st.weapon).I(25000).Run();  // GIVE_WEAPON_TO_CHAR
         }
         Cmd(0x01B9).I(np.handle).I(st.weapon).Run();  // SET_CURRENT_CHAR_WEAPON
     }
@@ -1068,6 +1133,19 @@ void Peds::ApplyMirror(NetPed& np) {
         return;
     }
     if (ped->InVehicle()) {
+        // in before its owner, who still walks up to this car (a mission's people walk, the copy's task runs): it stays.
+        // Taken for "out with no leave task", it was warped out, stood by the door and was warped in again when its owner
+        // sat down (28.10: "они сначала садятся, потом телепортируются").
+        if (NetVehicle* ev = (st.flags & PedSyncState::F_ENTERING) ? Vehicles::Instance().Find(st.vehNetId) : nullptr;
+            ev && ev->veh == ped->Vehicle())
+            return;
+        // pulled out in its game by a player whose copy here gets in now, or ours (a jack): that jack here pulls it out with
+        // the game's own animation. Warped out first, it stood up by the door with none (27.10).
+        if (PlayerGettingIn(ped->Vehicle()) && (!np.jackWaitMs || now - np.jackWaitMs < kCarTaskGraceMs)) {
+            if (!np.jackWaitMs) np.jackWaitMs = now;
+            return;
+        }
+        np.jackWaitMs = 0;
         // out with no leave task in its game (thrown off a bike, out of a crash, pulled out): out here at once, where it
         // is (TASK_LEAVE_CAR climbed off politely, or sat on a sliding bike for seconds)
         if (!np.leaveTaskMs || now - np.leaveTaskMs > kCarTaskGraceMs) {
@@ -1076,6 +1154,7 @@ void Peds::ApplyMirror(NetPed& np) {
         }
         return;
     }
+    np.jackWaitMs = 0;  // out by the jack: a later one waits again
     // crouching as its owner (behind cover in a shootout): the flag came but was never applied
     if (bool duck = (st.flags & PedSyncState::F_DUCKING) != 0; duck != ped->IsDucking() && now - np.duckMs > 400) {
         np.duckMs = now;
@@ -1297,7 +1376,7 @@ void Peds::OnPostProcess() {
             ++mirrors;
             spawned += np.ped != nullptr;
             acting += np.animBlock != kNoAnim;
-            aiming += np.gunMode != 0;
+            aiming += np.gunMode != 0 && IsAlive(np) && !IsPedDead(np.ped);  // the dead keep their last aim
             gunTasks += IsAlive(np) && (FindTask(np.ped, TASK_SIMPLE_USE_GUN) || FindTask(np.ped, TASK_SIMPLE_GANG_DRIVEBY));
         }
         LOGI("Peds: %d announced, %d mirrors (%d spawned, %d animated, %d aiming, %d with a gun task, %d shots)", owned,
@@ -1316,6 +1395,9 @@ void Peds::OnSessionEnd() {
     m_byId.clear();
     m_byPtr.clear();
     m_wasReady = false;
+    for (int ref : m_hiddenTwins)  // the copies that stood on them are this game's people now
+        if (CPed* p = GetPed(ref)) p->Flags() |= 0x80u;
+    m_hiddenTwins.clear();
 }
 
 // The player left: its people stay in this game as its own (deleted, they left its cars driverless in the street, as MTA
@@ -1349,10 +1431,43 @@ bool Peds::SeatClaimed(CVehicle* v, int seat) {
     return false;
 }
 
+// "Ryder": the host's JFUD deletes the pizzeria's cashier for the mission, which puts its own one 0.9 m away. The
+// partner's JFUD (it ran if its player came in by the door) kept its cashier, which stood calm beside the copy with its
+// hands up: "два НПС на месте одного" (28.10). Ours of a script of this game is hidden while a copy of the host's
+// mission person of its model stands on it, and shown again when they part.
+void Peds::HideTwins() {
+    for (auto it = m_hiddenTwins.begin(); it != m_hiddenTwins.end();) it = m_local.count(*it) ? std::next(it) : m_hiddenTwins.erase(it);
+    bool mission = !Net().IsHost() && HostMissionRecent(0);
+    for (auto& [ref, sideJob] : m_local) {
+        CPed* own = GetPed(ref);
+        if (!own || sideJob) continue;
+        bool twin = false;
+        for (auto& [id, np] : m_byId)
+            twin = twin || (mission && np.owner == Net().HostId() && np.pedType >= 24 /* PED_TYPE_MISSION1.. */ && IsAlive(np) &&
+                            np.ped->ModelIndex() == own->ModelIndex() && (np.ped->GetPosition() - own->GetPosition()).Length() < 1.5f);
+        if (twin == (m_hiddenTwins.count(ref) != 0)) continue;
+        if (twin) {
+            own->Flags() &= ~0x80u;  // CEntity::m_bIsVisible
+            m_hiddenTwins.insert(ref);
+            LOGI("Ped %d (model %d) of this game hidden: a copy of the host's mission person stands on it", ref, (int)own->ModelIndex());
+        } else {
+            own->Flags() |= 0x80u;
+            m_hiddenTwins.erase(ref);
+        }
+    }
+}
+
+void Peds::ShotFired(CPed* ped) {
+    NetPed* np = Find(ped);
+    if (!np) return;
+    if (np->owner == Net().MyId()) np->lastShotMs = NowMs();
+    else ++m_mirrorShots;
+}
+
 void Peds::MarkLocal(CPed* ped, bool sideJob) {
     m_local[GetPedRef(ped)] = sideJob;
-    LOGD("Ped %d (model %d) made by script %.8s stays this game's", GetPedRef(ped), (int)ped->ModelIndex(),
-         (const char*)CurrentScript() + 0x08);
+    void* s = CurrentScript();  // none for a house's residents
+    LOGD("Ped %d (model %d) made by %.8s stays this game's", GetPedRef(ped), (int)ped->ModelIndex(), s ? (const char*)s + 0x08 : "a house");
 }
 
 void Peds::OnGameStarted() {
@@ -1360,6 +1475,7 @@ void Peds::OnGameStarted() {
     m_byPtr.clear();
     m_giveAway.clear();
     m_local.clear();
+    m_hiddenTwins.clear();
     m_wasReady = false;  // ask the partner for its peds again once the player is ready
 }
 

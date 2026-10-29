@@ -152,6 +152,9 @@ VehicleState VehicleState::Capture(game::CVehicle* v) {
         s.extras |= X_BIKE;
         s.lean = game::Field<float>(v, 0x648);     // m_RideAnimData.LeanAngle
         s.leanFwd = game::Field<float>(v, 0x650);  // LeanFwd
+        // the rider's quick taps on the pedals: only a player's bike counts them (CBmx::ProcessAI, 0x6C14B2), and
+        // CBmx::ProcessDrivingAnims stands its rider up on the pedals by this alone
+        if (type == game::VEHICLE_TYPE_BMX && game::Field<float>(v, 0x818) > 5.0f) s.flags |= F_SPRINT;
     }
     // CHeli::ProcessControl (0x6C7050) lights it for the police AI or a player's Police Maverick (the horn)
     if (type == game::VEHICLE_TYPE_HELI && game::Field<uint8_t>(v, 0xA11) && game::Field<float>(v, 0xA00) > 0.0f) {
@@ -232,6 +235,8 @@ void VehicleSpawn::Write(Writer& w) const {
     w.I8(area);
     w.U8(lockState);
     w.U8(script);
+    w.I8(extras[0]);
+    w.I8(extras[1]);
 }
 
 bool VehicleSpawn::Read(Reader& r) {
@@ -245,6 +250,8 @@ bool VehicleSpawn::Read(Reader& r) {
     area = r.I8();
     lockState = r.U8();
     script = r.U8() != 0;
+    extras[0] = r.I8();
+    extras[1] = r.I8();
     return r.Ok();
 }
 

@@ -14,8 +14,11 @@
 #include "common/lib/util/Util.h"
 #include "entities/player/Players.h"
 #include "entities/session/Flow.h"
+#include "features/story/contest/Contest.h"
 #include "features/story/missions/Missions.h"
+#include "features/teleport/Teleport.h"
 #include "pages/connect-menu/ConnectMenu.h"
+#include "pages/players-menu/PlayersMenu.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -126,8 +129,9 @@ void RenderOverlay() {
     ui::In().UpdateMouse(g.Width(), g.Height());
     if (IsPlayerReady())
         for (auto* m : Modules()) m->OnRender();
-    ui::RenderOverlay();
     ui::TheChat().Render();
+    ui::RenderOverlay();  // after the chat: the contest's board on top hides the ends of its longest lines
+    ui::RenderPlayersMenu();
     ui::RenderConnectMenu();
     g.End();
     ui::In().EndFrame();
@@ -311,6 +315,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "load_slot = 0\r\n"
         "; Для хоста: поставьте 1, чтобы игроки могли ранить и убивать друг друга. Это галочка в окне F9.\r\n"
         "friendly_fire = 0\r\n"
+        "; Для хоста: поставьте 0, чтобы напарники не могли перемещаться командами /tp и /tphere. Это галочка в окне F9.\r\n"
+        "partner_teleport = 1\r\n"
         "\r\n"
         "[game]\r\n"
         "; Поставьте 1, чтобы играть в окне.\r\n"
@@ -421,11 +427,22 @@ bool OnKeyDown(int vk, bool repeat) {
         }
         return true;  // the menu owns the keyboard while open
     }
+    if (ui::IsPlayersMenuVisible()) {
+        if ((vk == VK_ESCAPE || vk == cfg.playerListKey) && !repeat) ui::SetPlayersMenuVisible(false);
+        return true;  // its amount box takes the keys while it is open
+    }
     if (ui::TheChat().IsOpen()) return true;
     if (repeat) return false;
     if (vk == VK_ESCAPE && CutsceneSkipDecline()) return true;  // "watch on", not the pause menu
-    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && SideCallKey(vk == 'Y')) return true;  // a side activity's call
+    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && (contest::Key(vk) || teleport::Key(vk == 'Y') || SideCallKey(vk == 'Y')))
+        return true;  // a call, a request
+    if (vk == 'U' && !game::MenuActive() && !typingCheat && contest::Key(vk)) return true;  // a contest's challenge
     if (vk == VK_F9) {
+        // a window that cannot be drawn would only take the mouse and the keys (#26)
+        if (ui::Gfx().Failed()) {
+            LOGW("F9: the interface could not be built for this screen, the window stays closed");
+            return false;
+        }
         ui::SetConnectMenuVisible(true);
         return true;
     }
@@ -436,8 +453,8 @@ bool OnKeyDown(int vk, bool repeat) {
         PeekMessageW(&m, nullptr, WM_CHAR, WM_CHAR, PM_REMOVE);
         return true;
     }
-    if (vk == cfg.playerListKey) {
-        ui::TogglePlayerList();
+    if (vk == cfg.playerListKey && Net().Online()) {
+        ui::TogglePlayersMenu();
         return true;
     }
     if (vk == cfg.passengerKey && !inMenu && IsPlayerReady()) {
@@ -588,7 +605,9 @@ void Init(void* hModule) {
          WideToUtf8(coopDir).c_str(), WideToUtf8(cfg.iniPath).c_str());
     if (!cfg.verboseLog) log::SetMinLevel(log::Level::Info);
     InstallCrashHandler(coopDir);
-    if (cfg.verboseLog) StartHangDetector(15);
+    // for everyone, not only with verbose_log: the reports of a game frozen on a black screen (#86, #87) came without the
+    // place it stood, and the main thread's stack 15 s into a freeze goes to crash.log
+    StartHangDetector(15);
 
     // only gta_sa.exe 1.0 US is supported: every address in this mod is version specific
     wchar_t exePath[MAX_PATH];

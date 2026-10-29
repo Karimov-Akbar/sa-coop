@@ -259,6 +259,7 @@ def assemble_dist(debug):
     shutil.copy2(ROOT / "LICENSE", licenses / "SA-COOP.txt")
     shutil.copy2(ROOT / "third_party" / "enet" / "LICENSE", licenses / "ENet.txt")
     shutil.copy2(ROOT / "third_party" / "minhook" / "LICENSE.txt", licenses / "MinHook.txt")
+    shutil.copy2(ROOT / "third_party" / "fontawesome" / "LICENSE.txt", licenses / "FontAwesome.txt")  # the microphone icon
     archive = shutil.make_archive(str(ROOT / "dist" / "SA-COOP"), "zip", dist)
     print(f"dist assembled in {dist.relative_to(ROOT)} and {Path(archive).relative_to(ROOT)}")
 

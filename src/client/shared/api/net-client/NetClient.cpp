@@ -17,6 +17,7 @@ nat::Endpoint g_mapped;
 std::atomic<bool> g_stunWaiting{false};
 ENetAddress g_lanServer{};  // answer to the LAN discovery
 std::atomic<bool> g_signalFailed{false};  // the invite code's channel (ntfy.sh) did not take our address
+std::atomic<bool> g_viaCode{false};       // the last connection went by an invite code
 
 int ENET_CALLBACK Intercept(ENetHost* h, ENetEvent*) {
     const uint8_t* d = h->receivedData;
@@ -151,6 +152,7 @@ void NetClient::Poll(std::vector<Packet>& out) {
 }
 
 bool NetClient::SignalFailed() const { return g_signalFailed; }
+bool NetClient::ViaCode() const { return g_viaCode; }
 
 void NetClient::ThreadMain(std::string host, uint16_t port) {
     ENetHost* client = enet_host_create(nullptr, 1, proto::CH_COUNT, 0, 0);
@@ -165,7 +167,8 @@ void NetClient::ThreadMain(std::string host, uint16_t port) {
     ENetAddress addr{}, relay{};
     nat::Endpoint codeEp;
     uint8_t key = 0;
-    if (nat::ParseInviteCode(host, codeEp, key)) {
+    g_viaCode = nat::ParseInviteCode(host, codeEp, key);
+    if (g_viaCode) {
         addr.host = codeEp.ip;
         addr.port = codeEp.port;
         LOGI("Код приглашения: хост %s", codeEp.ToString().c_str());
@@ -193,7 +196,8 @@ void NetClient::ThreadMain(std::string host, uint16_t port) {
         m_disconnectEvent = true;
         return;
     }
-    enet_peer_timeout(peer, 0, 10000, 20000);
+    // a lossy line (2-6 %) dropped the connection now and then: 15 s before a silent peer counts as gone, 20 s at most
+    enet_peer_timeout(peer, 0, 15000, 20000);
     LOGI("Подключение к %s:%u...", host.c_str(), port);
 
     std::vector<Packet> outLocal;
@@ -222,7 +226,7 @@ void NetClient::ThreadMain(std::string host, uint16_t port) {
             peer = enet_host_connect(client, &relay, proto::CH_COUNT, 0);
             relayAt = 0;
             if (!peer) break;
-            enet_peer_timeout(peer, 0, 10000, 20000);
+            enet_peer_timeout(peer, 0, 15000, 20000);
         }
 
         ENetEvent ev;

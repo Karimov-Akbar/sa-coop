@@ -1136,20 +1136,26 @@ const Places* PlacesOf(const char* cutscene) {
 
 // May the partner stay where an earlier shot put him? People do not vanish between two shots: this one may show him
 // anywhere, cut by the frame's edge or small at the back, as long as he covers nobody, keeps out of the scene's way
-// and nobody walks into him, and CJ is still about.
+// and nobody walks into him, and the scene is still where he is. CJ walking off across the room is no reason to go
+// (it was within 9 m: he went after CJ from shot to shot, 28.10: "нап не должен перемещаться из кадра в кадр"); CJ on
+// another floor or far away is.
+const char* g_staysNo = "";  // why he did not stay (logs)
 bool Stays(const Scene& sc, const Spot& s) {
     bool seated = s.pose == POSE_SIT || s.pose == POSE_STEP;
     CVector body = BodyOf(s);
     float d = (body - sc.cj).Length2D();
-    if (d < 1.0f || d > 9.0f || std::fabs(s.ground.z - sc.floor) > 1.0f) return false;  // CJ went elsewhere, or up to him
+    if (d < 1.0f) return g_staysNo = "CJ at him", false;
+    if (d > 25.0f || std::fabs(s.ground.z - sc.floor) > 1.0f) return g_staysNo = "the scene went elsewhere", false;
     for (const Actor& a : sc.actors)
-        if ((a.feet - body).Length2D() < (seated ? 0.55f : 0.75f)) return false;
+        if ((a.feet - body).Length2D() < (seated ? 0.55f : 0.75f)) return g_staysNo = "a person on his spot", false;
     for (const Car& c : sc.cars)
-        if (c.Covers(body, c.pos, 0.6f)) return false;
-    if (AtCamera(sc.cam, body, PoseHeight(s.pose))) return false;
+        if (c.Covers(body, c.pos, 0.6f)) return g_staysNo = "a car on his spot", false;
+    if (AtCamera(sc.cam, body, PoseHeight(s.pose))) return g_staysNo = "the camera at him", false;
     Body b;
-    if (Project(body, PoseHeight(s.pose), b) && OnScreen(sc, b) && (b.depth < 1.5f || InPeoplesWay(sc, b, true) >= 0)) return false;
-    return !RateLater(sc, s, body, true).bad;
+    if (Project(body, PoseHeight(s.pose), b) && OnScreen(sc, b) && (b.depth < 1.5f || InPeoplesWay(sc, b, true) >= 0))
+        return g_staysNo = "in front of the people", false;
+    if (RateLater(sc, s, body, true).bad) return g_staysNo = "somebody walks into him later", false;
+    return true;
 }
 
 // No place in the picture and none to stay at: he stands by CJ where this shot does not look, so that a later shot
@@ -1521,8 +1527,13 @@ bool WalkFits(const Scene& sc, const Track& tr, int side) {
 }
 
 const char* g_how = "";  // how the shot's spot came about (logs)
+// The spot is out of the picture, no place in the scene (OutOfPicture, or kept from such): the next shot looks for one
+// in the picture before it keeps him there. Chosen so at the first shot of "Cleaning the Hood" (SWEET1B), he stood out
+// of the picture for all ten shots after it, seen 0% of them (28.10).
+bool g_spotOut = false;
 
 Spot Choose(const Scene& sc) {
+    g_staysNo = "";
     const Places* own = PlacesOf(g_cutscene);
     Ride ride;
     if (!(own && own->hidden)) {  // CJ rides: in his car with him
@@ -1556,11 +1567,14 @@ Spot Choose(const Scene& sc) {
             return Spot{w.feet, w.heading, POSE_WALK, (uint8_t)(side + 1)};
         }
     }
-    // a shot that shows where he stood keeps him there if it can: a jump across the cut would show. Shown at all was
-    // too little: a shoulder at the frame's edge, or a place behind a wall, kept him out of the picture for whole
-    // shots that had room for him (CAT_2's cabin); now half of the shot at least.
+    // A shot keeps him where he stood whenever it can, seen in it or not. Kept only where half of the next shot showed
+    // him, he went where each shot did: from the wall to Sweet and on to the back of the room at every cut ("второй
+    // Сиджей постоянно телепортируется", 28.10; the players chose one place for the whole scene).
+    // Only where the shot shows him at all: kept where this shot never does, he was out of the picture for most of a
+    // scene (29.10, SWEET1B: 8 of 12 shots unseen at the place he stayed at), and a place in the picture comes first.
+    // Moved only then, he does not jump about in front of the camera: where he stood is not in this shot.
     g_how = " (stays)";
-    if (before && SeenShare(sc, prev) >= 0.5f && Stays(sc, prev)) return prev;
+    if (before && !g_spotOut && Stays(sc, prev) && SeenShare(sc, prev) > 0.0f) return prev;
     auto offer = [&](Best& to) {
         if (own && !own->spots.empty()) {
             for (const Spot& sp : own->spots) to.Offer(sc, sp);
@@ -1913,7 +1927,9 @@ void Analyse() {
     std::fill(std::begin(g_rejects), std::end(g_rejects), 0);
     std::fill(std::begin(g_attractors), std::end(g_attractors), 0);
     g_tried.clear();
+    bool keptOut = g_spotOut;
     g_spot = Choose(sc);
+    g_spotOut = !strcmp(g_how, " (out of the picture)") || (keptOut && !strcmp(g_how, " (stays)"));
     g_decided = true, g_decidedAt = start;
     g_lastScene = sc;
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1923,10 +1939,10 @@ void Analyse() {
     if (!kinds.empty()) LOGD("  ped attractors around (type:count):%s", kinds.c_str());
     g_haveSpot = true;
     ++g_shot;
-    LOGD("Cutscene %s shot %d (%.1f s ahead%s): %s%s in %.1f ms, seen %.0f%% (rejected: distance %d, crowd %d, frame %d, "
+    LOGD("Cutscene %s shot %d (%.1f s ahead%s): %s%s%s%s in %.1f ms, seen %.0f%% (rejected: distance %d, crowd %d, frame %d, "
          "covers CJ %d, covers actor %d, solid %d, floor %d, not seen %d, in the way %d, later in the shot %d)",
          g_cutscene, g_shot, g_ahead.empty() ? 0.0f : g_ahead.back().dt, sc.cjInCar ? ", CJ in a car" : "",
-         Describe(g_spot), g_how, ms, SeenShare(sc, g_spot) * 100.0f, g_rejects[R_DISTANCE],
+         Describe(g_spot), g_how, *g_staysNo ? ", not staying: " : "", g_staysNo, ms, SeenShare(sc, g_spot) * 100.0f, g_rejects[R_DISTANCE],
          g_rejects[R_CROWD], g_rejects[R_FRAME], g_rejects[R_COVERS_CJ], g_rejects[R_COVERS_ACTOR], g_rejects[R_SOLID],
          g_rejects[R_FLOOR], g_rejects[R_HIDDEN], g_rejects[R_FRONT], g_rejects[R_LATER]);
     // the people's root tracks are read from the engine's own data: CJ's is checked against where CJ gets to

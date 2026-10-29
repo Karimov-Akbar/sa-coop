@@ -2,7 +2,6 @@
 
 namespace coop::ui {
 
-void RenderOverlay();   // status line, player list, flow status
-void TogglePlayerList();
+void RenderOverlay();   // status line, the contest's board, flow status
 
 }  // namespace coop::ui

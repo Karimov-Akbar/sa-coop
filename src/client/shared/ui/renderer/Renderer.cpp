@@ -4,7 +4,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
@@ -39,61 +41,93 @@ bool Renderer::BuildFont(Font& f, const wchar_t* face, int pixelHeight, int weig
                          bool upper) {
     std::vector<wchar_t> chars;
     CollectCharset(chars);
+    // an upper-case font draws every letter as a capital (Shape): its small letters are never looked up
+    if (upper)
+        chars.erase(std::remove_if(chars.begin(), chars.end(),
+                                   [](wchar_t c) { return (wchar_t)(uintptr_t)CharUpperW((LPWSTR)(uintptr_t)c) != c; }),
+                    chars.end());
+
+    // The atlas grows as wide as the card allows, up to 4096: one 1024 wide could not hold the big font on a 4K screen,
+    // and with no font nothing of the interface was drawn while the F9 window held the mouse and the keys (#26). A font
+    // that still does not fit is made smaller rather than left out.
+    int maxW = 2048, maxH = 2048;
+    D3DCAPS9 caps{};
+    if (m_dev && SUCCEEDED(m_dev->GetDeviceCaps(&caps)))
+        maxW = std::clamp<int>((int)caps.MaxTextureWidth, 1024, 4096), maxH = std::clamp<int>((int)caps.MaxTextureHeight, 1024, 4096);
 
     HDC dc = CreateCompatibleDC(nullptr);
-    auto create = [&](int width) {
-        return ::CreateFontW(-pixelHeight, width, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+    auto create = [&](int height, int width) {
+        return ::CreateFontW(-height, width, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, face);
     };
-    HFONT font = create(0);
-    if (stretch != 1.0f) {  // wider glyphs: an explicit average width makes GDI scale them horizontally
-        HGDIOBJ prev = SelectObject(dc, font);
-        TEXTMETRICW tm0;
-        GetTextMetricsW(dc, &tm0);
-        SelectObject(dc, prev);
-        DeleteObject(font);
-        font = create((int)std::lround(tm0.tmAveCharWidth * stretch));
-    }
-    f.tracking = tracking;
-    f.upper = upper;
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    TEXTMETRICW tm;
-    GetTextMetricsW(dc, &tm);
-    int lineH = tm.tmHeight;
-    int pad = std::max(2, pixelHeight / 10);
-    f.pad = (float)pad;
-
-    // pack glyphs in rows
-    const int texW = 1024;
-    int x = 0, y = 0, rowH = lineH + pad * 2;
     struct Pos {
         wchar_t ch;
         int x, y, cellW, adv;
     };
     std::vector<Pos> pos;
-    // white block for rectangles
-    pos.push_back({0, 0, 0, 4, 0});
-    x = 4 + 2;
-    for (wchar_t ch : chars) {
-        SIZE sz{};
-        GetTextExtentPoint32W(dc, &ch, 1, &sz);
-        int cellW = sz.cx + pad * 2;
-        if (x + cellW > texW) {
-            x = 0;
-            y += rowH;
+    HFONT font = nullptr;
+    HGDIOBJ oldFont = nullptr;
+    TEXTMETRICW tm{};
+    int lineH = 0, pad = 0, texW = 1024, texH = 64, rowH = 0;
+    for (;;) {
+        font = create(pixelHeight, 0);
+        if (stretch != 1.0f) {  // wider glyphs: an explicit average width makes GDI scale them horizontally
+            HGDIOBJ prev = SelectObject(dc, font);
+            TEXTMETRICW tm0;
+            GetTextMetricsW(dc, &tm0);
+            SelectObject(dc, prev);
+            DeleteObject(font);
+            font = create(pixelHeight, (int)std::lround(tm0.tmAveCharWidth * stretch));
         }
-        pos.push_back({ch, x, y, cellW, (int)sz.cx});
-        x += cellW + 1;
-    }
-    int texH = 64;
-    while (texH < y + rowH) texH <<= 1;
-    if (texH > 2048) {
-        LOGE("Font atlas too large");
+        oldFont = SelectObject(dc, font);
+        GetTextMetricsW(dc, &tm);
+        lineH = tm.tmHeight;
+        pad = std::max(2, pixelHeight / 10);
+        rowH = lineH + pad * 2;
+        // pack glyphs in rows, in the narrowest atlas they fit
+        bool fits = false;
+        for (texW = 1024; texW <= maxW && !fits; texW *= 2) {
+            pos.clear();
+            pos.push_back({0, 0, 0, 4, 0});  // white block for rectangles
+            int x = 4 + 2, y = 0;
+            for (wchar_t ch : chars) {
+                SIZE sz{};
+                GetTextExtentPoint32W(dc, &ch, 1, &sz);
+                int cellW = sz.cx + pad * 2;
+                if (x + cellW > texW) {
+                    x = 0;
+                    y += rowH;
+                }
+                pos.push_back({ch, x, y, cellW, (int)sz.cx});
+                x += cellW + 1;
+            }
+            for (auto& [ch, icon] : m_icons) {  // as wide as a capital is high
+                int size = std::max<int>(1, tm.tmAscent - tm.tmInternalLeading), cellW = size + pad * 2;
+                if (x + cellW > texW) {
+                    x = 0;
+                    y += rowH;
+                }
+                pos.push_back({ch, x, y, cellW, size});
+                x += cellW + 1;
+            }
+            texH = 64;
+            while (texH < y + rowH) texH <<= 1;
+            fits = texH <= maxH;
+            if (fits) break;
+        }
+        if (fits) break;
         SelectObject(dc, oldFont);
         DeleteObject(font);
-        DeleteDC(dc);
-        return false;
+        if (pixelHeight <= 8) {
+            LOGE("Font atlas too large even at %d px", pixelHeight);
+            DeleteDC(dc);
+            return false;
+        }
+        pixelHeight = std::max(8, pixelHeight * 9 / 10);
     }
+    f.tracking = tracking;
+    f.upper = upper;
+    f.pad = (float)pad;
 
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
@@ -109,10 +143,13 @@ bool Renderer::BuildFont(Font& f, const wchar_t* face, int pixelHeight, int weig
     SetTextColor(dc, RGB(255, 255, 255));
     SetBkMode(dc, TRANSPARENT);
     for (auto& p : pos) {
-        if (p.ch == 0) continue;
+        if (p.ch == 0 || m_icons.count(p.ch)) continue;
         TextOutW(dc, p.x + pad, p.y + pad, &p.ch, 1);
     }
     GdiFlush();
+    for (auto& p : pos)  // where a capital stands: from the internal leading down to the baseline
+        if (auto it = m_icons.find(p.ch); it != m_icons.end())
+            DrawIcon(it->second, (uint32_t*)bits, texW, p.x + pad, p.y + pad + tm.tmInternalLeading, p.adv);
 
     IDirect3DTexture9* tex = nullptr;
     if (FAILED(m_dev->CreateTexture(texW, texH, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr))) {
@@ -219,9 +256,13 @@ bool Renderer::Begin() {
             m_height = (float)vp.Height;
         }
     }
+    if (!m_ready && m_failedFor == (int)m_height) return false;  // failed for this height: not tried again every frame
     if (!m_ready || m_fontHeightFor != (int)m_height) {
         m_ready = BuildFonts();
-        if (!m_ready) return false;
+        if (!m_ready) {
+            m_failedFor = (int)m_height;
+            return false;
+        }
     }
 
     IDirect3DStateBlock9* sb = nullptr;
@@ -321,6 +362,150 @@ void Renderer::RectOutline(float x, float y, float w, float h, uint32_t argb, fl
     Rect(x, y + h - t, w, t, argb);
     Rect(x, y + t, t, h - 2 * t, argb);
     Rect(x + w - t, y + t, t, h - 2 * t, argb);
+}
+
+std::string TalkingMark() {
+    return Gfx().HasIcon(kMicIcon) ? std::string("{FFDC50}") + kMicIconUtf8 + "{FFFFFF} " : "{FFDC50}((•)){FFFFFF} ";
+}
+
+bool Renderer::SetIcon(wchar_t ch, std::string_view svg) {
+    Icon icon;
+    if (!ParseIcon(svg, icon)) return false;
+    m_icons[ch] = std::move(icon);
+    m_fontHeightFor = 0;  // the atlases are built again with it
+    return true;
+}
+
+// The viewBox and every path's "d" of an SVG, as absolute moves, lines, cubic curves and closes
+bool Renderer::ParseIcon(std::string_view svg, Icon& out) {
+    auto space = [](char c) { return c == ' ' || c == ',' || c == '\n' || c == '\r' || c == '\t'; };
+    auto attr = [&](std::string_view name, size_t from, size_t& end) -> std::string_view {
+        size_t at = svg.find(name, from);
+        end = at == std::string_view::npos ? at : svg.find('"', at + name.size());
+        return end == std::string_view::npos ? std::string_view{} : svg.substr(at + name.size(), end - at - name.size());
+    };
+    auto numbers = [&](std::string_view s, size_t& i, float* to, int n) {
+        for (int k = 0; k < n; ++k) {
+            while (i < s.size() && space(s[i])) ++i;
+            std::string num;  // strtof would read past the attribute: the number is copied out first
+            while (i < s.size() && (isdigit((unsigned char)s[i]) || s[i] == '.' || s[i] == 'e' || s[i] == 'E' ||
+                                    ((s[i] == '-' || s[i] == '+') && (num.empty() || num.back() == 'e' || num.back() == 'E'))))
+                num += s[i++];
+            if (num.empty()) return false;
+            to[k] = strtof(num.c_str(), nullptr);
+        }
+        return true;
+    };
+    size_t end = 0, bi = 0;
+    std::string_view box = attr("viewBox=\"", 0, end);
+    float v[4];
+    if (box.empty() || !numbers(box, bi, v, 4) || v[2] <= 0 || v[3] <= 0) return false;
+    out.minX = v[0], out.minY = v[1], out.w = v[2], out.h = v[3];
+    for (size_t from = 0;;) {
+        std::string_view d = attr(" d=\"", from, end);
+        if (end == std::string_view::npos) break;
+        from = end;
+        float cx = 0, cy = 0, sx = 0, sy = 0;  // the pen and its figure's start
+        char op = 0;
+        for (size_t i = 0; i < d.size();) {
+            if (space(d[i])) {
+                ++i;
+                continue;
+            }
+            if (isalpha((unsigned char)d[i])) op = d[i++];
+            else if (!op) return false;  // numbers before any command
+            bool rel = islower((unsigned char)op);
+            char up = (char)toupper((unsigned char)op);
+            float p[6];
+            if (up == 'M' || up == 'L') {
+                if (!numbers(d, i, p, 2)) return false;
+                if (rel) p[0] += cx, p[1] += cy;
+                out.path.push_back({up, {p[0], p[1]}});
+                cx = p[0], cy = p[1];
+                if (up == 'M') sx = cx, sy = cy, op = rel ? 'l' : 'L';  // its next pairs are lines
+            } else if (up == 'H' || up == 'V') {
+                if (!numbers(d, i, p, 1)) return false;
+                float& c = up == 'H' ? cx : cy;
+                c = p[0] + (rel ? c : 0.0f);
+                out.path.push_back({'L', {cx, cy}});
+            } else if (up == 'C') {
+                if (!numbers(d, i, p, 6)) return false;
+                if (rel)
+                    for (int k = 0; k < 6; k += 2) p[k] += cx, p[k + 1] += cy;
+                out.path.push_back({'C', {p[0], p[1], p[2], p[3], p[4], p[5]}});
+                cx = p[4], cy = p[5];
+            } else if (up == 'Z') {
+                out.path.push_back({'Z', {}});
+                cx = sx, cy = sy;
+                op = 0;
+            } else {
+                return false;  // S, Q, T, A: not read
+            }
+        }
+    }
+    return !out.path.empty();
+}
+
+// The icon filled white into the atlas (its square of size x size at x0, y0): drawn 4 times bigger by GDI, which has no
+// smoothing of its own, and averaged down
+void Renderer::DrawIcon(const Icon& icon, uint32_t* bits, int texW, int x0, int y0, int size) {
+    constexpr int kS = 4;
+    int big = size * kS;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = big;
+    bi.bmiHeader.biHeight = -big;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC dc = CreateCompatibleDC(nullptr);
+    void* px = nullptr;
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &px, nullptr, 0);
+    if (!bmp) {
+        DeleteDC(dc);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    memset(px, 0, (size_t)big * big * 4);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    SetPolyFillMode(dc, WINDING);  // an SVG's nonzero rule
+    float k = big / std::max(icon.w, icon.h), ox = (big - icon.w * k) / 2, oy = (big - icon.h * k) / 2;
+    auto at = [&](float x, float y) {
+        return POINT{(LONG)std::lround(ox + (x - icon.minX) * k), (LONG)std::lround(oy + (y - icon.minY) * k)};
+    };
+    BeginPath(dc);
+    for (const PathStep& s : icon.path) {
+        if (s.op == 'M') {
+            POINT a = at(s.p[0], s.p[1]);
+            MoveToEx(dc, a.x, a.y, nullptr);
+        } else if (s.op == 'L') {
+            POINT a = at(s.p[0], s.p[1]);
+            LineTo(dc, a.x, a.y);
+        } else if (s.op == 'C') {
+            POINT c[3] = {at(s.p[0], s.p[1]), at(s.p[2], s.p[3]), at(s.p[4], s.p[5])};
+            PolyBezierTo(dc, c, 3);
+        } else {
+            CloseFigure(dc);
+        }
+    }
+    EndPath(dc);
+    FillPath(dc);
+    GdiFlush();
+    const uint32_t* src = (const uint32_t*)px;
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            uint32_t sum = 0;
+            for (int j = 0; j < kS; ++j)
+                for (int i = 0; i < kS; ++i) sum += (src[(y * kS + j) * big + x * kS + i] >> 16) & 0xFF;
+            uint32_t g = sum / (kS * kS);
+            bits[(y0 + y) * texW + x0 + x] = (g << 16) | (g << 8) | g;  // white of this strength: its alpha in the atlas
+        }
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(dc);
 }
 
 wchar_t Renderer::Shape(const Font& f, wchar_t c) {

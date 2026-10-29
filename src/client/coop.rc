@@ -2,3 +2,6 @@
 #define COOP_ORIGINAL_NAME "coop.asi"
 #define COOP_FILE_TYPE VFT_DLL
 #include "common/config/version/VersionInfo.rc"
+
+// the voice chat's microphone icon (Font Awesome Free, CC BY 4.0), drawn by the renderer as a character of its fonts
+MICROPHONE RCDATA "features/voice/ui/microphone.svg"

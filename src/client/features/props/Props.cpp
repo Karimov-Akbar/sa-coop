@@ -4,7 +4,8 @@
 // it shares (Peds): the model, how the object hangs on the person, its own animation, size and visibility. The other
 // game hangs the same object on its copy of that person, without collision. Let go (the canopy on landing), the object
 // stays where the owner's is until that one is gone. The things a side activity leaves lying about (the pool balls, the
-// shooting range's targets, the quarry's rocks) go over the same way, as loose objects.
+// shooting range's targets, the quarry's rocks) go over the same way, as loose objects, and so does a basketball shot.
+// The targets of a joint range round are solid in the game of who joined: its shots at them go to the owner's game.
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -34,7 +35,12 @@ constexpr int TASK_SIMPLE_HOLD_ENTITY = 307, TASK_SIMPLE_PICKUP_ENTITY = 308, TA
 constexpr uint8_t HOLD_ENTITY_UPDATE_TRANSLATION_ONLY = 0x10;
 constexpr int kPedNodes = 19;
 constexpr uint64_t kLooseKeepMs = 30000;  // a let-go object is followed this long at most
-enum : uint8_t { OP_STATE = 1, OP_GONE = 2 };
+// The ball a basketball shot throws (basketb.scm: BBALL_col, with a velocity; BBALL_ingame is the one in the hands, an
+// attachment): an external script's object, in no mission's list, so the other player saw the ball vanish from the copy's
+// hands at every shot. It goes over while it flies and bounces, and goes when it lies still: the other game makes its
+// own ball at a hoop for its player.
+constexpr int kBallModel = 3065;
+enum : uint8_t { OP_STATE = 1, OP_GONE = 2, OP_HIT = 3 };
 enum : uint8_t { BY_PLAYER = 0, BY_PED = 1 };
 enum : uint8_t { HANG_ATTACHED = 0, HANG_HELD = 1, HANG_LOOSE = 2 };
 
@@ -127,11 +133,13 @@ struct Owned {
     Prop sent;
     float animTime = 0;    // the latest seen: a non-looped one going back started again
     uint64_t looseMs = 0;  // let go at
+    bool ball = false;     // a basketball shot: gone once it lies still
 };
 std::map<uint16_t, Owned> g_owned;
 uint16_t g_nextId = 1;
 uint64_t g_scanMs = 0;
 bool g_resend = false;  // a peer (re)started its game: everything again
+bool IsCopy(CObject* o);  // one of the other game's things here
 
 // the host's mission objects go over as such (mission-objects), with their moves
 bool MissionObject(int handle) {
@@ -142,13 +150,29 @@ bool MissionObject(int handle) {
     return false;
 }
 
-// what a ped holds: CTaskSimpleHoldEntity in its partial animation slot, or the pick up or put down that carries it
-void* HoldTask(CPed* ped) {
+// what a ped holds: every CTaskSimpleHoldEntity, or the pick up or put down that carries a thing. The gym's dumbbells
+// are two (TASK_PICK_UP_OBJECT and TASK_PICK_UP_SECOND_OBJECT, a hold task each in a slot of its own), and only the first
+// one CTaskManager::FindActiveTaskByType gives went over: the copy lifted one dumbbell (27.10). Looked for as it does:
+// the active primary task's chain, then every secondary slot's.
+std::vector<void*> HoldTasks(CPed* ped) {
+    std::vector<void*> out;
     void* intel = ped->Intelligence();
-    if (!intel) return nullptr;
-    for (int type : {TASK_SIMPLE_HOLD_ENTITY, TASK_SIMPLE_PICKUP_ENTITY, TASK_SIMPLE_PUTDOWN_ENTITY})
-        if (void* t = CallMethod<0x681740, void*>((uint8_t*)intel + 4, type)) return t;  // CTaskManager::FindActiveTaskByType
-    return nullptr;
+    if (!intel) return out;
+    auto** slots = (void**)((uint8_t*)intel + 4);  // CTaskManager: 5 primary tasks, then 6 secondary ones
+    auto walk = [&](void* task) {
+        for (; task; task = CallVirtual<2, void*>(task)) {  // CTask::GetSubTask
+            int type = CallVirtual<4, int>(task);           // CTask::GetTaskType
+            if (type == TASK_SIMPLE_HOLD_ENTITY || type == TASK_SIMPLE_PICKUP_ENTITY || type == TASK_SIMPLE_PUTDOWN_ENTITY)
+                out.push_back(task);
+        }
+    };
+    for (int i = 0; i < 5; ++i)
+        if (slots[i]) {
+            walk(slots[i]);
+            break;
+        }
+    for (int i = 5; i < 11; ++i) walk(slots[i]);
+    return out;
 }
 
 // how it looks: visibility, size and the strongest animation of its own (the canopy opening, steering, landing);
@@ -228,25 +252,37 @@ void Scan() {
             if (uintptr_t e = kMissionCleanUp + (uintptr_t)i * 8; Ref<uint8_t>(e) == 3) activity.push_back(Ref<int32_t>(e + 4));
 
     std::vector<std::pair<CObject*, Prop>> found;
-    for (auto& [ped, who] : holders) {
-        void* t = HoldTask((CPed*)ped);
-        auto* e = t ? Field<CEntity*>(t, 0x08) : nullptr;  // m_pEntityToHold
-        if (!e || !e->IsObject() || MissionObjectCopy(e)) continue;  // the host's crate in our hands: Objects carries it
-        Prop p;
-        p.by = who.first;
-        p.holder = who.second;
-        p.hang = HANG_HELD;
-        p.offset = Field<CVector>(t, 0x0C);     // m_vecPosition
-        p.bone = Field<uint8_t>(t, 0x18);       // m_nBoneFrameId
-        p.boneFlags = Field<uint8_t>(t, 0x19);  // m_bBoneFlags
-        p.turn = Field<float>(t, 0x1C);         // m_fRotation
-        found.push_back({(CObject*)e, p});
-    }
+    for (auto& [ped, who] : holders)
+        for (void* t : HoldTasks((CPed*)ped)) {
+            auto* e = Field<CEntity*>(t, 0x08);  // m_pEntityToHold
+            // the host's crate in our hands: Objects carries it; the owner's cue at a pool table for two: Pool
+            if (!e || !e->IsObject() || MissionObjectCopy(e) || PoolTableCopy(e)) continue;
+            if (std::any_of(found.begin(), found.end(), [e](const auto& x) { return x.first == (CObject*)e; })) continue;
+            Prop p;
+            p.by = who.first;
+            p.holder = who.second;
+            p.hang = HANG_HELD;
+            p.offset = Field<CVector>(t, 0x0C);     // m_vecPosition
+            p.bone = Field<uint8_t>(t, 0x18);       // m_nBoneFrameId
+            p.boneFlags = Field<uint8_t>(t, 0x19);  // m_bBoneFlags
+            p.turn = Field<float>(t, 0x1C);         // m_fRotation
+            found.push_back({(CObject*)e, p});
+        }
     if (CPoolHeader* pool = ObjectPool())
         for (int i = 0; i < pool->size; ++i) {
             if (pool->byteMap[i] < 0) continue;
             auto* o = (CObject*)(pool->objects + (size_t)i * kObjectPoolElemSize);
             auto h = holders.find(o->AttachedTo());
+            if (h == holders.end() && me && o->ModelIndex() == kBallModel && !IsCopy(o) &&
+                o->MoveSpeed().Length() * 50.0f > 0.5f && (o->GetPosition() - me->GetPosition()).Length() < 40.0f) {
+                Prop p;
+                p.by = BY_PLAYER;
+                p.hang = HANG_LOOSE;
+                p.offset = o->GetPosition();
+                if (CMatrix* m = o->Matrix()) p.rot = Quat::FromMatrix(*m);
+                found.push_back({o, p});
+                continue;
+            }
             if (h == holders.end()) {
                 // A police roadblock's barriers and burnt-out cars (CRoadBlocks::CreateRoadBlockBetween2Points: temporary
                 // objects of two models) are made by the wanted player's game only: the other one had the police cars
@@ -294,7 +330,7 @@ void Scan() {
             ow.looseMs = 0;
         } else {  // let go: where it is now
             if (!ow.looseMs) ow.looseMs = now;
-            if (now - ow.looseMs > kLooseKeepMs) {
+            if (now - ow.looseMs > kLooseKeepMs || ow.ball) {
                 gone.push_back(id);
                 continue;
             }
@@ -326,6 +362,7 @@ void Scan() {
         Owned& ow = g_owned[id];
         ow.obj = o;
         ow.handle = h;
+        ow.ball = o->ModelIndex() == kBallModel && p.hang == HANG_LOOSE;
         ReadLook(o, p);
         p.animRev = 1;
         ow.sent = p;
@@ -346,12 +383,18 @@ struct Copy {
     CObject* obj = nullptr;
     int handle = -1;
     int8_t shown = -1;              // the visibility set on it
+    int8_t solid = -1;              // the collision set on it (a joint range's target takes our shots: RangeCopy)
     uint8_t animRev = 0;            // of the animation started on it
     void* animApplied = nullptr;    // that animation's hierarchy
     void* animClump = nullptr;      // the RenderWare clump it was started on (a far object has none, rebuilt: anew)
     bool placed = false;            // LOOSE: put where p says
+    CVector vel;                    // LOOSE: its speed from the owner's last two places (a ball in flight), per second
 };
 std::map<uint32_t, Copy> g_copies;  // (from << 16) | id
+
+bool IsCopy(CObject* o) {
+    return std::any_of(g_copies.begin(), g_copies.end(), [o](const auto& kv) { return kv.second.obj == o; });
+}
 
 uint32_t Key(uint8_t from, uint16_t id) { return ((uint32_t)from << 16) | id; }
 
@@ -395,6 +438,7 @@ bool Create(Copy& c, CPed* holder) {
     // OBJECT_MISSION ones, and the host's saves and world snapshots kept the copies floating where they were
     Field<uint8_t>(o, 0x13C) = 6;
     Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION: only to be seen
+    c.solid = 0;
     Cmd(0x0550).I(h).I(1).Run();  // FREEZE_OBJECT_POSITION: it goes where this module or its attachment puts it
     MarkModelNotNeeded(c.p.model);
     c.obj = o;
@@ -504,6 +548,9 @@ void Apply(Copy& c) {
         if (o->AttachedTo()) Detach(c);
         if (c.p.hang == HANG_HELD) {
             InHand(o, holder, c.p);
+        } else if (c.vel.Length() > 0.1f) {  // flying: on along its way until the next state (they come 10 times a second)
+            float ahead = std::min(0.2f, (float)(NowMs() - c.recvMs) / 1000.0f);
+            Place(o, c.p.offset + c.vel * ahead, c.p.rot);
         } else if (!c.placed) {
             Place(o, c.p.offset, c.p.rot);
             c.placed = true;
@@ -513,6 +560,11 @@ void Apply(Copy& c) {
     if (c.shown != (int8_t)show) {
         Cmd(0x0750).I(c.handle).I(show ? 1 : 0).Run();  // SET_OBJECT_VISIBLE
         c.shown = (int8_t)show;
+    }
+    bool solid = show && c.p.hang == HANG_LOOSE && RangeCopy(c.from, c.p.model);
+    if (c.solid != (int8_t)solid) {
+        Cmd(0x0382).I(c.handle).I(solid ? 1 : 0).Run();  // SET_OBJECT_COLLISION
+        c.solid = (int8_t)solid;
     }
     Field<float>(o, 0x15C) = c.p.scale;  // CObject::m_fScale (CObject::PreRender scales it)
     Animate(c);
@@ -524,6 +576,15 @@ void Handle(uint8_t from, Reader& r) {
     // not in the game yet: the owner sends everything again once we are (resync)
     if (!r.Ok() || !core::IsPlayerReady()) return;
     uint32_t k = Key(from, id);
+    if (op == OP_HIT) {  // the other player's shot at its copy of our thing (a joint range's target)
+        uint8_t to = r.U8();
+        float damage = r.F32();
+        uint8_t weapon = r.U8();
+        auto it = g_owned.find(id);
+        if (r.Ok() && to == Net().MyId() && it != g_owned.end() && Alive(it->second.obj, it->second.handle))
+            RangeHit(from, it->second.obj, damage, weapon);
+        return;
+    }
     if (op == OP_GONE) {
         if (auto it = g_copies.find(k); it != g_copies.end()) {
             Delete(it->second);
@@ -536,9 +597,13 @@ void Handle(uint8_t from, Reader& r) {
     if (!r.Ok() || op != OP_STATE) return;
     Copy& c = g_copies[k];
     bool remake = c.obj && c.p.model != p.model;
+    uint64_t now = NowMs();
+    float dt = (float)(now - c.recvMs) / 1000.0f;
+    c.vel = c.obj && c.p.hang == HANG_LOOSE && p.hang == HANG_LOOSE && dt > 0.03f && dt < 0.5f ? (p.offset - c.p.offset) * (1.0f / dt)
+                                                                                                : CVector{};
     c.from = from;
     c.p = p;
-    c.recvMs = NowMs();
+    c.recvMs = now;
     c.placed = false;
     if (remake) Delete(c);
 }
@@ -596,5 +661,18 @@ struct Reg {
     Reg() { core::RegisterModule(&Props::Instance()); }
 } g_reg;
 }  // namespace
+
+bool PropCopyHit(void* object, void* damager, float damage, int weapon) {
+    for (auto& [k, c] : g_copies) {
+        if (c.obj != object || c.solid != 1) continue;
+        if (damager && damager == game::FindPlayerPed(0)) {
+            Writer w(proto::G_PROP);
+            w.U8(OP_HIT), w.U16((uint16_t)k), w.U8(c.from), w.F32(damage), w.U8((uint8_t)weapon);
+            Net().Send(proto::CH_RELIABLE, w);
+        }
+        return true;  // it breaks there, and that hides it here
+    }
+    return false;
+}
 
 }  // namespace coop

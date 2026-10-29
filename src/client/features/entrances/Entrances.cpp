@@ -10,6 +10,7 @@
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
+#include "entities/mission/Mission.h"
 #include "entities/session/Flow.h"
 #include "common/lib/util/Util.h"
 #include "shared/api/net-session/Session.h"
@@ -22,7 +23,10 @@ namespace {
 using namespace game;
 
 constexpr uintptr_t kEnexPool = 0x96A7D8;  // CEntryExitManager::mp_poolEntryExits, CEntryExit 0x3C bytes
-constexpr uint16_t kOwnBits = 0x2000 | 0x10;  // ENTERED_WITHOUT_EXIT, USED_REWARD_ENTRANCE: this player's history
+// ENTERED_WITHOUT_EXIT, USED_REWARD_ENTRANCE: this player's history. DELETE_ENEX too: this game's streaming sets it as the
+// door's building goes while its player is inside (CEntity::RemoveEffects), and the door is deleted as that player comes
+// out. The host's, here, deleted the partner's door of the burglary house the host was in: its marker went (28.10).
+constexpr uint16_t kOwnBits = 0x8000 | 0x2000 | 0x10;
 
 CPoolHeader* Pool() { return Ref<CPoolHeader*>(kEnexPool); }
 uintptr_t Entry(CPoolHeader* pool, int i) { return (uintptr_t)pool->objects + (uintptr_t)i * 0x3C; }  // +0 m_szName[8]
@@ -67,6 +71,9 @@ public:
                     Center(Entry(pool, i), ex, ey);
                     if (std::fabs(ex - x) > 2.0f || std::fabs(ey - y) > 2.0f) continue;
                     uint16_t* f = Flags(pool, i);
+                    // a gym's door, which the host's GYM thread shuts on any mission of its outdoors (a taxi fare): the
+                    // partner's own stays open but in the host's story mission (#34)
+                    if (!_strnicmp(name, "GYM", 3) && !(flags & 0x4000) && !HostMissionRecent(0)) flags |= *f & 0x4000;
                     if (n < 10) LOGD("Entrance %d (%.8s): flags %04X -> %04X", i, name, *f, flags);
                     *f = (uint16_t)((*f & kOwnBits) | (flags & ~kOwnBits));
                     break;

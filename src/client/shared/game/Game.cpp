@@ -1,5 +1,7 @@
 #include "shared/game/Game.h"
 
+#include <cstring>
+
 #include "common/lib/log/Log.h"
 
 namespace game {
@@ -46,10 +48,25 @@ bool HasRoom(CPoolHeader* pool, int keep, const char* what) {
 
 void RequestModel(int model, int flags) { Call<0x4087E0>(model, flags); }
 void LoadAllRequestedModels(bool onlyPriority) { Call<0x40EA10>(onlyPriority); }
-bool IsModelLoaded(int model) {
-    // CStreaming::ms_aInfoForModel: models, then txds, cols, ipls, dats, ifps, rrrs and scms (26316 in all)
-    return model >= 0 && model < 26316 && Ref<uint8_t>(addr::StreamingInfo + (uintptr_t)model * 0x14 + 0x10) == 1;
+// CStreaming::ms_aInfoForModel's load states where the game itself reads them: the game's HAS_MODEL_LOADED does it at
+// 0x47EFFF (cmp byte [edx*4 + 0x8E4CD0], 1). A limit adjuster (fastman92's) moves the table and corrects the game's
+// places: its old place read "not loaded" for good, and no copy of the other game's people, cars or props was ever made
+// (#82, in both games).
+static uintptr_t LoadStates() {
+    static const uint8_t kCmp[] = {0x80, 0x3C, 0x95};  // cmp byte [edx*4 + disp32], imm8
+    uintptr_t at = memcmp((const void*)0x47EFFF, kCmp, sizeof kCmp) ? addr::StreamingInfo + 0x10 : Ref<uint32_t>(0x47F002);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        if (at != addr::StreamingInfo + 0x10) LOGI("The streaming table is at %08X, not at 008E4CC0: a limit adjuster moved it", at - 0x10);
+    }
+    return at;
 }
+bool IsModelLoaded(int model) {
+    // models, then txds, cols, ipls, dats, ifps, rrrs and scms (26316 in all)
+    return model >= 0 && model < 26316 && Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) == 1;
+}
+int ModelLoadState(int model) { return model >= 0 && model < 26316 ? Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) : -1; }
 bool LoadModelNow(int model) {
     if (!IsValidModel(model)) return false;
     if (IsModelLoaded(model)) return true;

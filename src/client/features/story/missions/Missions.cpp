@@ -32,8 +32,12 @@
 #include "entities/player/Players.h"
 #include "entities/session/Flow.h"
 #include "entities/vehicle/Vehicles.h"
+#include "features/story/contest/Contest.h"
+#include "features/story/courier/Courier.h"
 #include "features/story/cutscene-partner/ScenePartner.h"
+#include "features/story/jobs/Jobs.h"
 #include "features/story/minigames/Minigames.h"
+#include "features/story/pool/Pool.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Anim.h"
@@ -64,6 +68,11 @@ constexpr int BLIP_CAR = 1, BLIP_CHAR = 2, BLIP_OBJECT = 3, BLIP_COORD = 4;
 
 bool CutsceneRunning() { return Ref<uint8_t>(kCutsceneRunning) != 0; }
 uintptr_t Trace(int i) { return kRadarTraces + (uintptr_t)i * 0x28; }
+// a blip handle is its trace's counter << 16 | index; the engine frees an entity's blip with the entity
+bool BlipAlive(int handle) {
+    int i = handle & 0xFFFF;
+    return i < kNumTraces && (Ref<uint8_t>(Trace(i) + 0x25) & 2) && Ref<uint16_t>(Trace(i) + 0x14) == (uint16_t)(handle >> 16);
+}
 
 void* FindMissionScript() {
     for (void* s = Ref<void*>(kActiveScripts); s; s = Field<void*>(s, 0x00))
@@ -112,7 +121,13 @@ bool SideMission(void* script) {
 
 // a property purchase (BUYPRO1) is no mission for the partner: it only shows the house, Property.cpp shares the purchase
 bool HostOnMission() {
-    if (void* s = FindMissionScript()) return strncmp(Field<char[8]>(s, 0x08), "buypro1", 8) && !SideMission(s) && !SideThread(g_launcher);
+    if (void* s = FindMissionScript()) {
+        // its first frame, before its SCRIPT_NAME (CRunningScript::Init names it "noname"): a vehicle job or a BMX
+        // challenge was the host's story for 13 ms, and the partner got "the host started a mission", its end and 5 s
+        // of a host's mission refusing its own activities (the gym). The story's start comes a frame later.
+        if (!strncmp(Field<char[8]>(s, 0x08), "noname", 8)) return false;
+        return strncmp(Field<char[8]>(s, 0x08), "buypro1", 8) && !SideMission(s) && !SideThread(g_launcher);
+    }
     return core::IsOnMission() && !SideFlag();
 }
 
@@ -211,22 +226,24 @@ struct BlipRecord {  // what the host sends for one blip
     }
 };
 
-enum : uint8_t { AREA_LOCATE = 0, AREA_SPHERE = 1 };
+enum : uint8_t { AREA_LOCATE = 0, AREA_SPHERE = 1, AREA_CORONA = 2 };
 struct Area {
     uint32_t id;
-    float x1, y1, x2, y2, z;  // a sphere: centre x1, y1, z and radius x2
+    float x1, y1, x2, y2, z;  // a sphere: centre x1, y1, z and radius x2; a corona: there, size x2, colour y2 (0xRRGGBB)
     uint64_t seenMs;
     uint8_t kind = AREA_LOCATE;
     bool mission = false;  // drawn by a mission's script (the others draw this game's own: the mod shops' while in a car)
+    bool streamed = false;  // drawn by a streamed script (a shop's, a barber's): never a mission's start
 };
 
 enum : uint8_t { BLIP_SET = 1, BLIP_REMOVE = 2, BLIP_CLEAR = 3 };
 enum : uint8_t { CS_LOAD = 1, CS_START = 2, CS_END = 3, CS_SKIP_VOTE = 4, CS_SKIP_STATE = 5, CS_SPOT = 6, CS_FOLLOW = 7 };
-enum : uint8_t { TXT_MSG = 1, TXT_MSG_Q, TXT_BIG, TXT_BIG_Q, TXT_HELP, TXT_CLEAR, TXT_CLEAR_SMALL, TXT_CS_LINE };
+enum : uint8_t { TXT_MSG = 1, TXT_MSG_Q, TXT_BIG, TXT_BIG_Q, TXT_HELP, TXT_CLEAR, TXT_CLEAR_SMALL, TXT_CS_LINE, TXT_TUNE };
 enum : uint8_t { FADE_ACTIVE = 1, FADE_WIDE = 2, FADE_BLACK = 4 };
 
 // host
 bool g_active = false;                        // a mission or its trigger runs
+bool g_courierBlips = false;                  // host: Big Smoke's courier runs (no mission): its blips go as a mission's
 std::set<uint32_t> g_baseline;                // (counter << 8 | index) of blips that existed before
 std::map<uint8_t, BlipRecord> g_sentBlips;
 std::map<uint32_t, Area> g_areas;
@@ -239,6 +256,7 @@ char g_cutsceneName[32] = {};  // last loaded cutscene, for partners joining dur
 
 // mission markers: the host's mission starts once the partner stands in the marker too
 uint64_t g_waitMs = 0;      // host: the last time a trigger was refused for that
+char g_waitBy[9] = {};      // host: the script whose trigger it was
 bool g_waitSent = false;
 bool g_hostWaits = false;   // partner
 Area g_waitArea{};
@@ -253,8 +271,14 @@ std::map<uint8_t, PartnerBlip> g_blips;
 std::vector<Area> g_partnerAreas;
 uint64_t g_partnerAreasMs = 0;
 bool g_partnerMission = false, g_weFaded = false, g_weWide = false, g_onscreenSet = false;
+bool g_hostBlack = false;  // partner: the host's screen was black by its script at its last G_FADE
 bool g_weFroze = false;  // our control is taken while the host's mission plays a scene
 uint64_t g_partnerMissionEndedAt = 0;
+std::string g_hostMission;  // partner: the script name of the host's story mission (G_MISSION_START)
+// "Mike Toreno" (DRIV3) raises $7200: main.scm's APCHECK then opens the SF airport's main gate as its player comes within
+// 65 m, its guard lying dead. Only the host's game ran the mission, and the partner came to a shut gate (MozzisRus, 29.10).
+constexpr uint32_t kAirportGateOpen = 7200;
+bool g_gateOpenSet = false;  // partner: we raised it
 int g_csState = 0;  // 0 none, 1 loading, 2 running, 3 ending
 int32_t g_csArea = 0;  // interior the host's cutscene plays in
 bool g_csStartRequested = false;
@@ -267,13 +291,18 @@ bool Replicating() { return Net().Online() && Net().IsHost() && !Net().Peers().e
 // mission: he rides along or follows, helps (puts its burning cars out, shoots its criminals) and is paid what it paid at
 // its end. Its people and cars are each game's own anyway; its levels (the paramedic's endless sprint) stay with who
 // played it. Either player may own one, the host or the partner.
-enum : uint8_t { SIDE_OFFER = 1, SIDE_ACCEPT = 2, SIDE_DECLINE = 3, SIDE_END = 4, SIDE_LEAVE = 5 };
+enum : uint8_t { SIDE_OFFER = 1, SIDE_ACCEPT = 2, SIDE_DECLINE = 3, SIDE_END = 4, SIDE_LEAVE = 5, SIDE_PAY = 6, SIDE_DROP = 7,
+                 SIDE_RESYNC = 8, SIDE_LOOT = 9, SIDE_TAKEN = 10, SIDE_ALARM = 11 };
 bool SideJob(const std::string& name) {
-    static const char* const kJobs[] = {"taxiodd", "ambulan", "firetru", "copcar", "pimp", "freight", "bcour", "mtbiker", "stunt", "cprace"};
+    static const char* const kJobs[] = {"taxiodd", "ambulan", "firetru", "copcar", "pimp",   "freight", "bcour",   "mtbiker",
+                                        "stunt",   "cprace",  "burgjb",  "truck",  "tria",   "kicksta", "blood",   "quarry",
+                                        "valet",   "shrange"};
     for (const char* j : kJobs)
         if (!_stricmp(name.c_str(), j)) return true;
     return false;
 }
+// the stadiums' events and races, in arenas of their own (areas 14 Kickstart, 15 Blood Ring, 7 8-Track, 4 Dirt Track)
+bool StadiumJob(const std::string& name) { return name == "kicksta" || name == "blood" || name == "cprace"; }
 // What the call and its notices name it: "зовёт вас на совместное задание в такси" (to), "конец совместной гонки"
 // (of). Picked when shown: the language can be switched in the connect menu.
 struct JobNames {
@@ -289,26 +318,142 @@ JobNames NamesOf(const std::string& name) {
     if (is("pimp")) return {TR("совместное задание сутенёра", "a joint pimp job"), TR("совместного задания сутенёра", "the joint pimp job")};
     if (is("freight"))
         return {TR("совместное задание на поезде", "a joint freight train job"), TR("совместного задания на поезде", "the joint freight train job")};
-    return {TR("совместную гонку", "a joint race"), TR("совместной гонки", "the joint race")};  // bcour, mtbiker, stunt, cprace
+    if (is("bcour")) return {TR("совместную доставку", "a joint courier job"), TR("совместной доставки", "the joint courier job")};
+    if (is("mtbiker"))
+        return {TR("совместный заезд на Чилиад", "a joint Mount Chiliad ride"), TR("совместного заезда на Чилиад", "the joint Mount Chiliad ride")};
+    if (is("stunt")) return {TR("совместные трюки", "joint stunts"), TR("совместных трюков", "the joint stunts")};
+    if (is("burgjb")) return {TR("совместное ограбление", "a joint burglary"), TR("совместного ограбления", "the joint burglary")};
+    if (is("truck"))
+        return {TR("совместную грузоперевозку", "a joint trucking job"), TR("совместной грузоперевозки", "the joint trucking job")};
+    if (is("tria")) return {TR("совместный триатлон", "a joint triathlon"), TR("совместного триатлона", "the joint triathlon")};
+    if (is("kicksta")) return {TR("совместный Kickstart", "a joint Kickstart"), TR("совместного Kickstart", "the joint Kickstart")};
+    if (is("blood")) return {TR("совместный Blood Ring", "a joint Blood Ring"), TR("совместного Blood Ring", "the joint Blood Ring")};
+    if (is("quarry")) return {TR("совместную работу в карьере", "a joint quarry job"), TR("совместной работы в карьере", "the joint quarry job")};
+    if (is("valet"))
+        return {TR("совместную смену парковщика", "a joint valet shift"), TR("совместной смены парковщика", "the joint valet shift")};
+    if (is("shrange"))
+        return {TR("совместную стрельбу в тире", "a joint shooting range round"),
+                TR("совместной стрельбы в тире", "the joint shooting range round")};
+    return {TR("совместную гонку", "a joint race"), TR("совместной гонки", "the joint race")};  // cprace
 }
 std::string JobTo(const std::string& name) { return SideJob(name) ? NamesOf(name).to : name; }
 std::string JobOf(const std::string& name) { return SideJob(name) ? NamesOf(name).of : name; }
+// The jobs where who joins gets a vehicle of the job of its own and works too (BoardSide, Jobs.cpp): what it is told,
+// and the one who called it (both take the other's name). Null for the rest.
+const char* JoinerHint(const std::string& name) {
+    if (name == "taxiodd")
+        return TR("Рядом с игроком %s у вас будет своё такси, и подработка в нём начнётся сама. Ваши пассажиры появятся, когда вы "
+                  "отъедете подальше. Деньги за всех пассажиров получаете оба.",
+                  "You get a taxi of your own next to %s, and its job starts by itself. Your fares turn up once you drive a bit "
+                  "farther off. You both get the money for every fare.");
+    if (name == "ambulan")
+        return TR("Рядом с игроком %s у вас будет своя скорая. Больные садятся к любому из вас: остановитесь рядом с больным и "
+                  "отвезите его в больницу.",
+                  "You get an ambulance of your own next to %s. The patients get into either one: stop next to a patient and take "
+                  "them to hospital.");
+    if (name == "firetru")
+        return TR("Рядом с игроком %s у вас будет своя пожарная машина. Тушите огонь вместе: потушенное вами засчитывается.",
+                  "You get a fire truck of your own next to %s. Put out the fires together: the ones you put out count.");
+    if (name == "copcar")
+        return TR("Рядом с игроком %s у вас будет своя полицейская машина. Ловите преступников вместе: убитые вами засчитываются.",
+                  "You get a police car of your own next to %s. Hunt the criminals together: the ones you kill count.");
+    if (name == "burgjb")
+        return TR("Дома для ограбления открыты и для вас. Выносите вещи и кладите их у задних дверей фургона игрока %s (F): они "
+                  "засчитываются в общую добычу.",
+                  "The burglary houses are open to you too. Carry things out and put them down at the back of %s's van (F): they "
+                  "count for the loot of both.");
+    if (name == "kicksta")
+        return TR("Вы окажетесь на стадионе рядом с игроком %s, и у вас будет свой мотоцикл. Короны, которые берёте вы, идут в общий счёт.",
+                  "You get to the stadium next to %s, on a bike of your own. The coronas you take count for the score of both.");
+    if (name == "blood")
+        return TR("Вы окажетесь на арене рядом с игроком %s в такой же машине. Контрольные точки, до которых доезжаете вы, тоже "
+                  "добавляют время.",
+                  "You get to the arena next to %s in a car like theirs. The checkpoints you reach add time too.");
+    if (name == "quarry")
+        return TR("Когда игрок %s сядет в бульдозер или самосвал, рядом с вами появится такой же. Засчитываются камни и бомбы, "
+                  "которые вы столкнёте бульдозером, и ваши удары по самосвалу подрывников. Самосвал с грузом не задевайте: груз "
+                  "упадёт или взорвётся.",
+                  "Once %s gets into the bulldozer or the dumper, you get one like it. The rocks and bombs you push with your "
+                  "bulldozer count, and so do your rams on the bombers' dumper. Keep clear of the loaded dumper: its load falls off "
+                  "or blows up.");
+    if (name == "valet")
+        return TR("Машину гостя может отогнать любой из вас: остановите её на отмеченном месте, и она засчитается в смену игрока "
+                  "%s. Деньги за смену получаете оба.",
+                  "Either of you can park the guest's car: stop it on the marked bay, and it counts for %s's shift. You both get "
+                  "the shift's money.");
+    if (name == "shrange")
+        return TR("Вы встанете в кабинку тира рядом с игроком %s и получите то же оружие. Стреляйте по мишеням прямо перед "
+                  "кабинкой: ваши попадания идут в общий счёт.",
+                  "You stand in the range booth next to %s with the same gun. Shoot the targets right in front of the booth: "
+                  "your hits count for both of you.");
+    return nullptr;
+}
+const char* CallerHint(const std::string& name) {
+    if (name == "burgjb")
+        return TR("%s тоже выносит вещи из домов и кладёт их в ваш фургон.", "%s carries things out of the houses into your van too.");
+    if (name == "taxiodd")
+        return TR("%s получает своё такси и возит своих пассажиров: деньги за всех пассажиров получаете оба.",
+                  "%s gets their own taxi and drives their own fares: you both get the money for every fare.");
+    if (name == "ambulan")
+        return TR("%s получает свою скорую: больные садятся к любому из вас.", "%s gets their own ambulance: the patients get into either one.");
+    if (name == "firetru")
+        return TR("%s получает свою пожарную машину и тушит огонь вместе с вами.", "%s gets their own fire truck and puts out the fires with you.");
+    if (name == "copcar")
+        return TR("%s получает свою полицейскую машину и ловит преступников вместе с вами.",
+                  "%s gets their own police car and hunts the criminals with you.");
+    if (name == "kicksta")
+        return TR("%s получает свой мотоцикл и тоже собирает короны в ваш счёт.", "%s gets a bike of their own and takes coronas for your score too.");
+    if (name == "blood")
+        return TR("%s получает такую же машину и тоже добавляет вам время на контрольных точках.",
+                  "%s gets a car like yours and adds time at the checkpoints too.");
+    if (name == "quarry")
+        return TR("%s получает такой же бульдозер или самосвал и толкает камни и бомбы вместе с вами.",
+                  "%s gets a bulldozer or a dumper like yours and pushes the rocks and bombs with you.");
+    if (name == "valet")
+        return TR("%s тоже отгоняет машины гостей: они засчитываются в вашу смену. Не уходите от отеля, иначе смена закончится.",
+                  "%s parks the guests' cars too: they count for your shift. Do not leave the hotel, or the shift ends.");
+    if (name == "shrange")
+        return TR("%s стреляет рядом с вами по вашим мишеням, и попадания идут в общий счёт.",
+                  "%s shoots at your targets next to you, and the hits count for both of you.");
+    return nullptr;
+}
 struct Side {
     std::string name;         // our own activity that may be shared, while it runs
     uint64_t offerUntil = 0;  // its call can be made until then (0: made, or too late)
     bool offered = false;     // made, no answer yet
     int32_t moneyAtStart = 0;
+    int32_t paid = 0;         // what who joined ours has had of it so far
     uint8_t with = 0xFF;      // who joined ours
     uint8_t owner = 0xFF;     // whose we joined
     std::string joined;       // and its name
     uint8_t inviteFrom = 0xFF;  // a call to answer
     std::string inviteName;
     uint64_t inviteUntil = 0;
+    uint64_t boardUntil = 0, boardTryMs = 0;  // joined: brought to its owner's vehicle until then (BoardSide)
+    // joined a taxi job, our own one runs too: one fare at a time near its player, each drives its own (27.10: both work,
+    // not one with the other sitting in its car). Its texts, marks and timers are ours then, the money goes to both.
+    bool parallel = false;
+    int32_t received = 0;  // what the other's job paid us while our own ran: not ours to pay on
+    uint64_t taxiAt = 0;   // joined a taxi job, at the wheel of our own taxi: our own job starts then (StartOwnTaxi)
 } g_side;
 bool SideOwning() { return g_side.with != 0xFF; }
 bool SideJoined() { return g_side.owner != 0xFF; }
+// our valet shift (valet.scm, a streamed script, no mission) with the other player in it: its texts, marks and answers go
+// as a side activity's
+bool JointValet(void* script) { return Net().Online() && SideOwning() && g_side.name == "valet" && jobs::ValetThread(script); }
+// A joint side activity's coronas (KICKSTA's 33, drawn each frame by DRAW_CORONA): to the other player as its markers, by
+// their place (the command's own id is its ip, the same for all of them)
+void NoteCorona() {
+    const auto* p = (const float*)0xA43C78;  // CTheScripts::ScriptParams: x y z size type flare r g b
+    const auto* n = (const int32_t*)p;
+    uint32_t id = 0x20000000u | ((uint32_t)(int)(p[0] * 4.0f) & 0x3FFFu) << 14 | ((uint32_t)(int)(p[1] * 4.0f) & 0x3FFFu);
+    g_areas[id] = {id, p[0], p[1], p[3], (float)((n[6] & 0xFF) << 16 | (n[7] & 0xFF) << 8 | (n[8] & 0xFF)), p[2], NowMs(), AREA_CORONA, true};
+}
 // The game whose mission this one shows: the host's story mission, or the side activity it joined
-bool MissionSource(uint8_t from) { return (from == Net().HostId() && !Net().IsHost()) || (SideJoined() && from == g_side.owner); }
+bool MissionSource(uint8_t from) {
+    return (from == Net().HostId() && !Net().IsHost()) || (SideJoined() && !g_side.parallel && from == g_side.owner) ||
+           pool::TextsFrom(from);
+}
 void SendSide(uint8_t op, uint8_t to, const std::string& name = "", int32_t money = 0) {
     Writer w(proto::G_SIDE);
     w.U8(op);
@@ -321,6 +466,12 @@ void SendSide(uint8_t op, uint8_t to, const std::string& name = "", int32_t mone
 // ---------------------------------------------------------------- partner: no mission triggers
 void* g_currentScript = nullptr;
 bool MissionScriptRuns() { return g_currentScript && Field<uint8_t>(g_currentScript, 0xDC); }  // m_bIsMission
+// a streamed script's (clothes.scm, the barber's, the shops'): its code is neither main.scm's nor in the mission block
+bool StreamedScriptRuns() {
+    if (!g_currentScript || MissionScriptRuns()) return false;
+    auto* ip = Field<uint8_t*>(g_currentScript, 0x14);  // m_pCurrentIP
+    return ip < (uint8_t*)addr::ScriptSpace || ip >= (uint8_t*)addr::ScriptSpace + Ref<int32_t>(kMainScriptSize);
+}
 void ScriptFaded(int16_t dir, float seconds);
 enum : uint8_t { WEAPON_GIVE = 1, WEAPON_TAKE = 2 };
 
@@ -333,6 +484,7 @@ struct WeaponSlots {
         for (int i = 0; i < NUM_WEAPON_SLOTS; ++i) type[i] = p->Weapons()[i].type, ammo[i] = p->Weapons()[i].ammoTotal;
     }
 };
+WeaponSlots* g_tickWeapons = nullptr;  // host: CJ's weapons before the mission script's commands of this frame
 void SendMissionWeapon(uint8_t op, int weapon, int ammo, bool inHand) {
     Writer w(proto::G_MISSION_WEAPON);
     w.U8(op);
@@ -365,8 +517,13 @@ bool PassengerOfOther() {
 
 // host: its mission's script moved CJ far (the next city, a trip skipped) or into another area (an interior only a
 // script reaches, the motel and its roof in "Reuniting the Families"). The partners near the old place come along once
-// the host can move again (CS_FOLLOW): they were left behind, often with the door shut.
+// the host can move again (CS_FOLLOW): they were left behind, often with the door shut. Nearer moves count as well when a
+// partner is close by (the swim to the ladder of "The Da Nang Thang" ends with CJ set on the deck, 50 m up and over), or
+// when CJ was a vehicle's gunner (that one's helicopter downed, CJ set in the water by the ship: the partner was in town,
+// 28.10).
+constexpr float kMovedNear = 30.0f, kMovedFar = 150.0f, kPartnerByOldPlace = 60.0f;
 bool g_movedPending = false;
+bool g_movedOffVehicle = false;  // CJ rode a vehicle (ATTACH_CHAR_TO_CAR) before the move
 CVector g_movedFrom;
 int8_t g_movedFromArea = 0;
 
@@ -384,17 +541,22 @@ void __fastcall HookScriptProcess(void* script, void* edx) {
     CPlayerPed* cj = Field<uint8_t>(script, 0xDC) && Net().IsHost() && Replicating() ? FindPlayerPed(0) : nullptr;  // m_bIsMission
     WeaponSlots weapons;
     if (cj) weapons.Take(cj);
+    WeaponSlots* prevWeapons = g_tickWeapons;
+    g_tickWeapons = cj ? &weapons : nullptr;
     bool flag = core::IsOnMission();
     CVector before = cj ? cj->GetPosition() : CVector{};
     int8_t areaBefore = cj ? cj->AreaCode() : 0;
+    bool onVehicle = cj && cj->AttachedTo();
     g_origScriptProcess(script, edx);
+    g_tickWeapons = prevWeapons;
     if (!flag && core::IsOnMission()) memcpy(g_flagBy, Field<char[8]>(script, 0x08), 8);  // who raised it (SideFlag)
     g_currentScript = prev;
     if (cj && FindPlayerPed(0) == cj) SendWeaponChanges(weapons, cj);
     if (cj && FindPlayerPed(0) == cj && !g_movedPending) {
         float moved = (cj->GetPosition() - before).Length();
-        if (moved > 150.0f || (cj->AreaCode() != areaBefore && moved >= 3.0f)) {
+        if (moved > kMovedNear || (cj->AreaCode() != areaBefore && moved >= 3.0f)) {
             g_movedPending = true;
+            g_movedOffVehicle = onVehicle;
             g_movedFrom = before;
             g_movedFromArea = areaBefore;
         }
@@ -549,20 +711,35 @@ void SendMissionLook() {
     LOGI("The mission's clothes: %zu keys changed, sent", changed.size());
 }
 
-void ApplyMissionLook() {
+void ApplyMissionLook(bool evenDriving = false) {
     CPlayerPed* me = FindPlayerPed(0);
-    g_lookPending = me->PedState() == 50;  // PEDSTATE_DRIVING: rebuilt on foot
+    g_lookPending = !evenDriving && me->PedState() == 50;  // PEDSTATE_DRIVING: rebuilt on foot
     if (g_lookPending) return;
     memcpy(me->ClothesDesc(), g_wantKeys, sizeof g_wantKeys);
     Call<0x5A82C0>(me, false);  // CClothes::RebuildPlayer
 }
 
-void RestoreOwnLook() {
+void RestoreOwnLook(bool evenDriving = false) {
     if (!g_ownKeysSet || !core::IsPlayerReady()) return;
     memcpy(g_wantKeys, g_ownKeys, sizeof g_wantKeys);
     g_ownKeysSet = false;
-    ApplyMissionLook();
+    ApplyMissionLook(evenDriving);
     LOGI("The mission's clothes are off, our own look again");
+}
+
+// Joined a burglary: the balaclava its owner's BURGJB puts on its own player, worn over our own look as a host's mission
+// dresses us (28.10: "не надевается маска"), and our own look again after it
+bool g_burglaryDressed = false;
+void BurglaryLook(bool on) {
+    if (on == g_burglaryDressed || !core::IsPlayerReady()) return;
+    g_burglaryDressed = on;
+    // off at once, in the van too, as BURGJB takes its own player's off (GIVE_PLAYER_CLOTHES, BUILD_PLAYER_MODEL): put off
+    // till the player was on foot, it stayed on the one who joined after the burglary was called off (29.10)
+    if (!on) return RestoreOwnLook(true);
+    if (!g_ownKeysSet) memcpy(g_ownKeys, FindPlayerPed(0)->ClothesDesc(), sizeof g_ownKeys), g_ownKeysSet = true;
+    Cmd(0x087B).I(0).S("BALACLAVA").S("BALACLAVA").I(17).Run();  // GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP, as BURGJB does
+    Cmd(0x070D).I(0).Run();                                       // BUILD_PLAYER_MODEL
+    LOGI("Joint burglary: the balaclava on, over our own look");
 }
 
 void HandleMissionLook(uint8_t from, Reader& r) {
@@ -758,11 +935,18 @@ void ApplyPersonsOnCars() {
         // on: out of the seat first (the mission took her out of it in the same frame, the copy follows its state)
         bool ready = p && p != FindPlayerPed(0) && (!it->on || (nv && Vehicles::Alive(*nv) && !p->InVehicle()));
         if (ready) {
+            // A player's copy goes on as a mission's person does. As a player it took the game's player branch
+            // (CPed::AttachPedToEntity), which sets this game's camera to the gunner's (CCamera::SetNewPlayerWeaponMode): the
+            // partner had the host's crosshair at the start marker of "The Da Nang Thang" ("Reuniting the Families" too, 28.10)
+            int32_t& type = Field<int32_t>(p, 0x598);  // CPed::m_nPedType: 0 and 1 are the players
+            int32_t was = type;
+            if (it->kind == 3) type = 4;  // PED_TYPE_CIVMALE
             if (it->on)
                 Cmd(0x0464).I(ped).I(nv->handle).F(it->offset.x).F(it->offset.y).F(it->offset.z).I(it->heading).F(it->range)
                     .I(it->weapon).Run();  // ATTACH_CHAR_TO_CAR
             else
                 Cmd(0x0465).I(ped).Run();  // DETACH_CHAR_FROM_CAR
+            type = was;
             LOGD("The host's mission's person %04X %s here too", it->id, it->on ? "on its car" : "off its car");
         }
         if (ready || NowMs() > it->until) it = g_personOnCar.erase(it);
@@ -892,27 +1076,12 @@ bool g_noiseMission = false;  // partner: the host's mission showed its noise me
 float g_ownNoise = 0.0f;
 uint64_t g_loudSentMs = 0, g_partnerLoudMs = 0;
 // our meter in COnscreenTimer's counters: added in a free one, or taken away
-void ShowOwnNoise(bool on) {
-    auto* t = (uint8_t*)kOnscreenTimer;
-    int slot = -1, freeSlot = -1;
-    for (int i = 0; i < 4; ++i) {
-        uint32_t var = *(uint32_t*)(t + 0x40 + i * 0x44);  // COnscreenCounterEntry::m_nVarId
-        if (var == kNoiseVar) slot = i;
-        else if (!var && freeSlot < 0) freeSlot = i;
-    }
-    static char key[] = "GUNS1_5";
-    if (on && slot < 0 && freeSlot >= 0) {
-        CallMethod<0x44CDA0>((void*)kOnscreenTimer, kNoiseVar, 1, key, (uint16_t)freeSlot);  // COnscreenTimer::AddCounter: a bar
-        t[0x40 + freeSlot * 0x44 + 0x3F] = 0;  // m_bFlashWhenFirstDisplayed: GUNS1 turns it off too
-    } else if (!on && slot >= 0) {
-        CallMethod<0x44CE80>((void*)kOnscreenTimer, kNoiseVar);  // COnscreenTimer::ClearCounter
-    }
-}
+void ShowOwnNoise(bool on) { ShowOwnCounter(kNoiseVar, "GUNS1_5", on); }
 // our counter's entry as it is now (its display state), to put back over the host's block in the same slot
-bool TakeOwnNoiseEntry(uint8_t* entry, int& slot) {
+bool TakeOwnEntry(uint32_t varOffset, uint8_t* entry, int& slot) {
     auto* t = (uint8_t*)kOnscreenTimer;
     for (int i = 0; i < 4; ++i)
-        if (*(uint32_t*)(t + 0x40 + i * 0x44) == kNoiseVar) {
+        if (*(uint32_t*)(t + 0x40 + i * 0x44) == varOffset) {
             memcpy(entry, t + 0x40 + i * 0x44, 0x44);
             slot = i;
             return true;
@@ -973,6 +1142,33 @@ void NoteMissionThread() {
     g_missionThreads.push_back({s, base});
 }
 
+void SendText(uint8_t kind, const char* text, uint32_t time, uint16_t flag, const int* nums, uint8_t bools);  // below
+
+// main.scm's APGATE slides an airport gate open for its own player alone: within 10 m (with flying skill 180 from outside)
+// or at its inner side (4.5 m), and shuts it once that player is 20 m off. Each game opened the gates for its own player,
+// and the other player's copy drove through a shut one (MozzisRus, 29.10: open for the host, shut for the partner, or the
+// other way round). These checks take the other player too; the outer side's (3 m, the licence help) stays our player's.
+// shortcut: only where APCHECK serves the gate in this game (our player within 65 m of it); counting the other player there
+// too would tie APCHECK to one site while the two are at two airports
+int AirportGateAnswer(void* script, uint16_t op) {
+    if ((op != 0x0471 && op != 0x00FE) || _strnicmp(Field<char[8]>(script, 0x08), "apgate", 8)) return -1;
+    const auto* p = (const int32_t*)0xA43C78;  // CTheScripts::ScriptParams, as the command read them
+    const auto* f = (const float*)p;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || p[0] != GetPedRef(me) || (op == 0x00FE && f[4] != 4.5f)) return -1;
+    // LOCATE_CHAR_ANY_MEANS_OBJECT_2D $PLAYER gate 10 10 (20 20 to shut), LOCATE_CHAR_ANY_MEANS_3D $PLAYER inner side 4.5
+    CObject* gate = op == 0x0471 ? GetObject(p[1]) : nullptr;
+    if (op == 0x0471 && !gate) return -1;
+    CVector at = gate ? gate->GetPosition() : CVector{f[1], f[2], f[3]};
+    float rx = gate ? f[2] : f[4], ry = gate ? f[3] : f[5], rz = gate ? 0.0f : f[6];
+    for (auto& [id, rp] : Players::Instance().All()) {
+        if (!rp.ped || !rp.hasState || rp.ped->AreaCode() != 0) continue;
+        CVector d = (rp.ped->InVehicle() ? rp.ped->Vehicle()->GetPosition() : rp.ped->GetPosition()) - at;  // as the game
+        if (std::fabs(d.x) < rx && std::fabs(d.y) < ry && (rz <= 0.0f || std::fabs(d.z) < rz)) return 1;
+    }
+    return -1;
+}
+
 // Every command of every script, with the handler CRunningScript::Process took for it from the table (its opcode / 100),
 // as Process calls it: the opcode read, the instruction pointer past it, the NOT flag set.
 using CommandHandlerFn = int8_t(__thiscall*)(void*, int);
@@ -987,8 +1183,23 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
         memcpy(g_lookBase, FindPlayerPed(0)->ClothesDesc(), sizeof g_lookBase), g_lookBaseSet = true;
     uint8_t cond = Field<uint8_t>(script, 0xC5);     // CRunningScript::m_bCondResult
     uint16_t andOr = Field<uint16_t>(script, 0xD0);  // m_nLogicalOp
+    // TRUCK's ADD_BLIP_FOR_COORD of the drop into 76@: with the trailer off the cab as its player got in, its second
+    // stage starts with the trailer lost and hooking it up adds the blip once more. The first one stayed on both maps for
+    // good (27.10: two players knock the trailer loose, the other's truck copy stands at the same spot). Taken first.
+    if (op == 0x018A && Field<uint8_t>(script, 0xDC) && !_strnicmp(Field<char[8]>(script, 0x08), "truck", 8))
+        if (int old = MissionLocal(76); BlipAlive(old) && ((Ref<uint8_t>(Trace(old & 0xFFFF) + 0x26) >> 2) & 0xF) == BLIP_COORD) {
+            Call<0x587CE0>(old);  // CRadar::ClearBlip
+            LOGI("Trucking: its drop's blip was set again over a live one: the old one removed");
+        }
+    // a joint job of ours: the other player's ambulance or the other player itself for this one command (Jobs.cpp)
+    int32_t jobWas = 0;
+    int32_t* jobVar = Net().Online() && Field<uint8_t>(script, 0xDC) ? jobs::BeforeCommand(script, op, ip, jobWas) : nullptr;
     int8_t r = ((CommandHandlerFn)handler)(script, command);
+    if (jobVar) *jobVar = jobWas;
     if (op == 0x004F && Net().Online() && Net().IsHost() && MissionThread(script)) NoteMissionThread();  // START_NEW_SCRIPT
+    // PLAY_MISSION_PASSED_TUNE: the passed mission's jingle played in the host's game only, the partner saw the text in
+    // silence
+    if (op == 0x0394 && Net().Online()) SendText(TXT_TUNE, nullptr, 0, (uint16_t)Ref<int32_t>(0xA43C78), nullptr, 0);
     if ((op == 0x0737 || op == 0x0475 || op == 0x00FF || op == 0x00E1) && Net().Online() && Net().IsHost() && Replicating() &&
         StoryMission(script))
         if (int answer = CrateAnswer(script, op, ip); answer >= 0) {
@@ -1016,10 +1227,39 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
         SendNoCollide((const int32_t*)0xA43C78);  // SET_CHAR_USES_COLLISION_CLOSEST_OBJECT_OF_TYPE
     if ((op == 0x0464 || op == 0x0465) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script))
         SendPersonOnCar(op == 0x0464, (const int32_t*)0xA43C78);  // ATTACH_CHAR_TO_CAR, DETACH_CHAR_FROM_CAR
+    // CJ made a vehicle's gunner and back: the gun is the vehicle's (CPed::AttachPedToEntity gives it, the detach takes it
+    // back), not one the mission gives to keep. The partner walked about with the host's minigun (28.10).
+    if ((op == 0x0464 || op == 0x0465) && g_tickWeapons && *(const int32_t*)0xA43C78 == GetPedRef(FindPlayerPed(0)))
+        g_tickWeapons->Take(FindPlayerPed(0));
     if ((op == 0x00AB || op == 0x0175 || op == 0x0519) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script))
         SendCarCommand(op, (const int32_t*)0xA43C78);  // CTheScripts::ScriptParams
     if (CameraTake(op) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script)) g_scriptCam = true;
     if (Net().Online() && Net().IsHost()) minigames::AfterCommand(script, op, ip, Replicating() && StoryMission(script));
+    if (Net().Online()) contest::AfterCommand(script, op, ip);
+    if (Net().Online() && Net().IsHost()) courier::AfterCommand(script, op);
+    if (JointValet(script)) jobs::ValetAfter(op, ip);
+    if (op == 0x024F && Net().Online() && SideOwning() && Field<uint8_t>(script, 0xDC)) NoteCorona();  // DRAW_CORONA
+    // POOL2 at a table for two: the second pad's answers are the other player's, and the second player's own table (its
+    // attractor, no mission) offers it no game (Pool.cpp); a joint job of ours: the other player counts as its second
+    // player (Jobs.cpp)
+    if (Net().Online()) {
+        bool mission = Field<uint8_t>(script, 0xDC);
+        int answer = pool::Answer(script, op);
+        if (answer < 0 && mission) answer = jobs::Answer(script, op);
+        if (answer < 0 && !mission) answer = courier::Answer(script, op);
+        if (answer < 0 && !mission) answer = AirportGateAnswer(script, op);
+        if (answer < 0 && JointValet(script)) answer = jobs::ValetAnswer(op);
+        // in the other's valet shift ours stays off: VALET_L and VALET take our player for out of the hotel's grounds
+        if (answer < 0 && op == 0x00A3 && SideJoined() && g_side.joined == "valet" && !_strnicmp(Field<char[8]>(script, 0x08), "valet", 5))
+            answer = 0;
+        if (answer >= 0) {
+            Field<uint8_t>(script, 0xC5) = cond;
+            Field<uint16_t>(script, 0xD0) = andOr;
+            CallMethod<0x4859D0>(script, (uint8_t)answer);  // CRunningScript::UpdateCompareFlag
+        } else if (mission) {
+            pool::AfterCommand(script, op, ip);
+        }
+    }
     // CLEAR_WANTED_LEVEL of the mission's player, SET_INT_STAT of the city (the end of "The Green Sabre")
     if ((op == 0x0110 || (op == 0x0629 && *(const int32_t*)0xA43C78 == 181)) && Net().Online() && Net().IsHost() && Replicating() &&
         StoryMission(script))
@@ -1229,6 +1469,23 @@ void HandlePolicy(uint8_t from, Reader& r) {
 
 std::set<int> g_missionWeapons;  // partner: what the host's mission gave (only those it takes back)
 std::map<int, std::pair<int, int>> g_replaced;  // partner: its own weapon a given one pushed out of the slot (type, ammo)
+
+void GiveWeaponNow(int h, int type, int count) {
+    int model = -1;
+    Cmd(0x0781).I(type).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
+    if (model > 0) LoadModelNow(model);
+    Cmd(0x01B2).I(h).I(type).I(std::clamp(count, 1, 99999)).Run();  // GIVE_WEAPON_TO_CHAR
+}
+// what the mission gave goes, the partner's own gun it pushed out comes back
+void TakeBackMissionWeapon(CPlayerPed* me, int weapon) {
+    int h = GetPedRef(me);
+    Cmd(0x0555).I(h).I(weapon).Run();  // REMOVE_WEAPON_FROM_CHAR
+    if (auto it = g_replaced.find(weapon); it != g_replaced.end()) {
+        GiveWeaponNow(h, it->second.first, it->second.second);
+        g_replaced.erase(it);
+    }
+}
+
 // The partner takes the host's mission state only while playing the host's world: one still in its own game (waiting
 // for the world, or for the host's prologue) got the host's cutscenes, texts, weapons and rewards in it.
 void HandleMissionWeapon(uint8_t from, Reader& r) {
@@ -1239,12 +1496,7 @@ void HandleMissionWeapon(uint8_t from, Reader& r) {
     if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady() || !flow::InHostWorld() || weapon <= 0 || weapon > 46) return;
     CPlayerPed* me = FindPlayerPed(0);
     int h = GetPedRef(me);
-    auto give = [&](int type, int count) {
-        int model = -1;
-        Cmd(0x0781).I(type).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
-        if (model > 0) LoadModelNow(model);
-        Cmd(0x01B2).I(h).I(type).I(std::clamp(count, 1, 99999)).Run();  // GIVE_WEAPON_TO_CHAR
-    };
+    auto give = [&](int type, int count) { GiveWeaponNow(h, type, count); };
     if (op == WEAPON_GIVE) {
         WeaponSlots was;
         was.Take(me);
@@ -1258,11 +1510,7 @@ void HandleMissionWeapon(uint8_t from, Reader& r) {
                 g_replaced[weapon] = {was.type[i], was.ammo[i]};
         g_missionWeapons.insert(weapon);
     } else if (g_missionWeapons.erase(weapon)) {
-        Cmd(0x0555).I(h).I(weapon).Run();  // REMOVE_WEAPON_FROM_CHAR
-        if (auto it = g_replaced.find(weapon); it != g_replaced.end()) {
-            give(it->second.first, it->second.second);
-            g_replaced.erase(it);
-        }
+        TakeBackMissionWeapon(me, weapon);
     }
 }
 
@@ -1277,7 +1525,9 @@ bool InArea(const Area& a, const CVector& p, float slack) {
 bool MissionContact(uintptr_t t) {
     if (!(Ref<uint8_t>(t + 0x25) & 2) || ((Ref<uint8_t>(t + 0x26) >> 2) & 0xF) != 5) return false;
     uint8_t sprite = Ref<uint8_t>(t + 0x24);
-    return sprite != 31 && sprite != 32 && sprite != 35;  // RADAR_SPRITE_PROPERTYG, PROPERTYR, SAVEGAME
+    // RADAR_SPRITE_PROPERTYG, PROPERTYR, SAVEGAME, and the gyms' (main.scm's three at their doors: "waiting for the host"
+    // at every gym door, #34)
+    return sprite != 31 && sprite != 32 && sprite != 35 && sprite != 54;
 }
 
 // The story's start point within range of p: the yellow ones are the radar's contact points (the radar draws them, the
@@ -1295,11 +1545,12 @@ bool ContactMarkerAt(const CVector& p, float range, Area& out) {
     return false;
 }
 
-// The marker the host stands in: a start point, or a locate command's marker drawn in the last second
+// The marker the host stands in: a start point, or a locate command's marker drawn in the last second. A shop's own
+// (the changing room's of clothes.scm) starts no mission: the host stood waiting for the partner in Binco's.
 bool MarkerAt(const CVector& p, Area& out) {
     if (ContactMarkerAt(p, 2.0f, out)) return true;
     for (auto& [id, a] : g_areas)
-        if (a.kind == AREA_LOCATE && NowMs() - a.seenMs < 1000 && InArea(a, p, 0.0f)) {
+        if (a.kind == AREA_LOCATE && !a.streamed && NowMs() - a.seenMs < 1000 && InArea(a, p, 0.0f)) {
             out = a;
             return true;
         }
@@ -1521,6 +1772,7 @@ bool PartnersAtMarker(CPed* host) {
         if (PartnerWorldHolds(id, rp, marker)) {
             g_waitMs = NowMs();
             g_waitArea = marker;
+            if (g_currentScript) memcpy(g_waitBy, Field<char[8]>(g_currentScript, 0x08), 8);
             return false;
         }
         // a partner whose game sends nothing for 5 s (in the pause menu, loading, hung) cannot come: the host was held
@@ -1529,6 +1781,7 @@ bool PartnersAtMarker(CPed* host) {
         if (!rp->ped || !InArea(marker, rp->ped->GetPosition(), 1.0f)) {  // two can not stand on one spot
             g_waitMs = NowMs();
             g_waitArea = marker;
+            if (g_currentScript) memcpy(g_waitBy, Field<char[8]>(g_currentScript, 0x08), 8);
             return false;
         }
     }
@@ -1541,7 +1794,8 @@ bool __fastcall HookCanPlayerStartMission(CPlayerPed* player, void* edx) {
     if (!player) return false;
     bool ok = g_origCanStart(player, edx);
     if (!ok || !Net().Online() || !g_currentScript) return ok;
-    if (SideThread(Field<char[8]>(g_currentScript, 0x08))) return Net().IsHost() || !HostMissionRecent(0);
+    if (SideThread(Field<char[8]>(g_currentScript, 0x08)))  // in the other's quarry, ours at its marker would fade out for good
+        return (Net().IsHost() || !HostMissionRecent(0)) && !(SideJoined() && g_side.joined == "quarry");
     auto* ip = Field<uint8_t*>(g_currentScript, 0x14);
     // main.scm threads ask it in mission triggers (not only inside markers, so no hint here)
     if (ip < (uint8_t*)addr::ScriptSpace || ip >= (uint8_t*)addr::ScriptSpace + Ref<int32_t>(kMainScriptSize)) return ok;
@@ -1553,11 +1807,29 @@ bool __fastcall HookCanPlayerStartMission(CPlayerPed* player, void* edx) {
 // the mission block by the time its thread starts: the thread ends at once instead.
 using StartScriptFn = void*(__cdecl*)(uint8_t*);
 StartScriptFn g_origStartScript = nullptr;
+void StartParallel();  // below
 void* __cdecl HookStartNewScript(uint8_t* ip) {
     // LOAD_AND_LAUNCH_MISSION_INTERNAL starts the mission at CTheScripts' mission block (0x4899FA, 0x489A7A): its launcher
     if (ip == (uint8_t*)0xA7A6A0) {
         g_launcher[0] = 0;
         if (g_currentScript) memcpy(g_launcher, Field<char[8]>(g_currentScript, 0x08), 8);
+        // a taxi job of our own in the other's: each drives its own fares (Side::parallel), before its first command
+        static const uint8_t kTaxi[] = {0xA4, 0x03, 0x09, 'T', 'A', 'X', 'I', 'O', 'D', 'D', 0};  // SCRIPT_NAME 'TAXIODD'
+        bool ownTaxi = SideJoined() && !_stricmp(g_side.joined.c_str(), "taxiodd") && !memcmp(ip, kTaxi, sizeof kTaxi);
+        if (ownTaxi) StartParallel();
+        // Taking part in the other player's side activity, this game started its own as its player stood at the same
+        // start (on the bike at the BMX ground, in the race's marker): leaving for it split the joint one in two (#19).
+        // Ours ends at once; R3 and ODDVEH launch again only when the player gets in again.
+        if (SideJoined() && !ownTaxi &&
+            (SideThread(g_launcher) || !_strnicmp(g_launcher, "r3", 8) || !_strnicmp(g_launcher, "oddveh", 8) ||
+             !_strnicmp(g_launcher, "cesar", 8))) {
+            ip[0] = 0x4E, ip[1] = 0x00;  // TERMINATE_THIS_SCRIPT
+            LOGI("Our own side activity (launched by %s) not started: we take part in the other player's", g_launcher);
+            // SHOOT raised the mission flag for its range, which ends now with no clean-up to lower it: the game stayed
+            // on a mission for good. Down again, and SHOOT's latch up until the street ($104), or it launched it again
+            if (!_strnicmp(g_launcher, "shoot", 8))
+                Ref<int32_t>(addr::ScriptSpace + 1636) = 0, Ref<int32_t>(addr::ScriptSpace + 104) = 1;
+        }
     }
     static const uint8_t kIntro[] = {0xA4, 0x03, 0x09, 'I', 'N', 'T', 'R', 'O', 0};  // SCRIPT_NAME 'INTRO'
     if (ip && flow::IsFollower() && !memcmp(ip, kIntro, sizeof kIntro)) {
@@ -1717,9 +1989,17 @@ void SendText(uint8_t kind, const char* text, uint32_t time, uint16_t flag, cons
         at[0] = CutsceneMs();
         nums = at;
     }
-    if (!Replicating() && !SideOwning()) return;
+    // Big Smoke's courier (Courier.cpp), a streamed script outside any mission: its lines, not the help to answer its call
+    bool courier = Net().Online() && Net().IsHost() && CourierThread(CurrentScript()) && kind != TXT_HELP;
+    courier = courier || JointValet(CurrentScript());  // the valet's shift the other player joined: a streamed script too
+    if (!Replicating() && !SideOwning() && !pool::Owning() && !courier) return;
     // a streamed script's (a shop, the gym, a casino table, a vending machine the host uses during its mission): its own
-    if (void* sc = CurrentScript(); sc && Field<uint8_t>(sc, 0xC7)) return;  // CRunningScript::m_bIsExternal
+    if (void* sc = CurrentScript(); sc && Field<uint8_t>(sc, 0xC7) && !courier) return;  // CRunningScript::m_bIsExternal
+    // another mod's script (a CLEO trainer's menu and hints, #36): its code is outside main.scm and the mission block
+    if (void* sc = CurrentScript(); sc && !courier) {
+        auto* ip = Field<uint8_t*>(sc, 0x14);  // m_pCurrentIP
+        if (ip < (uint8_t*)addr::ScriptSpace || ip >= (uint8_t*)addr::ScriptSpace + 200000 + 69000) return;
+    }
     if (minigames::PartnerShowsOwn(CurrentScript())) return;  // the lowrider judge's texts: the partner judges its own
     Writer w(proto::G_TEXT);
     w.U8(kind);
@@ -1839,6 +2119,7 @@ void HandleText(uint8_t from, Reader& r) {
     case TXT_HELP: g_origHelp(t, bools & 1, (bools & 2) != 0, (bools & 4) != 0); break;
     case TXT_CLEAR: g_origClear(flag != 0); break;
     case TXT_CLEAR_SMALL: g_origClearSmall(); break;
+    case TXT_TUNE: Cmd(0x0394).I(flag).Run(); break;  // PLAY_MISSION_PASSED_TUNE
     case TXT_CS_LINE:  // waits for our own copy of the cutscene to get there (ShowHostLines)
         if (!t || !hasNums) return;
         // no copy here (it was not loaded: our player in the air or on the water): the host's line now
@@ -1857,7 +2138,8 @@ HighlightFn g_origHighlight = nullptr;
 void __cdecl HookHighlight(uint32_t id, float x1, float y1, float x2, float y2, float z) {
     if (Net().Online() && (Net().IsHost() || SideOwning())) {
         if (!g_areas.count(id)) LOGD("Script marker %08X at %.1f,%.1f,%.1f", id, (x1 + x2) * 0.5f, (y1 + y2) * 0.5f, z);
-        g_areas[id] = {id, x1, y1, x2, y2, z, NowMs(), AREA_LOCATE, MissionScriptRuns()};
+        g_areas[id] = {id, x1, y1, x2, y2, z, NowMs(), AREA_LOCATE, MissionScriptRuns() || JointValet(g_currentScript)};
+        g_areas[id].streamed = StreamedScriptRuns();
     }
     g_origHighlight(id, x1, y1, x2, y2, z);
 }
@@ -1932,6 +2214,25 @@ struct Marked {  // one record of G_CHECKPOINTS
 };
 std::vector<Marked> g_sentMarked;            // host
 std::map<uint8_t, std::pair<Marked, int>> g_placed;  // partner: slot -> what and its script handle
+// STUNT turns each of its rings 10 degrees a frame (SET_CHECKPOINT_HEADING, the only script that does): every update
+// of the host's then had a new direction, and the partner's ring was made anew four times a second, its spin in jumps
+// (29.10: "анимация колец подлагивает"). A placed one that only turned stays, and turns here as there.
+std::map<uint8_t, float> g_turning;  // partner: slot -> its heading here
+bool SamePlace(const Marked& a, const Marked& b) {
+    return a.slot == b.slot && a.type == b.type && (a.pos - b.pos).Length() < 0.05f && std::fabs(a.size - b.size) < 0.01f;
+}
+void TurnMarked() {
+    for (auto it = g_turning.begin(); it != g_turning.end();) {
+        auto placed = g_placed.find(it->first);
+        if (placed == g_placed.end()) {
+            it = g_turning.erase(it);
+            continue;
+        }
+        it->second = std::fmod(it->second + 10.0f, 360.0f);
+        Cmd(0x0996).I(placed->second.second).F(it->second).Run();  // SET_CHECKPOINT_HEADING
+        ++it;
+    }
+}
 
 std::vector<Marked> HostMarked() {
     std::vector<Marked> out;
@@ -1984,6 +2285,7 @@ void Unplace(int slot, int handle) {
 void ClearPartnerMarked() {
     for (auto& [slot, placed] : g_placed) Unplace(slot, placed.second);
     g_placed.clear();
+    g_turning.clear();
 }
 
 void HandleMarked(uint8_t from, Reader& r) {
@@ -2006,6 +2308,15 @@ void HandleMarked(uint8_t from, Reader& r) {
             ++it;
             continue;
         }
+        auto turned = std::find_if(now.begin(), now.end(), [&](const Marked& m) { return SamePlace(m, it->second.first); });
+        if (turned != now.end() && it->first < 32) {  // only its direction: turned, not made anew
+            if (!g_turning.count(it->first))
+                g_turning[it->first] = std::atan2(turned->dir.y, turned->dir.x) * 57.29578f;  // as SET_CHECKPOINT_HEADING sets it
+            it->second.first = *turned;
+            ++it;
+            continue;
+        }
+        g_turning.erase(it->first);
         Unplace(it->first, it->second.second);
         it = g_placed.erase(it);
     }
@@ -2074,6 +2385,15 @@ CutscenePlayerFn g_origCutscenePlayer = nullptr;
 CPlayerPed* g_cutsceneCj = nullptr;
 void __cdecl HookRebuildCutscenePlayer(CPlayerPed* ped, int model) {
     if (!g_cutsceneCj) return g_origCutscenePlayer(ped, model);
+    // LoadCutsceneData has just rebuilt our own player if its body had changed (RebuildPlayerIfNeeded, 0x4D5E8B), with
+    // our clothes' textures: the host's chain, watch, glasses or hat then had none and its mesh crashed the game (#72).
+    // Model 0 is dressed for the host right before.
+    if (memcmp((const void*)0xBC1C78, g_cutsceneCj->ClothesDesc(), sizeof(CPedClothesDesc)) != 0) {  // PlayerClothes
+        static bool told = false;
+        if (!told) LOGI("Cutscene CJ: the player's textures were of another look, dressed for the host again");
+        told = true;
+    }
+    DressCutsceneCj(g_cutsceneCj);
     // the host's body as its look came: the original writes this game's fat and muscle stats into the description first
     MuscleFrom muscle(g_cutsceneCj->ClothesDesc());
     Call<0x5A81E0>((uint32_t)model, g_cutsceneCj->ClothesDesc(), (CPedClothesDesc*)nullptr, true);  // CClothes::ConstructPedModel
@@ -2188,14 +2508,26 @@ void PartnerEndCutscene() {
 }
 
 // what the mission script does after a cutscene: CLEAR_CUTSCENE resets ms_running
+bool OwnActivity();
+
 void PartnerClearCutscene() {
     Cmd(0x02EA).Run();  // CLEAR_CUTSCENE
     LeaveCutsceneScene();
     ReturnToCutsceneCar();
     Cmd(0x02EB).Run();            // RESTORE_CAMERA_JUMPCUT
     // the cutscene fades out at its end; in a mission the host's fades follow (G_FADE), otherwise the screen
-    // would stay black
+    // would stay black. A mission that blacks out, clears its cutscene and fades in in one frame ("Drive-Thru", "Ryder",
+    // "Cleaning the Hood") had its fade in here before the cutscene's end, and our copy's own last-second fade-out came
+    // after it: the partner's screen stayed black until the next fade of the host's. What the host's screen is now counts.
     if (!g_partnerMission && FadeAlpha() > 1.0f) Fade(0.5f, 1);
+    else if (g_partnerMission && !OwnActivity()) {
+        if (!g_hostBlack && Darkening()) {
+            Fade(0.5f, 1);
+            LOGI("Host cutscene: the host's screen is already clear, ours fades in");
+        } else if (g_hostBlack) {
+            g_weFaded = true;  // the host's fade in brings ours back
+        }
+    }
     Cmd(0x01B4).I(0).I(1).Run();  // SET_PLAYER_CONTROL on
     if (g_weWide || TheCameraWide()) SetWideScreen(false);
     g_weWide = false;
@@ -2320,6 +2652,25 @@ bool InAirOrWater() {
 }
 
 void StopWatching(bool restore);
+bool NearHost(float range);
+
+// Riding with the host in a car one of its mission's people drives (Sweet's of "Tagging Up Turf"): the host got out at the
+// tags, the partner did not in time and was driven off with Sweet to the next district, then moved with the car back to
+// the yard (Nikolai, 26.10). Out with the host.
+void LeaveWithHost() {
+    static bool hostWasIn = false;
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr;
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    bool hostIn = v && host && host->ped && host->ped->InVehicle() && host->ped->Vehicle() == v;
+    CPed* driver = v ? v->Driver() : nullptr;
+    if (hostWasIn && !hostIn && g_partnerMission && g_csState == 0 && !CutsceneRunning() && driver && driver != me &&
+        !driver->IsPlayer() && !Players::Instance().FindByPed(driver)) {
+        Cmd(0x05CD).I(GetPedRef(me)).I(GetVehicleRef(v)).Run();  // TASK_LEAVE_CAR
+        LOGI("The host got out of the car its mission's driver drives: so do we");
+    }
+    hostWasIn = hostIn;
+}
 
 // The host's mission put the host in a vehicle where it moved it (the Shamal in the air at "Freefall"'s end): set down
 // beside the host up there, the partner fell. It gets a seat in that vehicle as soon as its copy is here.
@@ -2358,12 +2709,34 @@ void HandleCutscene(uint8_t from, Reader& r) {
         if (g_csState == 2) PartnerEndCutscene();
         if (g_csState != 0) PartnerClearCutscene();
         StopWatching(false);  // the cutscene's camera from now on (our persisting scene camera would hold it)
-        // A partner in an aircraft or a boat, or in the air on foot (a parachute, a jetpack), stays out of the scene: its
-        // loading sets the player out of the vehicle (CCutsceneMgr::LoadCutsceneData_preload), and after it the player
-        // came back where it had been, in mid-air or in the water, with the aircraft gone on.
+        // A partner in an aircraft or a boat, or in the air on foot (a parachute, a jetpack): the loading sets the player
+        // out of the vehicle (CCutsceneMgr::LoadCutSceneFile), and after it the player came back where it had been, in
+        // mid-air or in the water, with the aircraft gone on. One that flew or sailed along with the host (300 m) is set
+        // down beside it when the host is on the ground, and stays there after the scene, its vehicle left: it missed
+        // every scene of the story's end otherwise (#14). Farther, or with the host up in the air too, it stays out.
         if (InAirOrWater()) {
-            LOGI("Host cutscene %s: not here, our player is in the air or on the water", name.c_str());
-            return;
+            const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+            CPlayerPed* me = FindPlayerPed(0);
+            CVehicle* hv = host && host->ped && host->ped->InVehicle() ? host->ped->Vehicle() : nullptr;
+            int hvType = hv ? hv->VehicleSubClass() : -1;
+            bool hostGrounded = hv ? hvType != VEHICLE_TYPE_HELI && hvType != VEHICLE_TYPE_PLANE && hvType != VEHICLE_TYPE_BOAT &&
+                                         hvType != VEHICLE_TYPE_FHELI && hvType != VEHICLE_TYPE_FPLANE
+                                   : host && host->ped && (host->ped->PedFlags() & 1);  // bIsStanding
+            if (!hostGrounded || host->state.area != 0 || me->AreaCode() != 0 || !NearHost(300.0f)) {
+                LOGI("Host cutscene %s: not here, our player is in the air or on the water", name.c_str());
+                return;
+            }
+            CEntity* by = hv ? (CEntity*)hv : (CEntity*)host->ped;
+            CMatrix* m = by->Matrix();
+            CVector p = by->GetPosition() + (m ? m->right : CVector{1.0f, 0.0f, 0.0f}) * (hv ? 3.0f : 1.5f);  // its right
+            bool found = false;
+            float ground = Call<0x5696C0, float>(p.x, p.y, p.z + 2.0f, &found, (CEntity**)nullptr);  // CWorld::FindGroundZFor3DCoord
+            if (found) p.z = ground + 1.0f;
+            int h = GetPedRef(me);
+            if (me->InVehicle()) Cmd(0x0362).I(h).F(p.x).F(p.y).F(p.z).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
+            else Cmd(0x00A1).I(h).F(p.x).F(p.y).F(p.z - 1.0f).Run();          // SET_CHAR_COORDINATES
+            g_csCar = g_csSeat = -1;
+            LOGI("Host cutscene %s: our player was in the air or on the water, set down by the host for it", name.c_str());
         }
         LOGI("Host cutscene %s: loading here", name.c_str());
         // the loading sets us out of a vehicle (CCutsceneMgr::LoadCutsceneData_preload): we get back in afterwards
@@ -2372,10 +2745,8 @@ void HandleCutscene(uint8_t from, Reader& r) {
             g_csSeat = me->Vehicle()->Driver() == me ? -1 : PassengerSeatOf(me->Vehicle(), me);
         }
         scene::Prepare();  // before the cutscene's own streaming requests
-        if (const RemotePlayer* host = Players::Instance().Get(Net().HostId()); host && host->ped) {
-            DressCutsceneCj(host->ped);  // the story's CJ is the host
-            g_cutsceneCj = host->ped;
-        }
+        if (const RemotePlayer* host = Players::Instance().Get(Net().HostId()); host && host->ped)
+            g_cutsceneCj = host->ped;  // the story's CJ is the host: dressed as LoadCutsceneData builds it
         g_origLoadCutscene(name.c_str());
         g_cutsceneCj = nullptr;
         g_csState = 1;
@@ -2515,12 +2886,6 @@ void HostScanBlips(bool force) {
     }
 }
 
-// a blip handle is its trace's counter << 16 | index; the engine frees an entity's blip with the entity
-bool BlipAlive(int handle) {
-    int i = handle & 0xFFFF;
-    return i < kNumTraces && (Ref<uint8_t>(Trace(i) + 0x25) & 2) && Ref<uint16_t>(Trace(i) + 0x14) == (uint16_t)(handle >> 16);
-}
-
 void RemovePartnerBlip(PartnerBlip& pb) {
     if (pb.handle) Cmd(0x0164).I(pb.handle).Run();  // REMOVE_BLIP
     pb.handle = 0;
@@ -2596,6 +2961,41 @@ void HandleBlip(uint8_t from, Reader& r) {
     } else if (op == BLIP_CLEAR) {
         ClearPartnerBlips();
         g_partnerBlipRecords.clear();
+    }
+}
+
+// TRUCK's drops (its 102@, 103@). A blip it left at one (see ScriptCommand) went into the saves and the host's world for
+// the partners: a loaded world with no mission running loses it (a sprite-less coordinate blip of TRUCK's scale 4 there).
+const float kTruckDrops[][2] = {
+    {-187.4f, -277.0f}, {58.0f, -256.7f}, {95.9f, -154.4f}, {809.8f, -598.0f}, {1403.8f, 399.4f}, {1338.3f, 348.9f},
+    {1449.7f, 2358.9f}, {1037.5f, 2131.3f}, {988.0f, 2080.4f}, {1288.7f, 1195.2f}, {2467.9f, 1950.1f},
+    {2792.7f, 2578.3f}, {2271.5f, 2791.7f}, {2596.5f, 1738.6f}, {2818.8f, 912.5f}, {2706.5f, 827.3f}, {1627.7f, 688.4f},
+    {1504.5f, 981.1f}, {1724.0f, 1590.1f}, {1727.8f, 2338.0f}, {2413.7f, -2113.7f}, {2785.0f, -2455.4f},
+    {2112.7f, -2070.4f}, {1763.6f, -2070.4f}, {-1888.6f, -1711.8f}, {-2117.2f, -2380.5f}, {-1545.4f, -2747.0f},
+    {-1407.4f, 2646.0f}, {-2245.6f, 2371.7f}, {-1360.6f, 2068.1f}, {274.3f, 1382.8f}, {628.9f, 1714.9f},
+    {635.0f, 1213.8f}, {-915.0f, 2012.1f}, {385.8f, 2595.6f}, {-1557.0f, -441.3f}, {-2659.6f, 1380.6f},
+    {-1650.9f, 437.6f}, {-1745.1f, 37.9f}, {56.7f, -268.4f}, {100.4f, -155.1f}, {815.0f, -605.1f}, {1401.1f, 398.8f},
+    {1343.1f, 345.7f}, {-189.2f, -273.0f}, {1042.2f, 2130.5f}, {983.1f, 2076.4f}, {2469.6f, 1949.5f},
+    {2807.8f, 2609.9f}, {2248.7f, 2775.1f}, {2603.2f, 1730.5f}, {2710.4f, 850.1f}, {1588.9f, 715.3f},
+    {1446.3f, 1000.5f}, {1713.8f, 2329.1f}, {1450.8f, 2360.7f}, {2759.0f, -2446.0f}, {2104.0f, -2089.0f},
+    {1751.0f, -2067.0f}, {2412.0f, -2106.0f}, {-2001.0f, -2388.1f}, {-1560.7f, -2728.4f}, {-1835.0f, -1647.7f},
+    {-1945.9f, 2377.9f}, {-1471.5f, 1864.8f}, {-1286.7f, 2695.9f}, {613.8f, 1692.4f}, {620.4f, 1249.3f},
+    {-533.2f, 1995.9f}, {325.1f, 2543.3f}, {246.6f, 1435.2f}, {-2629.1f, 1387.4f}, {-1530.8f, 487.2f},
+    {-1745.1f, 27.8f}, {-1549.9f, -434.9f}};
+void ClearTruckLeftovers() {
+    if (FindMissionScript()) return;
+    for (int i = 0; i < kNumTraces; ++i) {
+        uintptr_t t = Trace(i);
+        if (!(Ref<uint8_t>(t + 0x25) & 2) || ((Ref<uint8_t>(t + 0x26) >> 2) & 0xF) != BLIP_COORD || Ref<uint8_t>(t + 0x24) ||
+            Ref<uint16_t>(t + 0x1C) != 4)
+            continue;  // in use, coordinates, no sprite, TRUCK's CHANGE_BLIP_SCALE 4
+        const CVector& p = Ref<CVector>(t + 0x08);
+        for (const auto& d : kTruckDrops)
+            if (std::fabs(p.x - d[0]) < 1.0f && std::fabs(p.y - d[1]) < 1.0f) {
+                LOGI("A trucking drop's blip left in the loaded world at %.0f,%.0f: removed", p.x, p.y);
+                Call<0x587C10>(i);  // CRadar::ClearActualBlip
+                break;
+            }
     }
 }
 
@@ -2857,6 +3257,7 @@ void HandleScreen(uint8_t from, Reader& r) {
     uint8_t flags = r.U8();
     float duration = r.F32();
     if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady() || !flow::InHostWorld()) return;
+    g_hostBlack = (flags & FADE_ACTIVE) && (flags & FADE_BLACK);
     if ((flags & FADE_ACTIVE) && OwnActivity()) return;
     if (!(flags & FADE_ACTIVE)) {
         if (g_weFaded && Darkening()) Fade(0.5f, 1);
@@ -2884,7 +3285,9 @@ void HandleScreen(uint8_t from, Reader& r) {
         if (Darkening() && !(Fading() && FadeDirection() == 1)) {
             Fade(duration, 1);
             LOGD("Host's script fade: in");
-        } else if (!Darkening()) {
+        } else if (!Fading() && FadeAlpha() < 1.0f) {
+            // clear and settled only: a fade in asked in this very frame leaves the alpha up for now, and a fade-out
+            // still to come (our copy's cutscene ending) found nobody to bring the screen back
             g_weFaded = false;
         }
     }
@@ -2934,13 +3337,18 @@ void HandleOnscreen(uint8_t from, Reader& r) {
             memset(c, 0, 0x44);  // shown here while our player is in the house, not while the host is
             continue;
         }
+        if (var && var == jobs::NoiseVar()) {  // a joint burglary's noise meter: our player's (Jobs.cpp), not the owner's
+            memset(c, 0, 0x44);
+            continue;
+        }
         set(var, values[1 + i * 2]);
         set(*(uint32_t*)(c + 0x04), values[2 + i * 2]);
     }
     // Our noise meter goes back into the slot it had, as it was: added anew each time it flashed as a new counter
     uint8_t own[0x44];
     int ownSlot = -1;
-    bool had = g_noiseMission && TakeOwnNoiseEntry(own, ownSlot);
+    uint32_t ownVar = g_noiseMission ? kNoiseVar : jobs::NoiseVar();
+    bool had = ownVar && TakeOwnEntry(ownVar, own, ownSlot);
     memcpy((void*)kOnscreenTimer, b, kOnscreenSize);
     g_onscreenSet = true;
     if (had && FindPlayerPed(0)->AreaCode() != 0) {
@@ -2967,6 +3375,7 @@ void HandleMissionStart(uint8_t from, Reader& r) {
     if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
     if (!g_partnerMission) ui::TheChat().AddSystem(Format(TR("%s начал миссию.", "%s started a mission."), Net().PeerName(from).c_str()));
     g_partnerMission = true;
+    g_hostMission = name;
     LOGI("Host mission started (%s)", name.c_str());
 }
 
@@ -2987,6 +3396,7 @@ void PartnerMissionCleanup() {
     g_replaced.clear();
     if (g_policyApplied && core::IsPlayerReady()) ApplyPolicy(g_ownPolicy);
     g_partnerEdits.clear();
+    if (g_gateOpenSet) Ref<int32_t>(addr::ScriptSpace + kAirportGateOpen) = 0, g_gateOpenSet = false;  // as DRIV3's end
     g_policyApplied = false;
     ClearPartnerBlips();
     g_partnerBlipRecords.clear();
@@ -3032,8 +3442,8 @@ void SendAreas(uint64_t now) {
         if (it->second.mission) live.push_back(it->second);
         ++it;
     }
-    w.U8((uint8_t)std::min<size_t>(live.size(), 32));
-    for (size_t i = 0; i < live.size() && i < 32; ++i) {
+    w.U8((uint8_t)std::min<size_t>(live.size(), 40));  // Kickstart's 33 coronas and its markers
+    for (size_t i = 0; i < live.size() && i < 40; ++i) {
         const Area& a = live[i];
         w.U32(a.id);
         w.U8(a.kind);
@@ -3061,8 +3471,17 @@ void SendAreas(uint64_t now) {
 void PlaceMissionMarkers() {
     if (NowMs() - g_partnerAreasMs < 1000)
         for (const Area& a : g_partnerAreas) {
-            if (a.kind == AREA_SPHERE) DrawSphere(a.id ^ 0x40000000u, a);
-            else g_origHighlight(a.id ^ 0x40000000u, a.x1, a.y1, a.x2, a.y2, a.z);
+            if (a.kind == AREA_SPHERE) {
+                DrawSphere(a.id ^ 0x40000000u, a);
+            } else if (a.kind == AREA_CORONA) {
+                CVector at{a.x1, a.y1, a.z};
+                uint32_t c = (uint32_t)a.y2;
+                Call<0x6FC580>(a.id ^ 0x40000000u, (CEntity*)nullptr, (uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c, (uint8_t)255, &at,
+                               a.x2, 450.0f, (uint8_t)0, (uint8_t)0, (uint8_t)1, (uint8_t)0, (uint8_t)0, 0.0f, false, 1.5f, false, 15.0f,
+                               false, false);  // CCoronas::RegisterCorona, as DRAW_CORONA
+            } else {
+                g_origHighlight(a.id ^ 0x40000000u, a.x1, a.y1, a.x2, a.y2, a.z);
+            }
         }
 }
 
@@ -3081,18 +3500,65 @@ void ShowMissionMarks() {
 
 // ---------------------------------------------------------------- shared side activities: the call and its answers
 std::string OtherName() { return Net().Peers().empty() ? std::string() : Net().PeerName(Net().Peers().begin()->first); }
-bool CanCall() {
-    return !g_side.name.empty() && !SideOwning() && !g_side.offered && NowMs() < g_side.offerUntil && !Net().Peers().empty();
+bool CanCall() {  // not from our own taxi job in the other's (Side::parallel)
+    return !g_side.name.empty() && !SideOwning() && !SideJoined() && !g_side.offered && NowMs() < g_side.offerUntil &&
+           !Net().Peers().empty();
 }
 // what this game showed of the activity it joined goes with it
+// The owner's stadium script takes only its own player out of the arena, which has no door: who joined goes out at that
+// script's own exit (2 m aside of it, the stadium's marker stands a few metres off and would start a run of our own)
+void LeaveArena() {
+    struct Exit {
+        const char* job;
+        int8_t area;
+        float x, y, z;
+    };
+    static const Exit kExits[] = {{"kicksta", 14, 1105.210f, 1604.649f, 12.055f}, {"blood", 15, -2126.3f, -440.6f, 34.5f},
+                                  {"cprace", 7, 2693.184f, -1699.655f, 9.389f},     {"cprace", 4, 1101.781f, 1604.578f, 11.551f}};
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || !core::IsPlayerReady()) return;
+    for (const Exit& e : kExits) {
+        if (g_side.joined != e.job || me->AreaCode() != e.area) continue;
+        int h = GetPedRef(me);
+        if (me->InVehicle()) Cmd(0x0362).I(h).F(e.x + 2.0f).F(e.y).F(e.z).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
+        Cmd(0x04BB).I(0).Run();                                                 // SET_AREA_VISIBLE
+        Cmd(0x0860).I(h).I(0).Run();                                            // SET_CHAR_AREA_VISIBLE
+        Cmd(0x00A1).I(h).F(e.x + 2.0f).F(e.y).F(e.z).Run();                     // SET_CHAR_COORDINATES
+        LOGI("Out of the %s arena (area %d) as the joint run ended", e.job, e.area);
+        return;
+    }
+}
+
 void DropJoined() {
+    LeaveArena();
     g_side.owner = 0xFF;
     g_side.joined.clear();
+    g_side.boardUntil = 0;
+    g_side.parallel = false;
+    g_side.taxiAt = 0;
     ClearPartnerBlips();
     g_partnerBlipRecords.clear();
     g_partnerAreas.clear();
     ClearPartnerMarked();
     ClearPartnerOnscreen();
+}
+// joined a taxi job, our own one starts: what the other's showed here goes (its marks and timers over our own job's),
+// to come back when ours is over (SIDE_RESYNC)
+void StartParallel() {
+    g_side.parallel = true;
+    ClearPartnerBlips();
+    g_partnerBlipRecords.clear();
+    g_partnerAreas.clear();
+    ClearPartnerMarked();
+    ClearPartnerOnscreen();
+    LOGI("Our own taxi job next to %s's: the fares' money goes to both", Net().PeerName(g_side.owner).c_str());
+}
+// the money our own job brought since its start, less what the other's paid us meanwhile: the other player gets it too
+void PayOther(uint8_t to) {
+    if (int32_t earned = PlayerInfos()[0].money - g_side.moneyAtStart - g_side.received; earned > g_side.paid) {
+        SendSide(SIDE_PAY, to, g_side.name, earned - g_side.paid);
+        g_side.paid = earned;
+    }
 }
 // this game has an activity or a mission of its own now: one at a time
 void LeaveSide() {
@@ -3108,16 +3574,113 @@ void ForgetSent() {  // the owner's copy of what went to the joined game
     g_lastAreasMsg.clear();
 }
 
+void CourierUpdate();
+
+// Who joins another's job is brought to it (27.10: the partner had to drive over first): next to its owner, then at the
+// wheel of a vehicle like the owner's beside it where each works with its own (the taxi, the ambulance, the fire truck,
+// the police car: both work, Jobs.cpp; races, bikes; a pimp's car has its one seat for the girl), or in a free seat of
+// the owner's vehicle where the job's people leave one (the burglar's van, the truck). Tried twice a second for 15 s:
+// the owner's vehicle copy comes with its model, the spot needs room.
+void BoardSide() {
+    if (!g_side.boardUntil || NowMs() - g_side.boardTryMs < 500) return;
+    g_side.boardTryMs = NowMs();
+    RemotePlayer* owner = SideJoined() ? Players::Instance().Get(g_side.owner) : nullptr;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!owner || NowMs() > g_side.boardUntil) {
+        if (owner) LOGI("Not brought to %s's vehicle in time", Net().PeerName(g_side.owner).c_str());
+        g_side.boardUntil = 0;
+        return;
+    }
+    const std::string& job = g_side.joined;
+    // indoors: the owner's booth, a step behind it at its left (SHRANGE's 4 ranges: the middle booth, the heading down the lanes)
+    if (job == "shrange") {
+        static const float kBooths[4][4] = {{293.684f, -24.555f, 1000.523f, 0.0f}, {303.079f, -64.173f, 1000.523f, 270.0f},
+                                            {300.102f, -133.906f, 1003.055f, 90.0f}, {299.452f, -163.346f, 998.610f, 90.0f}};
+        if (!owner->hasState || !owner->state.area) return;
+        for (const auto& b : kBooths) {
+            CVector booth{b[0], b[1], b[2] + 1.0f}, d = owner->state.pos - booth;
+            if (std::fabs(d.x) > 25.0f || std::fabs(d.y) > 25.0f || std::fabs(d.z) > 10.0f) continue;
+            float h = b[3] * 0.0174533f;
+            CVector ahead{-std::sin(h), std::cos(h), 0.0f}, across{std::cos(h), std::sin(h), 0.0f};
+            Players::Instance().GoTo(*owner, booth - across * 0.8f - ahead * 0.6f, true);
+            Cmd(0x0173).I(GetPedRef(me)).F(b[3]).Run();  // SET_CHAR_HEADING
+            g_side.boardUntil = 0;
+            ui::TheChat().AddSystem(Format(TR("Вы рядом с игроком %s.", "You are next to %s."), Net().PeerName(g_side.owner).c_str()));
+            return;
+        }
+        return;
+    }
+    bool stadium = StadiumJob(job), quarry = job == "quarry";
+    // jobs are outdoors, but a stadium's arena
+    if (!owner->ped || !owner->hasState || (owner->state.area != 0 && !stadium) || CutsceneRunning()) return;
+    CVector at = owner->ped->GetPosition();
+    bool ownVehicle = job == "bcour" || job == "mtbiker" || job == "stunt" || job == "cprace" || job == "tria" || job == "pimp" ||
+                      job == "taxiodd" || job == "ambulan" || job == "firetru" || job == "copcar" || job == "kicksta" ||
+                      job == "blood" || quarry;
+    // a passenger of its vehicle already: out first, a vehicle of our own beside it has no room inside its own
+    bool inTheirs = ownVehicle && me->InVehicle() && owner->ped->InVehicle() && me->Vehicle() == owner->ped->Vehicle();
+    // the quarry starts on foot by its office (its sanchez only takes its player to the dozer or the dumper): our own vehicle
+    // nearby is not taken from under us meanwhile
+    bool riding = quarry && me->InVehicle() && me->Vehicle()->Driver() == me;
+    if ((me->GetPosition() - at).Length() > (riding ? 300.0f : 30.0f) || inTheirs || me->AreaCode() != owner->state.area) {
+        float h = owner->ped->CurrentRotation();
+        Players::Instance().GoTo(*owner, at + CVector{std::cos(h) * 3.0f, std::sin(h) * 3.0f, 0.0f}, true);  // its right hand
+        LOGI("Over to %s for the joint job", Net().PeerName(g_side.owner).c_str());
+        return;
+    }
+    Players::Ride ride = Players::Instance().RideWith(*owner, !ownVehicle);
+    if (ride == Players::Ride::Later) return;
+    // Kickstart's player walks to its bike after the intro, a stadium race seats its player only after the marker, the
+    // quarry's drives a dozer or a dumper only after its sanchez: tried again until then (one like the owner's for us)
+    if (stadium && ride == Players::Ride::None && owner->mode == RemotePlayer::Mode::OnFoot) return;
+    int model = owner->ped->InVehicle() ? owner->ped->Vehicle()->ModelIndex() : -1;
+    if (quarry && !((model == 486 || model == 406) && me->InVehicle() && me->Vehicle()->ModelIndex() == model)) return;  // DOZER, DUMPER
+    g_side.boardUntil = 0;
+    if (ride == Players::Ride::OwnVehicle && job == "taxiodd") g_side.taxiAt = NowMs() + 1500;
+    std::string who = Net().PeerName(g_side.owner);
+    if (ride == Players::Ride::Seat)
+        ui::TheChat().AddSystem(Format(TR("Вы в машине игрока %s.", "You are in %s's vehicle."), who.c_str()));
+    else if (ride == Players::Ride::OwnVehicle)
+        ui::TheChat().AddSystem(Format(TR("Вы за рулём такой же машины, как у игрока %s.", "You drive one like %s's."), who.c_str()));
+    else
+        ui::TheChat().AddSystem(Format(TR("Вы рядом с игроком %s.", "You are next to %s."), who.c_str()));
+}
+
+// Joined a taxi job and seated at the wheel of a taxi of our own: our own job starts by itself, as R3 starts it at 2
+// (28.10: the second player was told to press 2 and did not, drove to the owner's fare instead, and it got in the
+// owner's taxi only)
+void StartOwnTaxi() {
+    if (!g_side.taxiAt || NowMs() < g_side.taxiAt) return;
+    g_side.taxiAt = 0;
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr;
+    if (!SideJoined() || g_side.joined != "taxiodd" || g_side.parallel || FindMissionScript() || core::IsOnMission() || !v ||
+        v->Driver() != me || (v->ModelIndex() != 420 && v->ModelIndex() != 438))  // IS_CHAR_IN_TAXI: TAXI, CABBIE
+        return;
+    Ref<int32_t>(addr::ScriptSpace + 728) = 1;  // $728, R3's own after its launch: no second one
+    Cmd(0x00BA).S8("TAXI_M").I(6000).I(5).Run();  // PRINT_BIG, as R3
+    Cmd(0x0417).I(121).Run();                     // LOAD_AND_LAUNCH_MISSION_INTERNAL TAXIODD
+    LOGI("Our own taxi job started by itself at the wheel of our taxi");
+}
+
 void SideUpdate() {
     void* script = FindMissionScript();
+    // Our own one its launcher started as we joined the other's ends at its first command (HookStartNewScript); taken for
+    // an activity of ours meanwhile, it made us leave the joint one in the same frame (the BMX rings, 28.10)
+    if (const uint8_t* ip = script ? Field<const uint8_t*>(script, 0x14) : nullptr; ip && ip[0] == 0x4E && ip[1] == 0x00)
+        script = nullptr;  // TERMINATE_THIS_SCRIPT
+    if (jobs::RangeWaits(script)) script = nullptr;  // the range runs from the room's door on: its round is the activity
+    if (!script) script = jobs::ValetShift();  // the valet's shift: a streamed script, no mission
     std::string name = script ? std::string(Field<char[8]>(script, 0x08), strnlen(Field<char[8]>(script, 0x08), 8)) : "";
     bool shareable = SideJob(name) && !(Net().IsHost() && HostOnMission());
-    if (script && SideJoined()) LeaveSide();
+    if (script && SideJoined() && !g_side.parallel) LeaveSide();
     if (shareable && name != g_side.name) {  // ours started: who joins sees its marks from its start
         g_side.name = name;
         g_side.offerUntil = NowMs() + 20000;
         g_side.offered = false;
         g_side.moneyAtStart = PlayerInfos()[0].money;
+        g_side.paid = 0;
+        g_side.received = 0;
         g_baseline.clear();
         for (int i = 0; i < kNumTraces; ++i)
             if (Ref<uint8_t>(Trace(i) + 0x25) & 2) g_baseline.insert(((uint32_t)Ref<uint16_t>(Trace(i) + 0x14) << 8) | (uint32_t)i);
@@ -3125,12 +3688,15 @@ void SideUpdate() {
         LOGI("Own side activity started (%s): the other player may be called in", name.c_str());
     } else if (!shareable && !g_side.name.empty()) {  // ours is over
         if (SideOwning()) {
-            int32_t earned = std::max(0, PlayerInfos()[0].money - g_side.moneyAtStart);
+            // the rest of it
+            int32_t earned = std::max(0, PlayerInfos()[0].money - g_side.moneyAtStart - g_side.received - g_side.paid);
             Writer w(proto::G_BLIP);
             w.U8(BLIP_CLEAR);
             Net().Send(proto::CH_RELIABLE, w);
             SendSide(SIDE_END, g_side.with, g_side.name, earned);
-            LOGI("Shared side activity over (%s): $%d for %s too", g_side.name.c_str(), earned, Net().PeerName(g_side.with).c_str());
+            LOGI("Shared side activity over (%s): $%d more for %s too", g_side.name.c_str(), earned, Net().PeerName(g_side.with).c_str());
+        } else if (g_side.parallel && SideJoined()) {
+            PayOther(g_side.owner);  // the rest of our own taxi job's
         }
         g_side.name.clear();
         g_side.with = 0xFF;
@@ -3138,15 +3704,25 @@ void SideUpdate() {
         g_side.offerUntil = 0;
         ForgetSent();
     }
+    if (g_side.parallel && !script) {  // our own taxi job is over: the other's shows here again
+        g_side.parallel = false;
+        if (SideJoined()) SendSide(SIDE_RESYNC, g_side.owner, g_side.joined);
+        LOGI("Our own taxi job over: back to %s's", Net().PeerName(g_side.owner).c_str());
+    }
     uint64_t now = NowMs();
-    if (SideOwning()) {
+    if (SideOwning() || g_side.parallel) {
         static uint64_t tick = 0;
         if (now - tick >= 250) {
             tick = now;
-            HostScanBlips(false);
-            HostSendOnscreen();
-            HostSendMarked(false);
-            SendAreas(now);
+            if (SideOwning()) {
+                HostScanBlips(false);
+                HostSendOnscreen();
+                HostSendMarked(false);
+                SendAreas(now);
+            }
+            // who joined is paid each fare as it comes, not all at the end: it saw no money while it helped, and none at
+            // all when it left before the end (#73). Its own taxi job in ours pays us so (Side::parallel).
+            PayOther(SideOwning() ? g_side.with : g_side.owner);
         }
     }
     if (SideJoined() && Net().IsHost()) ShowMissionMarks();  // the partner does it in PartnerUpdate
@@ -3154,6 +3730,123 @@ void SideUpdate() {
         SendSide(SIDE_DECLINE, g_side.inviteFrom, g_side.inviteName);
         g_side.inviteFrom = 0xFF;
     }
+    StartOwnTaxi();
+    BurglaryLook(SideJoined() && g_side.joined == "burgjb");
+    CourierUpdate();
+    // a joint burglary: a thing of ours into the van, a thing we lifted, the residents woken for us (Jobs.cpp)
+    const std::string& joint = SideOwning() ? g_side.name : g_side.joined;
+    uint8_t other = SideOwning() ? g_side.with : g_side.owner;
+    for (const jobs::Tell& t : jobs::Update(SideJoined() ? g_side.joined : std::string(), SideOwning() ? g_side.name : std::string())) {
+        if (t.loot) SendSide(SIDE_LOOT, other, joint);
+        auto at = [&](uint8_t op, int32_t value) {
+            Writer w(proto::G_SIDE);
+            w.U8(op), w.U8(other), w.Str(joint, 8), w.I32(value), w.Vec({t.x, t.y, t.z});
+            Net().Send(proto::CH_RELIABLE, w);
+        };
+        if (t.taken) at(SIDE_TAKEN, t.model);
+        if (t.alarm) at(SIDE_ALARM, 0);
+    }
+}
+
+// The courier for two (#28): only the leader's script (BCOUR) threw packages, at its player's button, and counted those
+// in its rings, so who joined could not deliver. Its game throws one of its own the same way (look left or right and
+// fire, from its vehicle: across at 30 m/s with a lift, at 15 by a ring), and one of its in a ring (the leader's, their
+// copies here) goes to the leader: its game puts its own last package there (763@ at 793@, made anew when gone), and
+// the script's own check (LOCATE_OBJECT_3D) counts it.
+struct Thrown {
+    int handle;
+    uint64_t bornMs;
+};
+std::vector<Thrown> g_thrown;
+uint64_t g_throwMs = 0;
+int g_courierPackage = -1;  // leader: a package made for a delivery of the other's, until the script took it
+uint64_t g_courierPackageMs = 0;
+
+void CourierUpdate() {
+    int model = ResolvedModel(-228);  // the courier's package
+    uint64_t now = NowMs();
+    if (g_courierPackage != -1 && now - g_courierPackageMs > 10000) {  // the script did not take it (its player got off)
+        if (GetObject(g_courierPackage)) Cmd(0x0108).I(g_courierPackage).Run();  // DELETE_OBJECT
+        g_courierPackage = -1;
+    }
+    bool joined = SideJoined() && !_stricmp(g_side.joined.c_str(), "bcour") && IsObjectModel(model);
+    for (auto it = g_thrown.begin(); it != g_thrown.end();) {
+        CObject* o = GetObject(it->handle);
+        bool hit = false;
+        if (o && joined)
+            for (auto& [slot, placed] : g_placed) {
+                CVector d = o->GetPosition() - placed.first.pos;
+                if (slot >= 32 || std::fabs(d.x) > 1.2f || std::fabs(d.y) > 1.7f || std::fabs(d.z) > 3.0f) continue;
+                Writer w(proto::G_SIDE);
+                w.U8(SIDE_DROP);
+                w.U8(g_side.owner);
+                w.Str(g_side.joined, 8);
+                w.I32(0);
+                w.Vec({placed.first.pos.x, placed.first.pos.y, placed.first.pos.z});
+                Net().Send(proto::CH_RELIABLE, w);
+                LOGI("Our courier package went into a ring at %.1f,%.1f,%.1f", placed.first.pos.x, placed.first.pos.y,
+                     placed.first.pos.z);
+                hit = true;
+                break;
+            }
+        if (!o || hit || !joined || now - it->bornMs > 8000) {
+            if (o) Cmd(0x0108).I(it->handle).Run();  // DELETE_OBJECT
+            it = g_thrown.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!joined) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr;
+    CPad* pad = GetPad(0);
+    bool left = pad->NewState.LeftShoulder2 != 0, right = pad->NewState.RightShoulder2 != 0;
+    if (!IsModelLoaded(model)) RequestModel(model);
+    if (!v || !(left || right) || !pad->NewState.ButtonCircle || pad->OldState.ButtonCircle || pad->DisablePlayerControls ||
+        now - g_throwMs < 300 || g_thrown.size() >= 8 || !IsModelLoaded(model) || !HasRoom(ObjectPool(), kKeepObjects, "object"))
+        return;
+    g_throwMs = now;
+    bool byRing = false;  // as the script: a short drop when its player is within 5 m of a ring
+    for (auto& [slot, placed] : g_placed) {
+        CVector d = me->GetPosition() - placed.first.pos;
+        if (slot < 32 && std::fabs(d.x) < 5.0f && std::fabs(d.y) < 5.0f && std::fabs(d.z) < 5.0f) byRing = true;
+    }
+    CVector at = v->GetPosition();
+    int h = -1;
+    Cmd(0x029B).I(model).F(at.x).F(at.y).F(at.z).Out(&h).Run();  // CREATE_OBJECT_NO_OFFSET
+    if (h == -1) return;
+    float side = right ? -1.0f : 1.0f;  // look right (E) throws as BCOUR's first subroutine, look left (Q) as its second
+    Cmd(0x0382).I(h).I(1).Run();  // SET_OBJECT_COLLISION
+    Cmd(0x0392).I(h).I(1).Run();  // SET_OBJECT_DYNAMIC
+    Cmd(0x035C).I(h).I(GetVehicleRef(v)).F(byRing ? side : 0.0f).F(0.0f).F(byRing ? 1.3f : 0.7f).Run();  // PLACE_OBJECT_RELATIVE_TO_CAR
+    CMatrix* m = v->Matrix();
+    float heading = m ? std::atan2(-m->forward.x, m->forward.y) : me->CurrentRotation();
+    float speed = (right ? 1.0f : -1.0f) * (byRing ? 15.0f : 30.0f);
+    Cmd(0x038C).I(h).F(std::cos(heading) * speed).F(std::sin(heading) * speed).F(byRing ? 1.0f : 8.5f).Run();  // ADD_TO_OBJECT_VELOCITY
+    g_thrown.push_back({h, now});
+}
+
+// leader: the other's package went into one of our rings
+void CourierDelivery(const CVector& ring) {
+    void* script = FindMissionScript();
+    if (!script || _strnicmp(Field<char[8]>(script, 0x08), "bcour", 8)) return;
+    int last = MissionLocal(793);  // the script's last package: 763@(793@), 30 of them
+    if (last < 0 || last >= 30) return;
+    int32_t& handle = Ref<int32_t>(0xA48960 + (uintptr_t)(763 + last) * 4);  // CTheScripts::LocalVariablesForCurrentMission
+    CObject* o = GetObject(handle);
+    int model = ResolvedModel(-228);
+    if (!o) {
+        if (!IsModelLoaded(model) || !HasRoom(ObjectPool(), kKeepObjects, "object")) return;
+        int h = -1;
+        Cmd(0x029B).I(model).F(ring.x).F(ring.y).F(ring.z).Out(&h).Run();  // CREATE_OBJECT_NO_OFFSET
+        if (h == -1 || !(o = GetObject(h))) return;
+        handle = h;
+        g_courierPackage = h, g_courierPackageMs = NowMs();
+    }
+    Cmd(0x01BC).I(handle).F(ring.x).F(ring.y).F(ring.z).Run();  // SET_OBJECT_COORDINATES
+    o->MoveSpeed() = CVector{};
+    LOGI("The other player's courier package into our ring at %.1f,%.1f,%.1f: our package %d put there", ring.x, ring.y,
+         ring.z, handle);
 }
 
 void HandleSide(uint8_t from, Reader& r) {
@@ -3164,7 +3857,9 @@ void HandleSide(uint8_t from, Reader& r) {
     bool job = SideJob(name);
     std::string who = Net().PeerName(from);
     if (op == SIDE_OFFER) {
-        bool busy = FindMissionScript() || SideJoined() || (Net().IsHost() ? HostOnMission() : HostMissionRecent(0));
+        void* own = FindMissionScript();
+        if (name == "shrange" && jobs::RangeWaits(own)) own = nullptr;  // ours waiting at its marker ends as we join (Jobs.cpp)
+        bool busy = own || jobs::ValetShift() || SideJoined() || (Net().IsHost() ? HostOnMission() : HostMissionRecent(0));
         if (!job || busy) {
             SendSide(SIDE_DECLINE, from, name);
             LOGI("%s's call to %s declined: busy", who.c_str(), name.c_str());
@@ -3179,8 +3874,11 @@ void HandleSide(uint8_t from, Reader& r) {
         }
         g_side.with = from, g_side.offered = false;
         ForgetSent();  // all it has now goes to the newcomer
+        if (name == "kicksta" || name == "blood") contest::Drop();  // one score for both now
         ui::TheChat().AddSystem(Format(TR("%s принимает приглашение на %s.", "%s accepts your invitation to %s."), who.c_str(),
                                        JobTo(name).c_str()));
+        // what the one who joined is told, the one who called is too: it gets a vehicle of the job and works too
+        if (const char* hint = CallerHint(name)) ui::TheChat().AddSystem(Format(hint, who.c_str()));
         LOGI("%s joined our side activity (%s)", who.c_str(), name.c_str());
     } else if (op == SIDE_DECLINE) {
         if (name != g_side.name || !g_side.offered) return;
@@ -3193,9 +3891,37 @@ void HandleSide(uint8_t from, Reader& r) {
         ui::TheChat().AddSystem(Format(TR("Конец %s.", "That is the end of %s."), JobOf(name).c_str()));
         if (money > 0 && money <= 10000000) {
             PlayerInfos()[0].money += money;
+            g_side.received += money;  // our own taxi job goes on: not its money
             ui::TheChat().AddSystem(Format(TR("Награда за задание: $%d.", "Reward for the job: $%d."), money));
         }
         LOGI("%s's side activity over (%s), $%d", who.c_str(), name.c_str(), money);
+    } else if (op == SIDE_DROP) {
+        Vec3 p = r.Vec();
+        if (r.Ok() && SideOwning() && from == g_side.with && !_stricmp(name.c_str(), "bcour")) CourierDelivery({p.x, p.y, p.z});
+    } else if (op == SIDE_PAY) {
+        // the owner's job's money, or the fares of the taxi job of its own who joined our taxi job drives (Side::parallel)
+        bool owner = SideJoined() && from == g_side.owner, helper = SideOwning() && from == g_side.with;
+        if ((!owner && !helper) || money <= 0 || money > 10000000) return;
+        PlayerInfos()[0].money += money;
+        g_side.received += money;
+        ui::TheChat().AddSystem(owner ? Format(TR("За задание: +$%d.", "For the job: +$%d."), money)
+                                      : Format(TR("За пассажиров игрока %s: +$%d.", "For %s's fares: +$%d."), who.c_str(), money));
+        LOGI("%s's side activity paid us $%d", who.c_str(), money);
+    } else if (op == SIDE_RESYNC) {
+        if (!SideOwning() || from != g_side.with) return;
+        ForgetSent();  // its own taxi job is over: what ours shows goes to it again
+        LOGI("%s is back to our side activity (%s)", who.c_str(), name.c_str());
+    } else if (op == SIDE_LOOT) {
+        if (!SideOwning() || from != g_side.with) return;
+        if (int things = jobs::Stashed())
+            ui::TheChat().AddSystem(Format(TR("%s кладёт вещь в фургон. Вещей в фургоне: %d.", "%s puts a thing into the van. Things in it: %d."),
+                                           who.c_str(), things));
+    } else if (op == SIDE_TAKEN || op == SIDE_ALARM) {  // a joint burglary's house: the same in both games (Jobs.cpp)
+        Vec3 p = r.Vec();
+        bool partner = (SideOwning() && from == g_side.with) || (SideJoined() && from == g_side.owner);
+        if (!r.Ok() || !partner || name != "burgjb") return;
+        if (op == SIDE_TAKEN) jobs::Taken(money, p.x, p.y, p.z);
+        else jobs::Alarm(p.x, p.y, p.z);
     } else if (op == SIDE_LEAVE) {
         if (from != g_side.with) return;
         g_side.with = 0xFF;
@@ -3327,7 +4053,7 @@ public:
             PartnerSceneUpdate();
             if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
         }
-        if (!Net().IsHost() || SideJoined()) PlaceMissionMarkers();
+        if (!Net().IsHost() || SideJoined()) PlaceMissionMarkers(), TurnMarked();
     }
     void OnPostProcess() override {
         if (!core::IsPlayerReady()) return;
@@ -3336,6 +4062,7 @@ public:
         if (Net().IsHost()) HostUpdate();
         else PartnerUpdate(), ShowHostLines();
         SideUpdate();
+        BoardSide();
         if (!g_personOnCar.empty()) ApplyPersonsOnCars();
     }
     // the partner's spot in a cutscene is chosen with the camera of the frame being drawn
@@ -3361,22 +4088,47 @@ public:
         if (Net().IsHost() || id != Net().HostId() || !core::IsPlayerReady()) return;
         if (g_csState == 2) PartnerEndCutscene();
         if (g_csState != 0) PartnerClearCutscene();
+        if (g_partnerMission) g_partnerMission = false, g_partnerMissionEndedAt = NowMs();  // no trainer at the gym after it (#34)
         PartnerMissionCleanup();
     }
     void OnSessionEnd() override {
         if (core::IsPlayerReady()) {  // the host's cutscene, blips, markers and fades stay no longer
             if (g_csState == 2) PartnerEndCutscene();
             if (g_csState != 0) PartnerClearCutscene();
+            // left in the middle of the host's mission: the weapons it gave go as its end would have taken them (the
+            // AK with 99999 rounds stayed for good after a dropped connection)
+            if (!g_missionWeapons.empty()) {
+                std::vector<int> given(g_missionWeapons.begin(), g_missionWeapons.end());
+                for (int weapon : given) TakeBackMissionWeapon(FindPlayerPed(0), weapon);
+                LOGI("Left the host's mission: %zu weapon(s) it gave taken back", given.size());
+            }
             PartnerMissionCleanup();
+            for (const Thrown& p : g_thrown)  // courier packages in the air
+                if (GetObject(p.handle)) Cmd(0x0108).I(p.handle).Run();  // DELETE_OBJECT
+            if (g_courierPackage != -1 && GetObject(g_courierPackage)) Cmd(0x0108).I(g_courierPackage).Run();
+            jobs::Update("", "");  // the burglary houses shut again in a game of one's own, its meter gone
+            BurglaryLook(false);
         }
+        g_thrown.clear();
+        g_courierPackage = -1;
         Reset();
         g_atSent = 0;  // kept over a game's restart: the host learns the load is over from the change
     }
     void OnGameStarted() override {
+        // a world loaded in the middle of the host's mission: what it gave is still to be taken back at its end (the
+        // reload gives the partner its weapons again, the given ones with them)
+        std::set<int> given = g_partnerMission ? g_missionWeapons : std::set<int>{};
         Reset();
+        g_thrown.clear();  // the old world's objects: their handles may be new ones' now
+        g_courierPackage = -1;
+        g_missionWeapons = std::move(given);
         g_inheritedFlagMs = core::IsOnMission() ? NowMs() : 0;
         g_lastPassed.assign((const char*)0xB78A00, strnlen((const char*)0xB78A00, 8));  // what the loaded game had
         g_progressAt = 0;
+        ClearTruckLeftovers();
+        jobs::WorldLoaded();
+        g_burglaryDressed = false;  // the loaded world brings its own look
+        jobs::Update("", "");  // the loaded world shut its burglary houses: opened again if a joint burglary goes on
     }
     void OnGameShutdown() override {
         // the host's world goes (a game loaded, a restart): its cutscene and mission end for the partners too, who
@@ -3453,6 +4205,25 @@ private:
             flagOnlyLogged = true;
             LOGW("The mission flag ($1636) has been up for a minute with no mission script running");
         }
+        // Big Smoke's courier runs outside missions (Courier.cpp): its blips (its car, the bags, the package) go to the
+        // partners as a mission's do, from the blips there before it on
+        bool courier = !active && CourierRuns() && !Net().Peers().empty();
+        if (courier != g_courierBlips) {
+            g_courierBlips = courier;
+            g_sentBlips.clear();
+            g_baseline.clear();
+            if (courier) {
+                for (int i = 0; i < kNumTraces; ++i)
+                    if (Ref<uint8_t>(Trace(i) + 0x25) & 2) g_baseline.insert(((uint32_t)Ref<uint16_t>(Trace(i) + 0x14) << 8) | (uint32_t)i);
+                LOGI("Big Smoke's courier runs: its blips go to the partners");
+            } else {
+                Writer w(proto::G_BLIP);
+                w.U8(BLIP_CLEAR);
+                Net().Send(proto::CH_RELIABLE, w);
+            }
+        }
+        static uint64_t courierScanMs = 0;
+        if (courier && NowMs() - courierScanMs >= 250) courierScanMs = NowMs(), HostScanBlips(false);
         if (active && !g_active) {
             // blips that exist now are not the mission's
             g_baseline.clear();
@@ -3479,7 +4250,10 @@ private:
             w.U8(BLIP_CLEAR);
             Net().Send(proto::CH_RELIABLE, w);
             Net().Send(proto::CH_RELIABLE, Writer(proto::G_MISSION_END));
-            if (int32_t earned = PlayerInfos()[0].money - g_moneyAtStart; earned > 0) {
+            // the story moved on: a mission passed (CStats::LastMissionPassedName). A failed attempt pays the partner
+            // nothing: the money the host picked up from the dead in it was no reward
+            std::string passed((const char*)0xB78A00, strnlen((const char*)0xB78A00, 8));
+            if (int32_t earned = PlayerInfos()[0].money - g_moneyAtStart; earned > 0 && passed != g_lastPassed) {
                 Writer rw(proto::G_MISSION_REWARD);
                 rw.I32(earned);
                 Net().Send(proto::CH_RELIABLE, rw);
@@ -3492,10 +4266,9 @@ private:
             g_sentBlips.clear();
             g_areas.clear();
             LOGI("Mission ended (%s)", g_missionName.c_str());
-            // the story moved on: a mission passed (CStats::LastMissionPassedName). The call that often follows one
-            // (the next script) unlocks more, like the gym after Sweet's third: the partners reload the world once,
-            // after both, so they wait 30 s for it, or until the next script is over
-            std::string passed((const char*)0xB78A00, strnlen((const char*)0xB78A00, 8));
+            // The call that often follows a passed mission (the next script) unlocks more, like the gym after Sweet's
+            // third: the partners reload the world once, after both, so they wait 30 s for it, or until the next script
+            // is over
             if (passed != g_lastPassed) {
                 g_lastPassed = passed;
                 g_progressAt = NowMs() + 30000;
@@ -3522,8 +4295,9 @@ private:
         bool waiting = !active && NowMs() - g_waitMs < 1500;
         if (waiting != g_waitSent) {
             g_waitSent = waiting;
-            LOGI(waiting ? "Mission marker at %.1f,%.1f: waiting for the partner" : "Mission marker at %.1f,%.1f: not waiting any more",
-                 (g_waitArea.x1 + g_waitArea.x2) * 0.5f, (g_waitArea.y1 + g_waitArea.y2) * 0.5f);
+            float x = (g_waitArea.x1 + g_waitArea.x2) * 0.5f, y = (g_waitArea.y1 + g_waitArea.y2) * 0.5f;
+            if (waiting) LOGI("Mission marker at %.1f,%.1f: waiting for the partner (%s's trigger)", x, y, g_waitBy);
+            else LOGI("Mission marker at %.1f,%.1f: not waiting any more", x, y);
             SendWait(waiting);
         }
 
@@ -3540,7 +4314,8 @@ private:
             g_movedPending = false;
             CVector p = me->GetPosition();
             float moved = (p - g_movedFrom).Length();
-            if (moved > 150.0f || (me->AreaCode() != g_movedFromArea && moved >= 3.0f)) {
+            bool near = moved > kMovedNear && (g_movedOffVehicle || RemoteDistance(g_movedFrom, g_movedFromArea) < kPartnerByOldPlace);
+            if (moved > kMovedFar || (me->AreaCode() != g_movedFromArea && moved >= 3.0f) || near) {
                 Writer w(proto::G_CUTSCENE);
                 w.U8(CS_FOLLOW);
                 w.Str("", 32);
@@ -3599,12 +4374,19 @@ private:
     static void PartnerUpdate() {
         UpdatePartnerCutscene();
         if (g_lookPending && FindPlayerPed(0)->PedState() != 50) ApplyMissionLook();
-        if (g_ownKeysSet && !HostMissionRecent(0)) RestoreOwnLook();
+        // not the balaclava of a joint burglary (no host mission runs then): taken off 8 ms after it went on (28.10)
+        if (g_ownKeysSet && !HostMissionRecent(0) && !g_burglaryDressed) RestoreOwnLook();
         UpdateOwnNoise();
         if (!g_noCollide.empty()) ApplyNoCollides();
         SeatWithHost();
+        LeaveWithHost();
         static uint64_t editsMs = 0, contactsMs = 0;
         if (!g_partnerEdits.empty() && NowMs() - editsMs > 500 && flow::InHostWorld()) editsMs = NowMs(), ApplyPartnerEdits();
+        // every frame while it runs: a world loaded meanwhile brings the flag down
+        if (g_partnerMission && !_stricmp(g_hostMission.c_str(), "driv3") && flow::InHostWorld()) {
+            if (!g_gateOpenSet) LOGI("The host's DRIV3: the SF airport's main gate opens here too ($7200)");
+            Ref<int32_t>(addr::ScriptSpace + kAirportGateOpen) = 1, g_gateOpenSet = true;
+        }
         if (NowMs() - contactsMs >= 1000) contactsMs = NowMs(), TakeHostContacts();  // our own scripts may set theirs again
         PartnerSendAt();
         // The host's vote to skip while no cutscene runs here (it never started): nothing here can answer it, and the
@@ -3652,7 +4434,7 @@ std::string CutsceneSkipText(std::string& hint) {
         yesCount += g_skipYes.count(id) ? 1 : 0;
     }
     if (g_skipYes.count(me)) return wait.empty() ? "" : Format(TR("Ждём ответа %s", "Waiting for %s"), wait.c_str());
-    hint = TR("Enter — пропустить, Esc — смотреть дальше", "Enter: skip, Esc: keep watching");
+    hint = TR("Enter - пропустить, Esc - смотреть дальше", "Enter: skip, Esc: keep watching");
     return Format(yesCount > 1 ? TR("%s хотят пропустить катсцену", "%s want to skip the cutscene")
                                : TR("%s хочет пропустить катсцену", "%s wants to skip the cutscene"),
                   yes.c_str());
@@ -3672,17 +4454,17 @@ std::string SideCallText(std::string& hint) {
     hint.clear();
     if (!Net().Online()) return "";
     if (g_side.inviteFrom != 0xFF) {
-        hint = TR("Y — да, N — нет", "Y: yes, N: no");
+        hint = TR("Y - да, N - нет", "Y: yes, N: no");
         return Format(TR("%s зовёт вас на %s", "%s invites you to %s"), Net().PeerName(g_side.inviteFrom).c_str(),
                       JobTo(g_side.inviteName).c_str());
     }
-    if (CanCall()) {
-        hint = TR("Y — позвать", "Y: invite");
+    if (CanCall()) {  // a race or a triathlon may be a contest instead (Contest.cpp)
+        hint = contest::CanCall() ? TR("Y - позвать, U - соревноваться", "Y: invite, U: contest") : TR("Y - позвать", "Y: invite");
         return Format(TR("Позвать %s на %s?", "Invite %s to %s?"), OtherName().c_str(), JobTo(g_side.name).c_str());
     }
     if (g_side.offered && !g_side.name.empty())
         return Format(TR("Ждём ответа %s на приглашение", "Waiting for %s to answer"), OtherName().c_str());
-    return "";
+    return jobs::LootText(hint);  // a thing in hand at the burglar's van
 }
 
 bool SideCallKey(bool yes) {
@@ -3691,16 +4473,19 @@ bool SideCallKey(bool yes) {
         uint8_t from = g_side.inviteFrom;
         std::string name = g_side.inviteName;
         g_side.inviteFrom = 0xFF;
-        if (yes && !FindMissionScript()) {
+        void* own = FindMissionScript();
+        if (name == "shrange" && jobs::RangeWaits(own)) own = nullptr;
+        if (yes && !own && !jobs::ValetShift()) {
             g_side.owner = from, g_side.joined = name;
+            // BoardSide; a train takes no passenger. The quarry's player gets to its dozer or dumper a while after the start,
+            // a stadium's player to its vehicle after the intro or the marker
+            if (name != "freight")
+                g_side.boardUntil = NowMs() + (name == "quarry" ? 120000 : StadiumJob(name) ? 60000 : 15000), g_side.boardTryMs = 0;
             SendSide(SIDE_ACCEPT, from, name);
             ui::TheChat().AddSystem(Format(TR("Вы приняли приглашение %s на %s.", "You accepted %s's invitation to %s."),
                                            Net().PeerName(from).c_str(), JobTo(name).c_str()));
-            // the job runs in its owner's game: its fares and patients get only into the owner's car
-            if (name == "taxiodd" || name == "ambulan")
-                ui::TheChat().AddSystem(Format(TR("Пассажиры садятся только в машину игрока %s. Можно ехать в ней же или помогать рядом.",
-                                                  "The fares get only into %s's vehicle. Ride along or help nearby."),
-                                               Net().PeerName(from).c_str()));
+            // a vehicle of the job of our own next to the owner (BoardSide), and what to do with it
+            if (const char* hint = JoinerHint(name)) ui::TheChat().AddSystem(Format(hint, Net().PeerName(from).c_str()));
             LOGI("Joined %s's side activity (%s)", Net().PeerName(from).c_str(), name.c_str());
         } else {
             SendSide(SIDE_DECLINE, from, name);
@@ -3709,6 +4494,7 @@ bool SideCallKey(bool yes) {
     }
     if (yes && CanCall()) {
         g_side.offered = true;
+        contest::JointCalled();
         SendSide(SIDE_OFFER, 0xFF, g_side.name);
         LOGI("Called the other player in (%s)", g_side.name.c_str());
         return true;
@@ -3729,7 +4515,7 @@ std::string MissionWaitText(std::string& hint) {
         if (g_waitSent) return TR("Ждём напарника", "Waiting for your partner");
         uint8_t id = PartnerCalling();
         if (id == 0xFF) return "";
-        hint = TR("Y — переместиться к маркеру, N — нет", "Y: go to the marker, N: no");
+        hint = TR("Y - переместиться к маркеру, N - нет", "Y: go to the marker, N: no");
         return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(id).c_str());
     }
     std::string host = Net().PeerName(Net().HostId());
@@ -3743,6 +4529,38 @@ extern "C" __attribute__((used)) int8_t __cdecl CoopScriptCommand(void* script, 
 }
 
 bool HostReplicating() { return Replicating(); }
+
+bool SideCallOpen() { return Net().Online() && CanCall(); }
+void SideCallWithdraw() { g_side.offerUntil = 0; }
+
+void ShowOwnCounter(uint32_t varOffset, const char* label, bool on) {
+    auto* t = (uint8_t*)kOnscreenTimer;
+    int slot = -1, freeSlot = -1;
+    for (int i = 0; i < 4; ++i) {
+        uint32_t var = *(uint32_t*)(t + 0x40 + i * 0x44);  // COnscreenCounterEntry::m_nVarId
+        if (var == varOffset) slot = i;
+        else if (!var && freeSlot < 0) freeSlot = i;
+    }
+    char key[10] = {};
+    strncpy(key, label, sizeof key - 1);
+    if (on && slot < 0 && freeSlot >= 0) {
+        CallMethod<0x44CDA0>((void*)kOnscreenTimer, varOffset, 1, key, (uint16_t)freeSlot);  // COnscreenTimer::AddCounter: a bar
+        t[0x40 + freeSlot * 0x44 + 0x3F] = 0;  // m_bFlashWhenFirstDisplayed: GUNS1 turns it off too
+    } else if (!on && slot >= 0) {
+        CallMethod<0x44CE80>((void*)kOnscreenTimer, varOffset);  // COnscreenTimer::ClearCounter
+    }
+}
+
+bool SideLeading() { return Net().Online() && SideOwning(); }
+uint8_t SideLeader() { return Net().Online() ? g_side.owner : 0xFF; }
+uint8_t SideHelper() { return Net().Online() ? g_side.with : 0xFF; }
+
+void MissionWeaponUnder(int& type, int& ammo) {
+    if (Net().IsHost() || !g_missionWeapons.count(type)) return;
+    auto it = g_replaced.find(type);
+    type = it != g_replaced.end() ? it->second.first : 0;
+    ammo = it != g_replaced.end() ? it->second.second : 0;
+}
 
 bool MissionClothesUnder(void* clothes) {
     if (!g_ownKeysSet) return false;

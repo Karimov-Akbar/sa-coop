@@ -7,6 +7,8 @@
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/player/Players.h"
+#include "features/waypoint/Gps.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
@@ -35,11 +37,14 @@ bool LocalWaypoint(CVector2D& out) {
     return true;
 }
 
-// both the radar (a tail jump from CRadar::DrawRadar) and the menu map draw their blips here
+// both the radar (a tail jump from CRadar::DrawRadar) and the menu map draw their blips here, and the other players'
+// arrows (Players) after them: one hook of the function for both
 using DrawBlipsFn = void(__cdecl*)();
 DrawBlipsFn g_origDrawBlips = nullptr;
 void __cdecl HookDrawBlips() {
+    gps::DrawRoute(g_remote);  // the route first: under the blips
     g_origDrawBlips();
+    Players::Instance().DrawRadarArrows();
     for (auto& [id, pos] : g_remote) {
         CVector2D radar, screen;
         Call<0x583530>(&radar, &pos);     // CRadar::TransformRealWorldPointToRadarSpace
@@ -54,7 +59,7 @@ public:
     const char* Name() const override { return "Waypoints"; }
 
     void OnInstallHooks() override {
-        mem::HookFn(0x588050, &HookDrawBlips, &g_origDrawBlips, "CRadar::DrawBlips");
+        Players::SetRadarArrowsHooked(mem::HookFn(0x588050, &HookDrawBlips, &g_origDrawBlips, "CRadar::DrawBlips"));
         Net().SetHandler(proto::G_WAYPOINT, [](uint8_t from, Reader& r) {
             bool on = r.U8() != 0;
             CVector2D p{r.F32(), r.F32()};

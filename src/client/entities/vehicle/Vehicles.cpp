@@ -34,6 +34,13 @@ constexpr uint8_t STATUS_PHYSICS = 3, STATUS_WRECKED = 5;
 constexpr uint8_t VEHICLE_CREATED_RANDOM = 1, VEHICLE_CREATED_MISSION = 2, VEHICLE_CREATED_PARKED = 3;
 constexpr float kTrafficIn = 170.0f;   // owned vehicles closer than this to the partner are announced (> car spawn range)
 constexpr float kTrafficOut = 220.0f;  // and dropped from the network beyond this
+// an aircraft is seen from much farther: a police helicopter over the other player, 60-100 m up, came and went for a
+// partner a little way off (Hh hh, 26.10)
+constexpr float kAirIn = 350.0f, kAirOut = 420.0f;
+bool Aircraft(CVehicle* v) {
+    int type = v->VehicleSubClass();
+    return type == VEHICLE_TYPE_HELI || type == VEHICLE_TYPE_PLANE || type == VEHICLE_TYPE_FHELI || type == VEHICLE_TYPE_FPLANE;
+}
 
 void SetVehicleCreatedBy(CVehicle* v, uint8_t by) { CallMethod<0x6D5D70>(v, (int)by); }  // keeps CCarCtrl counters right
 
@@ -202,6 +209,7 @@ void Vehicles::Announce(const NetVehicle& nv) {
     sp.area = v->AreaCode();
     sp.lockState = (uint8_t)v->DoorLock();
     sp.script = nv.createdByUs ? nv.script : v->CreatedBy() == VEHICLE_CREATED_MISSION;
+    sp.extras[0] = Field<int8_t>(v, 0x438), sp.extras[1] = Field<int8_t>(v, 0x439);  // CVehicle::m_anExtras
     Writer w(proto::G_VEH_CREATE);
     sp.Write(w);
     Net().Send(proto::CH_RELIABLE, w);
@@ -296,8 +304,10 @@ CVehicle* Vehicles::FindAdoptable(uint16_t model, const CVector& pos) {
         auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
         if (v->ModelIndex() != model || m_byPtr.count(v)) continue;
         if (me && me->InVehicle() && me->Vehicle() == v) continue;
-        // a script's car stays its own: released as an ordinary car later, its script lost it and crashed
-        if (v->CreatedBy() == VEHICLE_CREATED_MISSION) continue;
+        // only a car generator's (CCarGenerator::DoInternalProcessing makes them PARKED): both games have it at the same
+        // spot. A script's car stays its own (released as an ordinary car later, its script lost it and crashed), and the
+        // traffic's or a trainer's (RANDOM) is only a look-alike of the other game's car: it was taken over (#16)
+        if (v->CreatedBy() != VEHICLE_CREATED_PARKED) continue;
         // a parked car both games have (a car generator's): one with people in it or on the move is this game's traffic,
         // its driver kept driving it against the copy's states
         if (v->Driver() || v->NumPassengers() || v->MoveSpeed().Length() > 0.01f) continue;
@@ -334,12 +344,22 @@ static bool FreeRandomCar() {
 
 CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
     if (!IsModelLoaded(sp.model)) {
-        RequestModel(sp.model, 0);  // streamed in the background, CreateMirror is retried every frame
+        // streamed in the background, CreateMirror is retried every frame. A request with no flag lasts one streaming
+        // update (CStreaming::PurgeRequestList at its end): a mission's car of a model this game had nowhere lost that race
+        // for long, and the people in it waited for it ("Running Dog": the Vagos' car, "Mike Toreno": the van and the
+        // bikers, 28.10). A script's car goes first; the flag clears once its read starts.
+        RequestModel(sp.model, sp.script ? 0x10 /* PRIORITY_REQUEST */ : 0);
         return nullptr;
     }
     if (!HasRoom(VehiclePool(), kKeepVehicles, "vehicle") && !FreeRandomCar()) return nullptr;
+    // its owner's components (a Picador's surfboard, a convertible's roof up or down): picked as its clump is made
+    // (CVehicleModelInfo::ChooseComponent), at random unless asked for (ms_compsToUse, -2: at random). They differed
+    // between the two games (27.10).
+    auto* comps = (int8_t*)0x8A6458;  // CVehicleModelInfo::ms_compsToUse
+    for (int i = 0; i < 2; ++i) comps[i] = sp.extras[i] >= -1 && sp.extras[i] <= 5 ? sp.extras[i] : -2;
     int handle = -1;
     Cmd(0x00A5).I(sp.model).F(sp.pos.x).F(sp.pos.y).F(sp.pos.z).Out(&handle).Run();  // CREATE_CAR
+    comps[0] = comps[1] = -2;  // a model with no components takes none: not left for the next car
     CVehicle* v = GetVehicle(handle);
     if (!v) return nullptr;
     // CREATE_CAR marks the car as held by a script (CVehicle::bIsLocked), and a tow truck or a tractor never hooks such
@@ -351,6 +371,15 @@ CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
     v->AreaCode() = sp.area;
     // a random car locked there does not lock the other player out; a mission's locked car stays shut for him too
     v->DoorLock() = sp.lockState == 2 && !sp.script ? 1 : sp.lockState;
+    // the copy of a car the other game made in our view close by: what made it, for the next report of cars out of
+    // nowhere (27.10)
+    static uint64_t toldMs = 0;
+    if (CPlayerPed* me = FindPlayerPed(0); me && NowMs() - toldMs > 10000 && CallMethod<0x534540, bool>(v)) {  // GetIsOnScreen
+        if (float d = (sp.pos - me->GetPosition()).Length(); d < 25.0f) {
+            toldMs = NowMs();
+            LOGI("A copy of the other game's car (model %d) appeared %.0f m away in view", sp.model, d);
+        }
+    }
     return v;
 }
 
@@ -518,6 +547,16 @@ void Vehicles::HandleRemove(uint8_t from, Reader& r) {
     NetVehicle* nv = Find(id);
     if (!nv || nv->owner != from) return;
     CPlayerPed* me = FindPlayerPed(0);
+    // gone from its owner's game inside a safe house's garage: the host's store holds it now (a door shut on it, or the
+    // host kept the partner's car). Kept here as this game's own, it stood there twice, filled the garage and came back
+    // out of it again and again (CJ's garage, 28.10).
+    if (CVehicle* v = nv->veh; IsVehicleValid(v) && !(me && me->InVehicle() && me->Vehicle() == v) && !ScriptHolds(v)) {
+        CVector p = v->GetPosition();
+        if (Call<0x448900, bool>(&p)) {  // CGarages::IsPointWithinHideOutGarage
+            LOGI("Vehicle %04X (model %d): its owner put it away in a garage: gone here too", id, nv->model);
+            return Forget(id, true);
+        }
+    }
     if (KeepsWhenDeleted(*nv)) {
         LOGI("Vehicle %04X (model %d): its owner deleted it by us: kept", id, nv->model);
         return TakeOver(*nv, from);
@@ -689,6 +728,9 @@ void ApplyParts(CVehicle* v, const VehicleState& st) {
     if ((st.extras & VehicleState::X_BIKE) && (type == VEHICLE_TYPE_BIKE || type == VEHICLE_TYPE_BMX)) {
         Field<float>(v, 0x648) = Field<float>(v, 0x64C) = st.lean;  // LeanAngle, DesiredLeanAngle: as its owner shows it
         Field<float>(v, 0x650) = st.leanFwd;                          // LeanFwd
+        // its rider stands up on the pedals as the owner's does: the copy's status counts no taps, it only sat (#9).
+        // A motorbike (CBike) has no such field: the object ends before it
+        if (type == VEHICLE_TYPE_BMX) Field<float>(v, 0x818) = (st.flags & VehicleState::F_SPRINT) ? 10.0f : 0.0f;
     }
     if ((st.extras & VehicleState::X_MISC) && (type <= VEHICLE_TYPE_PLANE || type == VEHICLE_TYPE_TRAILER))
         Field<uint16_t>(v, 0x86C) = st.misc;
@@ -768,6 +810,15 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
     // A towed one keeps STATUS_IS_TOWED: with any other its ProcessControl breaks the link (0x6B32A7)
     if (!wreck && v->Driver() != me && v->VehicleSubClass() != VEHICLE_TYPE_TRAILER && !tower) v->SetStatus(STATUS_PHYSICS);
 
+    // Struck by our player's car: driven to its owner's place each frame, the copy stood like a wall in the car's way and
+    // stopped it (Duke Nukem, 27.10), its owner's game learning of the hit only from its copy of our car. For a moment
+    // after a touch it goes by the hit here as a car of this game would, then eases back to where its owner has it.
+    if (CVehicle* mine = me && me->InVehicle() && me->Vehicle() && me->Vehicle()->Driver() == me ? me->Vehicle() : nullptr;
+        mine && mine != v && !HasPlayerInside(v) && !Aircraft(v) &&
+        (CallMethod<0x543540, bool>(v, mine) || CallMethod<0x543540, bool>(mine, v)))  // CPhysical::GetHasCollidedWith
+        nv.bumpMs = NowMs();
+    uint64_t sinceBump = NowMs() - nv.bumpMs;
+
     float age = std::min(0.3f, (float)(NowMs() - nv.recvMs) / 1000.0f);
     CVector target = st.pos + st.vel * age;
     // the turn as far on as the position: pulled back each frame to where the state left it, a car spun on the spot
@@ -793,12 +844,15 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
         SetVehicleMatrix(v, target, targetRot);
         v->MoveSpeed() = st.vel * (1.0f / 50.0f);
         v->TurnSpeed() = st.turn * (1.0f / 50.0f);
+    } else if (sinceBump < 600) {
+        // the hit's own motion, this game's physics
     } else if (!resting) {
-        CVector cmd = st.vel + err * 4.0f;  // converge in ~1/4 s
+        bool easing = sinceBump < 2000;  // back from a hit: slowly
+        CVector cmd = st.vel + err * (easing ? 1.5f : 4.0f);  // converge in ~1/4 s
         v->MoveSpeed() = cmd * (1.0f / 50.0f);
         v->TurnSpeed() = st.turn * (1.0f / 50.0f);
         if (CMatrix* m = v->Matrix()) {
-            Quat q = Quat::Slerp(Quat::FromMatrix(*m), targetRot, std::min(1.0f, dt * 12.0f));
+            Quat q = Quat::Slerp(Quat::FromMatrix(*m), targetRot, std::min(1.0f, dt * (easing ? 3.0f : 12.0f)));
             q.ToMatrix(*m);
             CallMethod<0x446F90>(v);
         }
@@ -819,8 +873,12 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
     v->GasPedal() = st.gas;
     v->BrakePedal() = st.brake;
     // CVehicle::bIsHandbrakeOn as its owner's: left on here (parked, or a car this game's player got out of), it held the
-    // copy's rear wheels for good, and the car went on with its brake lights lit and its tyres smoking as if it braked
-    if (st.flags & VehicleState::F_HANDBRAKE) v->VehicleFlagsLo() |= 0x20u;
+    // copy's rear wheels for good, and the car went on with its brake lights lit and its tyres smoking as if it braked.
+    // A traffic driver pulls it for a moment as it stops: coming late, it locked a copy's wheels on the move ("now and then
+    // the cars drive on the handbrake", #23). On the move it is taken from a player at the wheel only.
+    bool playerDrives = v->Driver() && Players::Instance().FindByPed(v->Driver());
+    bool still = st.vel.x * st.vel.x + st.vel.y * st.vel.y + st.vel.z * st.vel.z < 1.0f;  // under 1 m/s
+    if ((st.flags & VehicleState::F_HANDBRAKE) && (playerDrives || still)) v->VehicleFlagsLo() |= 0x20u;
     else v->VehicleFlagsLo() &= ~0x20u;
     v->Health() = st.health;
     v->SetEngineOn((st.flags & VehicleState::F_ENGINE) != 0);
@@ -877,7 +935,7 @@ void Vehicles::ScanTraffic() {
     std::vector<uint16_t> gone;
     for (auto& [id, nv] : m_byId)
         if (!IsMirror(nv) && IsVehicleValid(nv.veh) && !HasPlayerInside(nv.veh) &&
-            RemoteDistance(nv.veh->GetPosition(), nv.veh->AreaCode()) > kTrafficOut)
+            RemoteDistance(nv.veh->GetPosition(), nv.veh->AreaCode()) > (Aircraft(nv.veh) ? kAirOut : kTrafficOut))
             gone.push_back(id);
     for (uint16_t id : gone) {
         Writer w(proto::G_VEH_REMOVE);
@@ -890,12 +948,18 @@ void Vehicles::ScanTraffic() {
             SetVehicleCreatedBy(nv->veh, VEHICLE_CREATED_RANDOM);
         Forget(id, false);
     }
+    for (auto it = m_local.begin(); it != m_local.end();) it = GetVehicle(*it) ? std::next(it) : m_local.erase(it);
     for (int i = 0; i < pool->size; ++i) {
         if (pool->byteMap[i] < 0) continue;
         auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
-        if (m_byPtr.count(v) || !IsSyncableVehicle(v)) continue;
-        if (RemoteDistance(v->GetPosition(), v->AreaCode()) < kTrafficIn) EnsureNetworked(v);
+        if (m_byPtr.count(v) || !IsSyncableVehicle(v) || (m_local.count(GetVehicleRef(v)) && !v->Driver())) continue;
+        if (RemoteDistance(v->GetPosition(), v->AreaCode()) < (Aircraft(v) ? kAirIn : kTrafficIn)) EnsureNetworked(v);
     }
+}
+
+void Vehicles::KeepLocal(CVehicle* v) {
+    if (!v || !m_local.insert(GetVehicleRef(v)).second) return;
+    LOGD("Vehicle %d (model %d) of the police impound stays this game's", GetVehicleRef(v), (int)v->ModelIndex());
 }
 
 // The car the player came in waits outside while the player is in an interior. An interior lies kilometres from its
@@ -1042,6 +1106,7 @@ void Vehicles::OnGameStarted() {
     m_byPtr.clear();
     m_pending.clear();
     m_giveAway.clear();
+    m_local.clear();
 }
 
 void Vehicles::OnGameShutdown() { OnGameStarted(); }

@@ -56,12 +56,19 @@ public:
     // differ between translations. height = character cell height in pixels.
     void GameText(GameFont font, float x, float y, std::string_view ascii, float height, uint32_t argb, uint32_t flags = 0);
     float GameTextWidth(GameFont font, std::string_view ascii, float height);
+    // A picture drawn as one more character of the fonts (a private-use code point, U+E000 and on) from an SVG's path:
+    // it takes the text's colour as a letter does and stands as high as a capital. False: no path it can read (the
+    // commands M L H V C Z only).
+    bool SetIcon(wchar_t ch, std::string_view svg);
+    bool HasIcon(wchar_t ch) const { return m_icons.count(ch) != 0; }
 
     float Width() const { return m_width; }
     float Height() const { return m_height; }
     // UI scale relative to 1080p.
     float Scale() const { return m_height / 1080.0f; }
     bool Ready() const { return m_ready; }
+    // the fonts could not be built for this screen: nothing of the interface can be drawn
+    bool Failed() const { return !m_ready && m_failedFor != 0 && m_failedFor == (int)m_height; }
     // nothing drawn shows (the frame's callers still run): a clean picture to record
     void SetHidden(bool hidden) { m_hidden = hidden; }
 
@@ -90,11 +97,21 @@ private:
         uint32_t color;
         float u, v;
     };
+    struct PathStep {
+        char op;  // M, L, C (two control points and the end), Z
+        float p[6];
+    };
+    struct Icon {
+        float minX = 0, minY = 0, w = 0, h = 0;  // the SVG's viewBox
+        std::vector<PathStep> path;              // absolute
+    };
 
     bool BuildFonts();
     bool BuildFont(Font& f, const wchar_t* face, int pixelHeight, int weight, float stretch = 1.0f, float tracking = 0,
                    bool upper = false);
     static wchar_t Shape(const Font& f, wchar_t c);
+    static bool ParseIcon(std::string_view svg, Icon& out);
+    static void DrawIcon(const Icon& icon, uint32_t* bits, int texW, int x0, int y0, int size);
     void Flush();
     void SetTexture(IDirect3DTexture9* t);
     void Quad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t c);
@@ -104,16 +121,24 @@ private:
     IDirect3DDevice9* m_dev = nullptr;
     void* m_stateBlock = nullptr;
     Font m_fonts[FONT_COUNT];
+    std::unordered_map<wchar_t, Icon> m_icons;
     IDirect3DTexture9* m_curTex = nullptr;
     std::vector<Vertex> m_verts;
     float m_width = 1920, m_height = 1080;
     int m_fontHeightFor = 0;  // screen height the atlases were built for
+    int m_failedFor = 0;      // screen height they could not be built for
     bool m_ready = false;
     bool m_inFrame = false;
     bool m_hidden = false;
 };
 
 Renderer& Gfx();
+
+// The microphone's picture among the fonts' characters (Voice reads it from ui/microphone.svg), and in UTF-8
+constexpr wchar_t kMicIcon = 0xE000;
+constexpr const char* kMicIconUtf8 = "\xEE\x80\x80";
+// "talking" before a name: the microphone in yellow ("((•))" while the picture is not in the fonts)
+std::string TalkingMark();
 
 // UTF-8 <-> wide helpers used by the UI
 std::wstring Widen(std::string_view s);

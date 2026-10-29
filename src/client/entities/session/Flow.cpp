@@ -162,6 +162,7 @@ bool StartServerProcess(const std::wstring& worldPath, bool newGame) {
     if (!worldPath.empty()) cmd += L" --world \"" + worldPath + L"\"";
     if (newGame) cmd += L" --new-game";
     cmd += cfg.friendlyFire ? L" --friendly-fire 1" : L" --friendly-fire 0";  // the checkbox wins over server.ini
+    cmd += cfg.partnerTeleport ? L" --partner-teleport 1" : L" --partner-teleport 0";
 
     if (!g_serverJob) {
         g_serverJob = CreateJobObjectW(nullptr, nullptr);
@@ -263,6 +264,7 @@ void SaveConnectSettings() {
     ini.SetInt("connect", "port", cfg.port);
     ini.Set("connect", "password", cfg.password);
     ini.SetInt("connect", "friendly_fire", cfg.friendlyFire);
+    ini.SetInt("connect", "partner_teleport", cfg.partnerTeleport);
     ini.Save(cfg.iniPath);
 }
 
@@ -300,6 +302,62 @@ std::string StatusText() {
     return "";
 }
 
+// The title of the mission a save was made after, by its GXT key (CStats::LastMissionPassedName), as the English game
+// names it: a translated game's own save name is in its font's codes, which our fonts cannot show, and the list showed
+// no name at all (Kruptor asked for it on October 25). The stats are a save's 17th block (CGenericGameStorage::GenericSave),
+// the key after their floats, ints and kills by ped type (CStats::Save: 0x148, 0x37C and 0x80 bytes).
+const std::pair<const char*, const char*> kMissionTitles[] = {
+    {"ITBEG", "In the Beginning"}, {"INTRO_1", "Big Smoke"}, {"INTRO_2", "Ryder"}, {"SWEET_1", "Tagging up Turf"},
+    {"SWEET1B", "Cleaning the Hood"}, {"SWEET_3", "Drive-Thru"}, {"SWEET_2", "Nines and AK's"},
+    {"SWEET_4", "Drive-By"}, {"SWEET_5", "Sweet's Girl"}, {"SWEET_6", "Cesar Vialpando"}, {"SWEET_7", "Los Sepulcros"},
+    {"CRASH_2", "Doberman"}, {"CRASH_1", "Burning Desire"}, {"CRASH_3", "Gray Imports"}, {"RYDER_1", "Home Invasion"},
+    {"RYDER_3", "Catalyst"}, {"RYDER_2", "Robbing Uncle Sam"}, {"SMOKE_1", "OG Loc"}, {"SMOKE_2", "Running Dog"},
+    {"SMOKE_3", "Wrong Side of the Tracks"}, {"SMOKE_4", "Just Business"}, {"STRAP_1", "Life's a Beach"},
+    {"STRAP_2", "Madd Dogg's Rhymes"}, {"STRAP_3", "Management Issues"}, {"STRAP_4", "House Party"},
+    {"CESAR_1", "High Stakes, Low-rider"}, {"LA1FIN1", "Reuniting the Families"}, {"LA1FIN2", "The Green Sabre"},
+    {"BCRASH1", "Badlands"}, {"BCESAR4", "Wu Zi Mu"}, {"BCES4_2", "Farewell, my love..."},
+    {"TRAILER", "King in Exile"}, {"TRUTH_1", "Body Harvest"}, {"TRUTH_2", "Are you going to San Fierro?"},
+    {"GAR_1", "Wear Flowers in your Hair"}, {"GAR_2", "Deconstruction"}, {"SCRA_1", "555 WE TIP"},
+    {"SCRA_2", "Snail Trail"}, {"WUZI_1", "Mountain Cloud Boys"}, {"FAR_4", "Ran Fa Li"}, {"FAR_5", "Lure"},
+    {"WUZI_2", "Amphibious Assault"}, {"WUZI_4", "The Da Nang Thang"}, {"SYND_1", "Photo Opportunity"},
+    {"SYND_2", "Jizzy"}, {"SYND_3", "Outrider"}, {"SYND_4", "Ice Cold Killa"}, {"SYND_6", "Toreno's Last Flight"},
+    {"SYND_7", "Yay Ka-Boom-Boom"}, {"SYND_5", "Pier 69"}, {"FAR_2", "T-Bone Mendez"}, {"FAR_3", "Mike Toreno"},
+    {"STEAL_1", "Zeroing In"}, {"STEAL_2", "Test Drive"}, {"STEAL_4", "Customs Fast Track"},
+    {"STEAL_5", "Puncture Wounds"}, {"FAR_1", "Back to School"}, {"ZERO_1", "Air Raid"}, {"ZERO_2", "Supply Lines..."},
+    {"ZERO_4", "New Model Army"}, {"BEEFY", "Beefy Baron"}, {"DESERT1", "Monster"}, {"DESERT2", "Highjack"},
+    {"DESERT3", "Interdiction"}, {"DESERT4", "Verdant Meadows"}, {"DESERT6", "N.O.E."}, {"DESERT9", "Stowaway"},
+    {"DESERT8", "Black Project"}, {"DESER10", "Green Goo"}, {"DESERT5", "Learning to Fly"},
+    {"CASINO1", "Fender Ketchup"}, {"CASEEN2", "Explosive Situation"}, {"CASINO3", "You've had your Chips"},
+    {"CASINO7", "Fish in a Barrel"}, {"CASINO4", "Don Peyote"}, {"CASINO5", "Intensive Care"},
+    {"CASINO6", "The Meat Business"}, {"CASINO9", "Freefall"}, {"CASIN10", "Saint Mark's Bistro"},
+    {"VCRASH1", "Misappropriation"}, {"VCRASH2", "High Noon"}, {"DOC_2", "Madd Dogg"},
+    {"HEIST_1", "Architectural Espionage"}, {"HEIST_3", "Key to her Heart"}, {"HEIST_2", "Dam and Blast"},
+    {"HEIST_4", "Cop Wheels"}, {"HEIST_5", "Up, Up and Away!"}, {"HEIST_9", "Breaking the Bank at Caligula's"},
+    {"MAN_1", "A Home in the Hills"}, {"MAN_2", "Vertical Bird"}, {"MAN_3", "Home Coming"},
+    {"MAN_5", "Cut Throat Business"}, {"GROVE_1", "Beat Down on B Dup"}, {"GROVE_2", "Grove 4 Life"},
+    {"RIOT_1", "Riot"}, {"RIOT_2", "Los Desperados"}, {"RIOT_4", "End of the Line"}, {"TRUCK", "Trucking"},
+    {"QUARRY", "Quarry"}, {"TAXI_M", "Taxi Driver"}, {"AMBUL_M", "Paramedic"}, {"FIRE_M", "Firefighter"},
+    {"COP_M", "Vigilante"}, {"BURGLAR", "Burglar"}, {"PIMP", "Pimping"}, {"STAD_01", "Dirt Track"},
+    {"STAD_02", "Kickstart"}, {"STAD_03", "8-Track"}, {"STAD_04", "Blood Ring"}, {"TRACE_1", "Race Tournament"},
+    {"BOTTY", "Beat the Cock!"}, {"COUR1", "Courier"}, {"MOUNTN", "The Chiliad Challenge"}, {"BMX", "BMX"},
+    {"NRG500", "NRG-500"},
+};
+const char* TitleInSave(const std::vector<uint8_t>& data) {
+    static const char kTag[] = "BLOCK";
+    size_t at = 0;
+    for (int block = 0; block < 17; ++block) {
+        auto it = std::search(data.begin() + (ptrdiff_t)(block ? at + 5 : 0), data.end(), kTag, kTag + 5);
+        if (it == data.end()) return nullptr;
+        at = (size_t)(it - data.begin());
+    }
+    size_t key = at + 5 + 0x148 + 0x37C + 0x80;
+    if (key + 8 > data.size()) return nullptr;
+    std::string name((const char*)data.data() + key, strnlen((const char*)data.data() + key, 8));
+    for (auto& [k, title] : kMissionTitles)
+        if (name == k) return title;
+    return nullptr;
+}
+
 std::vector<SaveSlotInfo> ListSaveSlots() {
     std::vector<SaveSlotInfo> out;
     for (int s = 1; s <= 8; ++s) {
@@ -326,6 +384,7 @@ std::vector<SaveSlotInfo> ListSaveSlots() {
             info.title = Format(TR("Слот %d · %02d.%02d.%04d, %02d:%02d", "Slot %d · %02d.%02d.%04d, %02d:%02d"), s, st.wDay,
                                 st.wMonth, st.wYear, st.wHour, st.wMinute);
             if (ascii) info.title += " · " + name;
+            else if (const char* title = TitleInSave(data)) info.title += std::string(" · ") + title;
         } else {
             info.title = Format(TR("Слот %d · пусто", "Slot %d · empty"), s);
         }

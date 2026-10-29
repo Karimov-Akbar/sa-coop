@@ -47,7 +47,11 @@ constexpr size_t kStatsSize = 0x4C8;
 // stats the world owns, not the player (CStats::StatTypesInt, id - 120): the profile keeps the values of the world it was
 // saved in, and laid over a newer one it took the city back (STAT_CITY_UNLOCKED: wanted stars over the bridges, the
 // hospitals, the radio) and the story's accomplished missions, gang strength and territory
-constexpr int kWorldStats[][2] = {{146, 148}, {180, 181}, {302, 342}};  // missions tried, passed, in game; no more hurricanes, city; story
+// The collectibles' counts too (snapshots 231, horseshoes 241, oysters 243; the tags are counted on the map itself): what
+// is left to pick up is the world's, and a partner's own count ran apart from it for good once the host's world rolled
+// back to its last save (50 of 50 against 20 of 50, #4)
+constexpr int kWorldStats[][2] = {{146, 148}, {180, 181}, {231, 231}, {241, 241}, {243, 243},
+                                  {302, 342}};  // missions tried, passed, in game; no more hurricanes, city; collectibles; story
 // and the story's progress (CStats::StatTypesFloat at +0x380: STAT_PROGRESS_MADE, STAT_TOTAL_PROGRESS): the menu's per cent
 // stood where the partner's profile began (3.21% for a whole story played together, issue #59)
 constexpr size_t kFloatStats = 0x380;
@@ -342,6 +346,7 @@ constexpr StatRange kSharedStats[] = {
     {48, 49, R_MIN},     {172, 172, R_MIN},   {202, 202, R_MIN},   {212, 212, R_MIN},   {219, 222, R_MIN},  // best times
     {246, 250, R_MIN},   {258, 301, R_MIN},
     {0, 1, R_SET},       {146, 148, R_SET},   {180, 181, R_SET},   {302, 342, R_SET},  // the world's, host -> partner
+    {231, 231, R_SET},   {241, 241, R_SET},   {243, 243, R_SET},  // and its collectibles' counts (kWorldStats)
 };
 uint8_t RuleOf(uint16_t id) {
     for (const StatRange& r : kSharedStats)
@@ -509,6 +514,14 @@ void ApplySideProgress(const SideProgress& p) {
     std::map<uint16_t, int32_t> world = WorldDoneFlags();  // the host's completions, before the profile's go over them
     for (auto [n, v] : p.globals)  // only the listed ones: a profile is a file from the server
         if (Listed(kSideGlobals, n) || (flight && Listed(kFlightGlobals, n))) Global(n) = v, ++globals;
+    // the gym's "enough for today" is a date ($21388 day, $21392 month): one of the partner's later than the world's (the
+    // host's older save) kept every machine shut for days (#34). As the gym itself sees the date: CClock's day and month.
+    int day = Ref<uint8_t>(0xB70154), month = Ref<uint8_t>(0xB70155);
+    if (Global(5348) > month || (Global(5348) == month && Global(5347) > day)) {
+        LOGI("The gym's workout of %d.%d is past the world's date (%d.%d): the machines are free", Global(5347), Global(5348),
+             day, month);
+        Global(5347) = Global(5348) = Global(5349) = 0;
+    }
     for (auto [g, count, owned] : p.generators) {
         uint8_t* gen = Listed(kRewardGenerators, g) || (flight && Listed(kFlightGenerators, g)) ? Generator(g) : nullptr;
         if (!gen || !count || *(uint16_t*)(gen + 0x1A)) continue;  // only one the partner earned and the world has off
@@ -544,11 +557,17 @@ std::vector<uint8_t> CaptureProfile() {
     MissionClothesUnder(clothes);  // a mask the host's mission put on is not the player's own
     w.Bytes(clothes, kClothesSize);
     w.U8(NUM_WEAPON_SLOTS);
+    std::string guns;
     for (int i = 0; i < NUM_WEAPON_SLOTS; ++i) {
-        const CWeapon& wpn = me->Weapons()[i];
-        w.U8((uint8_t)wpn.type);
-        w.I32(wpn.ammoTotal);
+        int type = me->Weapons()[i].type, ammo = me->Weapons()[i].ammoTotal;
+        MissionWeaponUnder(type, ammo);  // a gun the host's mission gave is not the player's own
+        w.U8((uint8_t)type);
+        w.I32(ammo);
+        if (type > 0) guns += " " + std::to_string(type) + "x" + std::to_string(ammo);
     }
+    // a partner left with no weapons after a load (Holder, 29.10): what the profile holds, said when it changes
+    static std::string lastGuns = "-";
+    if (guns != lastGuns) LOGI("Profile weapons:%s", guns.empty() ? " none" : guns.c_str()), lastGuns = guns;
     w.U8(me->FightingStyle());
     w.U8(info.maxHealth);
     w.U8(info.maxArmour);
@@ -603,13 +622,16 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
     memcpy(me->ClothesDesc(), clothes.data(), kClothesSize);
     RebuildPlayer(me, false);  // body from the profile's fat/muscle stats
     Cmd(0x048F).I(h).Run();    // REMOVE_ALL_CHAR_WEAPONS
+    std::string guns;
     for (const Slot& s : slots) {
         if (s.type == 0 || s.type > 46) continue;  // eWeaponType ends with the parachute
         int model = -1;
         Cmd(0x0781).I(s.type).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
         if (model > 0) LoadModelNow(model);
         Cmd(0x01B2).I(h).I(s.type).I(std::max(s.ammo, 1)).Run();  // GIVE_WEAPON_TO_CHAR
+        guns += " " + std::to_string(s.type) + "x" + std::to_string(s.ammo);
     }
+    LOGI("Profile weapons given:%s", guns.empty() ? " none" : guns.c_str());
     Cmd(0x01B9).I(h).I(0).Run();  // fists in hand
     me->FightingStyle() = fight;
     if (version >= 4) Field<uint8_t>(me, 0x72E) = moves;
@@ -778,14 +800,15 @@ public:
             LOGI("The respect help the profile caused is cleared");
         }
 
-        // look and stats for the other game: on change, and every 10 s for late joiners
-        if (now - m_lastLookMs >= 1000) {
-            m_lastLookMs = now;
-            StatTick(Net().IsHost() ? flow::InSharedWorld() && !Net().Peers().empty() : hostWorld && m_applied);
+        // look for the other game: at once when it changes (a changing room's items came by a check a second, in bursts
+        // with some left out, #21), and every 10 s for late joiners
+        {
             std::vector<uint8_t> desc((uint8_t*)me->ClothesDesc(), (uint8_t*)me->ClothesDesc() + kClothesSize);
             uint16_t model = me->ModelIndex();
             uint16_t fight = me->FightingStyle() | Field<uint8_t>(me, 0x72E) << 8;
-            if (desc != m_sentLook || model != m_sentModel || fight != m_sentFight || now - m_lookSentMs > 10000) {
+            bool changed = desc != m_sentLook || model != m_sentModel || fight != m_sentFight;
+            if (changed && !m_sentLook.empty()) m_lookChangedMs = now;
+            if ((changed && now - m_lookSentMs >= 200) || now - m_lookSentMs > 10000) {
                 Writer w(proto::G_PLAYER_LOOK);
                 w.Bytes(desc.data(), desc.size());
                 w.U16(model);
@@ -798,6 +821,11 @@ public:
                 m_sentFight = fight;
                 m_lookSentMs = now;
             }
+        }
+        // stats: on change (3 s apart at most) and every 10 s
+        if (now - m_lastLookMs >= 1000) {
+            m_lastLookMs = now;
+            StatTick(Net().IsHost() ? flow::InSharedWorld() && !Net().Peers().empty() : hostWorld && m_applied);
             std::vector<uint8_t> stats((uint8_t*)kStatsBlock, (uint8_t*)kStatsBlock + kStatsSize);
             if ((stats != m_sentStats && now - m_statsSentMs > 3000) || now - m_statsSentMs > 10000) {
                 Writer w(proto::G_PLAYER_STATS);
@@ -836,8 +864,10 @@ public:
                  l.special.c_str());
         }
 
-        // the partner's profile goes to the server when it changed (checked every 30 s)
-        if (now - m_lastSaveMs >= 30000 && hostWorld) SaveNow();
+        // the partner's profile goes to the server when it changed (checked every 30 s), and 3 s after a new look settled
+        // (bought clothes, a haircut): the host's world, reloaded at the next mission's marker, took the purchase back (#21)
+        bool lookToSave = !Net().IsHost() && m_lookChangedMs > m_lastSaveMs && now - m_lookChangedMs >= 3000;
+        if ((now - m_lastSaveMs >= 30000 || lookToSave) && hostWorld) SaveNow();
     }
 
     void SaveNow(bool always = false) {
@@ -865,6 +895,7 @@ private:
     bool m_profileReceived = false, m_applied = false;
     bool m_resetPending = false, m_reset = false;  // a new game emptied the profile: applied in the next world
     uint64_t m_lastSaveMs = 0, m_lastLookMs = 0, m_lookSentMs = 0, m_statsSentMs = 0, m_quietUntil = 0;
+    uint64_t m_lookChangedMs = 0;  // our look last changed
 };
 
 void PartnerSaved() {

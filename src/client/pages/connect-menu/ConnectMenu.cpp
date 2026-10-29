@@ -7,6 +7,7 @@
 #include "common/api/nat-traversal/NatTraversal.h"
 #include "common/config/version/Version.h"
 #include "common/lib/util/Util.h"
+#include "entities/player/Players.h"
 #include "entities/session/Flow.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
@@ -141,8 +142,7 @@ void RenderConnectMenu() {
     float cx = x + 52 * s, cw = W - 104 * s;
     float room = mh * 1.6f;  // space for the pointer left of a menu item
 
-    float fy = y + H - 20 * s - sh;       // key legend
-    float by = fy - 14 * s - rowH;        // footer items
+    float by = y + H - 20 * s - rowH;     // footer items
     float bodyBottom = by - 12 * s;
 
     g.Rect(0, 0, g.Width(), g.Height(), 0x99000000);
@@ -219,6 +219,20 @@ void RenderConnectMenu() {
         row(Cfg().nickname, host, net.Rtt(), true);
         for (auto& [id, p] : net.Peers()) row(p.name, p.isHost, p.ping, false);
         if (host && net.Peers().empty()) para(TR("Ждём друга...", "Waiting for your friend..."), kSaMuted);
+        // the colour of our own mark on the other players' radar (also /blip in the chat), saved and sent at once
+        if (Cfg().partnerBlip) {
+            static const char* const kColours[] = {"", "white", "red", "green", "yellow"};
+            const char* names[] = {TR("обычный (синий)", "default (blue)"), TR("белый", "white"), TR("красный", "red"),
+                                   TR("зелёный", "green"), TR("жёлтый", "yellow")};
+            int i = 0;
+            while (i < 5 && Cfg().markColour != kColours[i]) ++i;  // 5: a colour of one's own (RRGGBB)
+            cy += 18 * s;
+            caption(cx, TR("Цвет вашей метки у напарника", "Your mark's colour for your partner"));
+            cy += ch + 6 * s;
+            if (int d = w::Selector("blip", cx, cy, 360 * s, rowH, i < 5 ? names[i] : Cfg().markColour))
+                Players::Instance().SetMarkColour(kColours[((i < 5 ? i : 0) + d + 5) % 5]);
+            cy += rowH;
+        }
     } else if (busy) {
         // ---- connecting / starting / loading, in the middle of the body
         float barH = 6 * s;
@@ -299,6 +313,10 @@ void RenderConnectMenu() {
         if (g_tab == 1) {  // the host decides for the whole game; saved with the other settings when the server starts
             w::Checkbox("ff", cx, cy, TR("Урон по напарнику", "Friendly fire"), Cfg().friendlyFire);
             cy += lh * 0.8f + 22 * s;
+            bool noTeleport = !Cfg().partnerTeleport;
+            if (w::Checkbox("tp", cx, cy, TR("Запретить напарникам /tp и /tphere", "No /tp and /tphere for partners"), noTeleport))
+                Cfg().partnerTeleport = !noTeleport;
+            cy += lh * 0.8f + 22 * s;
         }
 
         // the main action: a big menu item in the middle, lit like the selected entry of the game's menus
@@ -333,12 +351,6 @@ void RenderConnectMenu() {
     }
     std::string close = online || busy || inGame ? TR("Закрыть", "Close") : TR("Одиночная игра", "Single player");
     if (item("close", cx + cw - g.TextWidth(FONT_MENU, close), by, close)) SetConnectMenuVisible(false);
-    g.Text(FONT_SMALL, cx, fy,
-           TR("{ACCBF1}F9{8D9CAD}  окно     {ACCBF1}T{8D9CAD}  чат     {ACCBF1}B{8D9CAD}  голос     "
-              "{ACCBF1}G{8D9CAD}  сесть пассажиром     {ACCBF1}F2{8D9CAD}  игроки",
-              "{ACCBF1}F9{8D9CAD}  window     {ACCBF1}T{8D9CAD}  chat     {ACCBF1}B{8D9CAD}  voice     "
-              "{ACCBF1}G{8D9CAD}  passenger     {ACCBF1}F2{8D9CAD}  players"),
-           kSaMuted, TEXT_SHADOW);
     w::EndFrame();
     w::DrawCursor();
     // Esc closes even when a text box is focused (handled in OnKeyDown)

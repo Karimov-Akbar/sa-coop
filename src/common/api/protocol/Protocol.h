@@ -74,7 +74,9 @@ enum MsgId : uint8_t {
                               // u8 fighting style, u8 its moves
     G_PLAYER_STATS = 71,      // reliable: stats affecting the remote ped (skills, stamina, fight style)
     G_PLAYER_WEAPONS = 72,    // reliable: weapon inventory
-    G_BULLET = 73,            // visual bullet replay
+    G_BULLET = 73,            // unreliable: the bullets the sender's player fired from a vehicle this frame, drawn on its copy
+                              // unless the copy fired itself (a drive-by mod, #76, Shots.cpp): u8 n, n x (vec3 from, vec3 to,
+                              // u8 weapon)
     G_DAMAGE = 74,            // damage event addressed to the owner of the victim
     G_EXPLOSION = 75,         // reliable: a blast went off (creator kind and id, type, position...), see Fire.cpp
     G_PROJECTILE = 76,        // reliable: a grenade, a rocket... was thrown (creator, weapon, position, speed, target)
@@ -102,7 +104,7 @@ enum MsgId : uint8_t {
                               // (to a restarted partner), its mission's SET_TAG_STATUS_IN_AREA
     G_PICKUP_CREATE = 104,    // reliable: a pickup appeared (loot, the host's mission)
     G_OBJ_DAMAGE = 105,       // reliable: the partner hit a mirror object, its owner applies it
-    G_FIRE = 106,             // reliable: a fire started / went out
+    G_FIRE = 106,             // reliable: a fire started (a script's on a car marked) / went out
     G_ZONE = 107,             // reliable: gang densities of a territory
     G_CHEAT = 108,            // reliable: a cheat that changes the shared world
     G_ENEX = 109,             // reliable: entrances the host's scripts opened or closed
@@ -137,15 +139,17 @@ enum MsgId : uint8_t {
                               // owners delete these empty cars of theirs there
     G_WATER_CANNON = 141,     // unreliable: u16 vehicle, the jet's offset from it and speed (a fire truck shoots water)
     G_TRAIN = 142,            // a train of the sender's game (u8 op, u16 id; state: kind, track, direction, rails, speed,
-                              // pos), unreliable; gone: reliable
+                              // pos), unreliable; gone: reliable; drive (unreliable) and enter (reliable): the sender's
+                              // player at the wheel of its copy of the train of player u8 (rails, speed)
     G_MISSION_AUDIO = 143,    // reliable, host -> partner: u8 op, u8 slot of the mission's speech (load: i32 sample;
                               // attach: u8 kind, u16 net id; position: vec3; play; clear)
     G_GARAGE_DOOR = 144,      // reliable: u8 garage, u8 door of a shop garage (0 shut, 1 open, 2 none: the sender's
                               // door follows ours)
     G_PROP = 145,             // reliable: u8 op, u16 id of an object the sender's player or ped holds or carries
-                              // (state: model, holder, how it hangs, look, own animation; gone)
-    G_PED_SPEECH = 146,       // reliable: u8 player/ped, u16 net id, the line it starts (context, bank, sound, delay,
-                              // volume, forced)
+                              // (state: model, holder, how it hangs, look, own animation; gone; hit: u8 its owner,
+                              // f32 damage, u8 weapon, the sender's shot at its copy of a joint range's target)
+    G_PED_SPEECH = 146,       // reliable: u8 player/ped/vehicle, u16 net id, the line it starts (context, bank, sound,
+                              // delay, volume, forced); a vehicle's: a police helicopter's or boat's loudspeaker
     G_MISSION_POLICY = 147,   // reliable, host -> partner: the mission's police rules (u8 max wanted, u8 back-off bits,
                               // f32 wanted multiplier), u8 city level (STAT_CITY_UNLOCKED), u8 1: its stars were cleared,
                               // f32 density of people, f32 density of cars
@@ -162,10 +166,16 @@ enum MsgId : uint8_t {
                               // helicopter of the sender's game
     G_CONTACTS = 154,         // reliable, host -> partner: u8 n, the story's mission start points of the host's radar
                               // (vec3, u8 sprite, u8 flags, u8 display, u32 colour, u16 size, i16 entrance)
-    G_GANG_WAR = 155,         // reliable, host -> partner: u8 fought: a gang war of the host's is being fought (sent on
-                              // a change and every 3 s while it is)
-    G_SIDE = 156,             // reliable: u8 op (1 offer, 2 accept, 3 decline, 4 end, 5 leave), u8 to (a player, 255 all),
-                              // str name (the side activity's mission script), i32 money (end: what it paid)
+    G_GANG_WAR = 155,         // reliable: u8 fought: a gang war of the sender's game is being fought (sent on a change and
+                              // every 3 s while it is), u8 flags (host: 1 wars on, 2 the story holds them, 4 on a mission,
+                              // 8 a defence), u16 the district fought for (0xFFFF none)
+    G_SIDE = 156,             // reliable: u8 op (1 offer, 2 accept, 3 decline, 4 end, 5 leave, 6 pay, 7 drop, 8 resync, 9
+                              // loot, 10 taken, 11 alarm), u8 to (a player, 255 all), str name (the side activity's mission
+                              // script), i32 money (pay: a fare as it came, both ways while who joined a taxi job drives its
+                              // own; end: the rest it paid; taken: the thing's model); drop: vec3 the leader's courier ring
+                              // its package went into; resync: who joined is back from its own taxi job, the leader sends all
+                              // it shows again; loot: who joined a burglary put a thing into the van; taken: vec3 the place
+                              // of a house's thing the sender lifted; alarm: vec3 where the residents woke for the sender
     G_SCENE_CAM = 157,        // host -> partner, a scene of its story mission on the engine: u8 op 1 sample (state
                               // channel): u8 scene, u8 shot, u32 host ms, vec3 camera, vec3 front, f32 fov, i8 area, u8
                               // flags (1 wide, 2 control off); u8 op 2 end (reliable): u8 scene
@@ -196,6 +206,25 @@ enum MsgId : uint8_t {
                               // on a shared person: u8 kind, u16 id, vec3 at, f32 radius, i32 model, u8 state
     G_PED_ATTACH = 172,       // reliable, host -> partner: the story mission puts a shared person on a car (ATTACH_CHAR_TO_CAR):
                               // u8 1 on (0 off), u8 kind, u16 id, u16 car, vec3 offset, i32 heading, f32 range, i32 weapon
+    G_MARK_COLOUR = 173,      // reliable: str the colour the sender chose for its own mark on the others' radar (white, red,
+                              // green, blue, yellow, RRGGBB; empty: the allies' blue), on a change and every 15 s
+    G_CONTEST = 174,          // reliable: a side activity as a contest: u8 op (1 call, 2 accept, 3 decline, 4 state, 5
+                              // cancel), u8 to (a player, 255 all), u8 activity, i32 variant (the race), the sender's run: u8
+                              // state (0 not started, 1 playing, 2 done), u8 ok, i32 value, i32 place; u8 why (decline, cancel)
+    G_POOL = 175,             // pool for two (POOL2's two-player mode across games, Pool.cpp): u8 op, u8 to; 1 start, 2 end,
+                              // 3 fail u8 (0 the owner's game started alone, 1 it left the table), 7 result u8 (0 owner won,
+                              // 1 the second player): reliable, each with its u8. 4 view (owner: camera vec3 src, vec3 front,
+                              // f32 fov; the opponent's place vec3, f32 heading, i16 block, i16 anim, f32 time, f32 speed, u16
+                              // flags; u8 turn, i8 area; the opponent's cue's own animation: i16 block, i16 anim, f32 time,
+                              // u16 flags), 5 objects (u8 n, n x u8 slot, u16 model, vec3, quat, u8 look: 1 shown, 2 the
+                              // opponent's cue, in the second player's hand), 6 input (second player: its pad's 20 values i16, u8
+                              // joypad, f32 mouse x, y), 8 table (to 255: any game with a POOL2 of its own, u16 model, vec3,
+                              // quat: the others' table stands so): unreliable
+    G_TP_ASK = 176,           // reliable: /tp and /tphere as requests (Teleport.cpp): u8 op (1 may I come over, 2 come over to
+                              // me, 3 yes, 4 no), u8 to. The asker's game carries a yes out (/tphere: G_TELEPORT)
+    G_MONEY = 177,            // reliable: the players' money (F2, Money.cpp): u8 op; 1 what the sender has now, i32; 2 a gift,
+                              // u8 to, i32; 3 the gift came, u8 to (its giver), i32; 4 host -> partner: its share of what
+                              // Big Smoke's courier paid the host (Courier.cpp), u8 to, i32
     G_MISSION_LOOK = 164,     // reliable, host -> partner: what the story mission put on its player, worn over the
                               // partner's own look: u8 n, n x (u8 key index 0..27 of CPedClothesDesc, u32 key); 0: off
     G_OBJ_HOLD = 163,         // reliable: the partner holds the copy of a host's mission object: u8 op (1 hold, 2 release,
@@ -256,6 +285,7 @@ struct Welcome {
     std::string motd, motdEn;
     bool worldAvailable = false;
     bool friendlyFire = false;  // the players can hurt each other (the host chose it creating the game)
+    bool partnerTeleport = true;  // the partners may use /tp and /tphere (the host's choice too)
     std::vector<PlayerEntry> players;  // already connected players (excluding you)
 
     void Write(Writer& w) const {
@@ -272,6 +302,7 @@ struct Welcome {
         }
         w.Str(motdEn, 512);
         w.Bool(friendlyFire);
+        w.Bool(partnerTeleport);
     }
     bool Read(Reader& r) {
         yourId = r.U8();
@@ -290,6 +321,7 @@ struct Welcome {
         }
         motdEn = r.Str(512);
         friendlyFire = r.Bool();
+        partnerTeleport = r.Bool();
         return r.Ok();
     }
 };

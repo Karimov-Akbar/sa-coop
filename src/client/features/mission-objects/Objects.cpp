@@ -156,11 +156,16 @@ NetObject* FindByObject(std::map<uint16_t, NetObject>& m, CObject* o) {
 
 // host: announce new mission objects, report moves, breaks and ends
 void HostScan() {
-    if (HostReplicating()) {
-        for (int i = 0; i < 75; ++i) {
-            uintptr_t e = kMissionCleanUp + (uintptr_t)i * 8;
-            if (Ref<uint8_t>(e) != 3) continue;  // MISSION_CLEANUP_ENTITY_TYPE_OBJECT
-            int h = Ref<int32_t>(e + 4);
+    std::vector<int> handles;
+    if (HostReplicating())
+        for (int i = 0; i < 75; ++i)
+            if (uintptr_t e = kMissionCleanUp + (uintptr_t)i * 8; Ref<uint8_t>(e) == 3)  // MISSION_CLEANUP_ENTITY_TYPE_OBJECT
+                handles.push_back(Ref<int32_t>(e + 4));
+    // the cash bags Big Smoke's courier dropped (Courier.cpp): no mission's, the courier runs outside missions
+    int bags[8];
+    for (int i = 0, n = CourierObjects(bags, 8); i < n; ++i) handles.push_back(bags[i]);
+    {
+        for (int h : handles) {
             CObject* o = GetObject(h);
             if (!o || FindByObject(g_owned, o)) continue;
             NetObject no;
@@ -452,10 +457,12 @@ void __fastcall HookObjectDamage(CObject* o, void* edx, float damage, CVector* o
     // that over. This game's copy of the other game's car runs a little off the real one's path: it broke posts
     // the real one went past, and the other player saw them fall by themselves.
     // The host's mission objects the same: the other player's game sends its hits (G_OBJ_DAMAGE), and the replayed shots
-    // of its copy here counted them twice.
-    if (!g_applying && damager && Net().Online() && (Field<uint8_t>(o, 0x13C) == 1 || FindByObject(g_owned, o)) &&
+    // of its copy here counted them twice. So do the targets of our joint range round (Props, RangeHit).
+    if (!g_applying && damager && Net().Online() && (Field<uint8_t>(o, 0x13C) == 1 || FindByObject(g_owned, o) || RangeTarget(o)) &&
         OtherGames(damager))
         return;
+    // our copy of a target of the other player's range round: our shot goes to its game, nothing lands here
+    if (!g_applying && Net().Online() && PropCopyHit(o, damager, damage, weapon)) return;
     if (!g_applying && Net().Online() && !g_mirrors.empty()) {
         if (NetObject* no = FindByObject(g_mirrors, o)) {
             CPlayerPed* me = FindPlayerPed(0);

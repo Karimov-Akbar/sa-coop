@@ -48,11 +48,15 @@ int LocalWantedLevel() {
 
 void UpdateSuppression() {
     bool want = false;
-    if (Net().Online() && !Net().IsHost() && core::IsPlayerReady()) {
+    // whose people and cars cover two players together: the host's, and while a joint side activity runs, its leader's.
+    // A taxi job's fares, a pimp's clients and a vigilante's targets are the leading game's own people and cars: led by
+    // the partner near the host, the job had none (#2)
+    uint8_t source = SideLeading() ? Net().MyId() : SideLeader() != 0xFF ? SideLeader() : Net().HostId();
+    if (Net().Online() && source != Net().MyId() && core::IsPlayerReady()) {
         CPlayerPed* me = FindPlayerPed(0);
-        if (const RemotePlayer* host = Players::Instance().Get(Net().HostId()); host && host->hasState) {
-            float d = (host->state.pos - me->GetPosition()).Length2D();
-            bool sameArea = host->state.area == me->AreaCode();
+        if (const RemotePlayer* src = Players::Instance().Get(source); src && src->hasState) {
+            float d = (src->state.pos - me->GetPosition()).Length2D();
+            bool sameArea = src->state.area == me->AreaCode();
             float limit = g_suppress ? kShareRadiusOff : kShareRadius;
             want = sameArea && d < limit && LocalWantedLevel() == 0;
         }
@@ -66,7 +70,7 @@ void UpdateSuppression() {
         // the partner alone in the house had people standing about
         if (!Net().IsHost() && me->AreaCode() != 0 && HostMissionRecent(0)) want = true;
     }
-    if (want != g_suppress) LOGI("Population generation %s (host nearby: %d)", want ? "handed to the host" : "local", want);
+    if (want != g_suppress) LOGI("Population generation %s (player %d's)", want ? "handed over" : "local", want ? source : Net().MyId());
     // The engine adds one ped a frame at the edge of view: the empty streets around would fill slowly. The countdowns of
     // a game's start (and of a respawn) fill them at once, but they place people 10 m away in view and park cars next to
     // the player ("NPCs and cars pop up in front of me"): only behind a dark screen.
@@ -182,6 +186,8 @@ void __cdecl HookRemoveAllRandomPeds() {
     g_origRemoveAllRandom();
 }
 
+uint64_t g_carGivenMs = 0;
+
 using PossiblyRemoveFn = void(__cdecl*)(CVehicle*);
 PossiblyRemoveFn g_origPossiblyRemove = nullptr;
 void __cdecl HookPossiblyRemoveVehicle(CVehicle* v) {
@@ -190,10 +196,21 @@ void __cdecl HookPossiblyRemoveVehicle(CVehicle* v) {
     uint8_t who = 0;
     if (Net().Online() && v && v->Status() != 5 /* STATUS_WRECKED */)
         if (const CVector* r = NearestRemote(v->GetPosition(), 140.0f, v->AreaCode(), &who)) {
-            float local = (v->GetPosition() - FindPlayerPed(0)->GetPosition()).Length2D();
+            CVector me = FindPlayerPed(0)->GetPosition();
+            float local = (v->GetPosition() - me).Length2D();
             if (local < 100.0f) return;
-            if ((v->GetPosition() - *r).Length2D() < local - 40.0f && CanTake(who) && Vehicles::Instance().QueueGiveAway(v, who))
-                return;
+            // The game makes its traffic around its camera: one far from the player (a cutscene, the host's scene
+            // watched through the host's camera) made cars "far" at once, which went to the other game and were made
+            // again, 299 in 4 minutes into the host's full pool (#6). Given only then: our camera near our player, the
+            // other player looking at it, one a second.
+            if ((cam::Source() - me).Length() < 50.0f && (v->GetPosition() - *r).Length2D() < local - 40.0f &&
+                RemoteSees(v->GetPosition(), v->AreaCode(), 140.0f) && CanTake(who)) {
+                if (NowMs() - g_carGivenMs < 1000) return;  // kept till its turn
+                if (Vehicles::Instance().QueueGiveAway(v, who)) {
+                    g_carGivenMs = NowMs();
+                    return;
+                }
+            }
         }
     g_origPossiblyRemove(v);
 }
@@ -329,6 +346,9 @@ public:
         // the entities it lists, or go on when it says no), CCarCtrl::GenerateCarCreationCoors2 in GenerateOneRandomCar
         for (uintptr_t at : {0x614C8F, 0x6151FA}) mem::RedirectCallFn(at, &HookClearForPed, &g_origClearForPed);
         mem::RedirectCallFn(0x430455, &HookCarCoors, &g_origCarCoors);
+        // and the same spot search where the police, an ambulance or a fire engine come out (GenerateOneEmergencyServicesCar)
+        // and at 0x444B37: they came out right in front of the other player ("out of nowhere", 27.10)
+        for (uintptr_t at : {0x42B86A, 0x444B37}) mem::RedirectCallFn(at, &HookCarCoors, &g_origCarCoors);
         Net().SetHandler(proto::G_INTERIOR_POP, &HandleInteriorPop);
         mem::HookFn(0x616650, &HookPopulationUpdate, &g_origPopUpdate, "CPopulation::Update");
         mem::HookFn(0x4341C0, &HookGenerateRandomCars, &g_origGenerateRandomCars, "CCarCtrl::GenerateRandomCars");

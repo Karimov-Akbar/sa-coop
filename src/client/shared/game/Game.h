@@ -482,6 +482,7 @@ bool HasRoom(CPoolHeader* pool, int keep, const char* what);  // more than keep 
 void RequestModel(int model, int flags = 2 /* STREAMING_GAME_REQUIRED: MarkModelNotNeeded clears it */);
 void LoadAllRequestedModels(bool onlyPriority = false);
 bool IsModelLoaded(int model);
+int ModelLoadState(int model);  // 0 not asked for, 1 in memory, 2 asked for, 3 being read, 4 finishing; -1 no such model
 bool LoadModelNow(int model);  // request + blocking load
 void MarkModelNotNeeded(int model);
 bool IsValidModel(int model);

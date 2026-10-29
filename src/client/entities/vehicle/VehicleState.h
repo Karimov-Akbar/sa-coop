@@ -39,7 +39,8 @@ struct VehicleState {
     float health = 1000;
     uint8_t flags = 0;   // F_*
 
-    enum : uint8_t { F_ENGINE = 1, F_LIGHTS = 2, F_SIREN = 4, F_HORN = 8, F_HANDBRAKE = 16, F_WRECKED = 32 };
+    // F_SPRINT: a bicycle's rider pedals standing (CBmx +0x818 over 5: the BMX_sprint animation)
+    enum : uint8_t { F_ENGINE = 1, F_LIGHTS = 2, F_SIREN = 4, F_HORN = 8, F_HANDBRAKE = 16, F_WRECKED = 32, F_SPRINT = 64 };
     // parts the driver moves; X_* says which this vehicle has
     uint8_t extras = 0;
     uint16_t misc = 0;  // X_MISC, CAutomobile::m_wMiscComponentAngle: Hydra nozzles, raised hydraulics, tow hoist, forks
@@ -68,6 +69,7 @@ struct VehicleSpawn {
     int8_t area = 0;
     uint8_t lockState = 0;
     bool script = false;  // a script's car in its owner's game (a mission car): never an ordinary car elsewhere
+    int8_t extras[2] = {-1, -1};  // its components (CVehicle::m_anExtras: a Picador's surfboard, a convertible's roof)
 
     void Write(Writer& w) const;
     bool Read(Reader& r);

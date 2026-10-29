@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <vector>
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
@@ -45,8 +46,24 @@ struct Copy {
     uint8_t from;      // whose fire it copies
     CEntity* target;   // what it burns (nullptr: a spot)
     CVector at;        // a spot's place
+    bool script;       // a script's fire on a car (Light): a script's here too
+    uint16_t entityId = 0;  // the car's id (lit again with it)
+    int relit = 0;
+    uint64_t litMs = 0;
 };
 std::map<uint16_t, Copy> g_copies;    // fires lit here for the other game, by its id
+// A fire on a copy that is not here yet: the fire job sets the car it makes alight in the same frame, the car goes out
+// when the other player is near it, its fire 200 ms later, and the copy comes once its model has loaded. The fire found
+// no car and was dropped: the burning car was seen by its owner only (#3). It waits up to 10 s for the copy.
+struct Pending {
+    uint8_t from, kind;
+    uint16_t entityId;
+    CVector pos;
+    float strength;
+    bool script;
+    uint64_t untilMs;
+};
+std::map<uint16_t, Pending> g_pending;
 uint16_t g_nextId = 1;
 uint64_t g_scanMs = 0;
 
@@ -127,7 +144,8 @@ void Scan() {
         uint8_t kind = ON_SPOT;
         uint16_t entityId = 0;
         bool script = Ref<uint8_t>(f) & 2;  // bCreatedByScript
-        if (target ? !Describe(target, kind, entityId) : !(script && Net().IsHost() && HostReplicating())) continue;
+        // a script's fire on the ground: the host's story mission's, or the joint side activity's this game leads
+        if (target ? !Describe(target, kind, entityId) : !(script && ((Net().IsHost() && HostReplicating()) || SideLeading()))) continue;
         uint16_t id = g_nextId++;
         g_sent[f] = {id, target};
         CVector pos = Ref<CVector>(f + 0x04);
@@ -138,12 +156,13 @@ void Scan() {
         w.U16(entityId);
         w.Vec({pos.x, pos.y, pos.z});
         w.F32(Ref<float>(f + 0x1C));  // m_fStrength
+        w.U8(script && kind == ON_VEHICLE ? 1 : 0);  // START_CAR_FIRE (the fire job's burning car)
         Net().Send(proto::CH_RELIABLE, w);
         LOGD("Fire %04X sent (on %d %04X)", id, kind, entityId);
     }
 }
 
-void Light(uint8_t from, uint16_t id, uint8_t kind, uint16_t entityId, const CVector& pos, float strength) {
+void Light(uint8_t from, uint16_t id, uint8_t kind, uint16_t entityId, const CVector& pos, float strength, bool script) {
     uintptr_t fire = 0;
     if (kind == ON_SPOT) {
         // CFireManager::StartFire(CVector, size, unused, creator, lifetime, generations, unused): no spreading
@@ -156,36 +175,76 @@ void Light(uint8_t from, uint16_t id, uint8_t kind, uint16_t entityId, const CVe
         }
     } else {
         CEntity* e = Resolve(kind, entityId);
-        if (!e) return;
-        auto* p = (CPhysical*)e;
-        uint32_t flags = p->PhysicalFlags();
-        p->PhysicalFlags() = flags & ~kFireProof;
-        // CFireManager::StartFire(target, creator, size, unused, lifetime, generations)
-        CallMethod<0x53A050, void*>((void*)kFireManager, e, (CEntity*)nullptr, 0.8f, (uint8_t)1, (uint32_t)600000, (int8_t)0);
-        p->PhysicalFlags() = flags;
+        if (!e) {
+            if (!g_pending.count(id)) LOGD("Fire %04X waits for its copy (on %d %04X)", id, kind, entityId);
+            g_pending[id] = {from, kind, entityId, pos, strength, script, NowMs() + 10000};
+            return;
+        }
+        if (script && kind == ON_VEHICLE) {
+            // START_CAR_FIRE (the fire job) as the owner's game lights it: CFireManager::StartScriptFire(pos, car, 0.8,
+            // 1, 0, 1). An ordinary fire on a car burns 3-4 s (StartFire ignores the lifetime for a car), and marked as a
+            // script's afterwards it still stood unseen here (28.10, twice): the job's car stood whole.
+            CVector at = e->GetPosition();
+            CallMethod<0x53A270, int32_t>((void*)kFireManager, &at, e, 0.8f, (uint8_t)1, (int8_t)0, (int32_t)1);
+        } else {
+            auto* p = (CPhysical*)e;
+            uint32_t flags = p->PhysicalFlags();
+            p->PhysicalFlags() = flags & ~kFireProof;
+            // CFireManager::StartFire(target, creator, size, unused, lifetime, generations)
+            CallMethod<0x53A050, void*>((void*)kFireManager, e, (CEntity*)nullptr, 0.8f, (uint8_t)1, (uint32_t)600000, (int8_t)0);
+            p->PhysicalFlags() = flags;
+        }
         fire = Field<uintptr_t>(e, e->IsPed() ? 0x730 : 0x490);  // CPed::m_pFire, CVehicle::m_pFire
     }
     if (!fire) return;
-    g_copies[id] = {fire, from, Target(fire), Ref<CVector>(fire + 0x04)};
-    LOGD("Fire %04X lit (on %d %04X)", id, kind, entityId);
+    bool scripts = script && kind == ON_VEHICLE;
+    int relit = g_copies.count(id) ? g_copies[id].relit : 0;
+    g_copies[id] = {fire, from, Target(fire), Ref<CVector>(fire + 0x04), scripts, entityId, relit, NowMs()};
+    LOGD("Fire %04X lit (on %d %04X%s)", id, kind, entityId, scripts ? ", a script's" : "");
+}
+
+// A copy goes: out if it still burns. One marked as a script's keeps the mark when out, and the fire manager gives no
+// such slot to a new fire: cleared once out.
+void Drop(const Copy& c) {
+    if (Burns(c)) CallMethod<0x5393F0>((void*)c.fire);  // CFire::Extinguish
+    if (c.script && !Active(c.fire)) Ref<uint8_t>(c.fire) &= ~2;
 }
 
 void PutOut(uint16_t id) {
+    g_pending.erase(id);
     auto it = g_copies.find(id);
     if (it == g_copies.end()) return;
-    if (Burns(it->second)) CallMethod<0x5393F0>((void*)it->second.fire);  // CFire::Extinguish
+    Drop(it->second);
     g_copies.erase(it);
 }
 
 // a player's fires are gone with its game (it left or started over): theirs here burned on for ten minutes
 void PutOutCopiesOf(uint8_t from) {
+    for (auto it = g_pending.begin(); it != g_pending.end();) it = it->second.from == from ? g_pending.erase(it) : std::next(it);
     for (auto it = g_copies.begin(); it != g_copies.end();) {
         if (it->second.from != from) {
             ++it;
             continue;
         }
-        if (Burns(it->second)) CallMethod<0x5393F0>((void*)it->second.fire);  // CFire::Extinguish
+        Drop(it->second);
         it = g_copies.erase(it);
+    }
+}
+
+// the fires that waited for their copy: lit once it is here
+void LightPending() {
+    for (auto it = g_pending.begin(); it != g_pending.end();) {
+        uint16_t id = it->first;
+        Pending p = it->second;
+        if (NowMs() > p.untilMs) {
+            LOGD("Fire %04X: its copy never came", id);
+            it = g_pending.erase(it);
+        } else if (Resolve(p.kind, p.entityId)) {
+            it = g_pending.erase(it);
+            Light(p.from, id, p.kind, p.entityId, p.pos, p.strength, p.script);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -336,6 +395,18 @@ bool DescribeAny(CEntity* e, uint8_t& kind, uint16_t& id) {
     }
     NetVehicle* nv = e->Type() == ENTITY_TYPE_VEHICLE ? Vehicles::Instance().Find((CVehicle*)e) : nullptr;
     return nv && (kind = ON_VEHICLE, id = nv->netId, true);
+}
+
+// A copy throws by itself under its owner's pad (CWeapon::FireProjectile), and only its AddProjectile is dropped. When the
+// way from its body to its hand was blocked (the line check at 0x7418F5, by the owner's own bottle placed there), the game
+// burst the molotov in its hand instead (CProjectileInfo::RemoveNotAdd: an explosion of type 1, no blast to drop): the
+// thrower stood in a fire of its own here (#12). The owner's game says what its throw did.
+using RemoveNotAddFn = void(__cdecl*)(CEntity*, int, CVector);
+RemoveNotAddFn g_origRemoveNotAdd = nullptr;
+bool OtherSide(CEntity* e);
+void __cdecl HookRemoveNotAdd(CEntity* creator, int weapon, CVector pos) {
+    if (Net().Online() && core::IsPlayerReady() && OtherSide(creator)) return;
+    g_origRemoveNotAdd(creator, weapon, pos);
 }
 
 using AddProjectileFn = bool(__cdecl*)(CEntity*, int, CVector, float, const CVector*, CEntity*);
@@ -506,6 +577,7 @@ public:
         mem::HookFn(0x736A50, &HookAddExplosion, &g_origAddExplosion, "CExplosion::AddExplosion");
         Net().SetHandler(proto::G_EXPLOSION, &HandleExplosion);
         mem::HookFn(0x737C80, &HookAddProjectile, &g_origAddProjectile, "CProjectileInfo::AddProjectile");
+        mem::HookFn(0x737C00, &HookRemoveNotAdd, &g_origRemoveNotAdd, "CProjectileInfo::RemoveNotAdd");
         mem::HookFn(0x5660B0, &HookUseDetonator, &g_origUseDetonator, "CWorld::UseDetonator");
         Net().SetHandler(proto::G_PROJECTILE, &HandleProjectile);
         mem::HookFn(0x728CB0, &HookWaterCannon, &g_origWaterCannon, "CWaterCannons::UpdateOne");
@@ -528,12 +600,18 @@ public:
             uint16_t entityId = r.U16();
             Vec3 p = r.Vec();
             float strength = r.F32();
+            bool script = r.U8() != 0;
             if (!r.Ok()) return;
             PutOut(id);
-            Light(from, id, kind, entityId, {p.x, p.y, p.z}, strength);
+            Light(from, id, kind, entityId, {p.x, p.y, p.z}, strength, script);
         });
     }
-    void OnSessionEnd() override { Forget(); }
+    void OnSessionEnd() override {
+        // the copied cars stay as this game's: a script's fire on one would burn for good
+        for (auto& [id, c] : g_copies)
+            if (c.script) Drop(c);
+        Forget();
+    }
     void OnGameStarted() override { Forget(); }
     void OnPreProcess() override {
         if (Net().Online() && core::IsPlayerReady()) ShootJets();
@@ -549,7 +627,9 @@ public:
         g_scanMs = NowMs();
         DropCharges(nullptr, CVector{}, 1e9f);  // the copy of their thrower is gone: a projectile slot (32 in all) held for good
         // copies whose fire went out here by itself (water, the entity died) stay out; put out by this player, the
-        // owner's goes out too
+        // owner's goes out too. The fire job's car fire burns on while the owner's does: one that went out here by
+        // itself is lit again, and the log tells how (28.10: the second player saw no fire on the job's car, twice).
+        std::vector<std::pair<uint16_t, Copy>> relight;
         for (auto it = g_copies.begin(); it != g_copies.end();) {
             if (Burns(it->second)) {
                 ++it;
@@ -561,10 +641,23 @@ public:
                 w.U16(it->first);
                 Net().Send(proto::CH_RELIABLE, w);
                 LOGI("Fire %04X of player %d put out here", it->first, it->second.from);
+            } else if (it->second.script && it->second.relit < 20) {
+                relight.emplace_back(it->first, it->second);
             }
+            Drop(it->second);
             it = g_copies.erase(it);
         }
+        for (auto& [id, c] : relight) {
+            CEntity* car = Resolve(ON_VEHICLE, c.entityId);
+            LOGI("Fire %04X (a script's on %04X) went out here by itself after %llu ms (%s)%s", id, c.entityId,
+                 (unsigned long long)(NowMs() - c.litMs), Active(c.fire) ? "its slot burns another" : "out",
+                 car ? ", lit again" : ", its car is gone");
+            if (!car) continue;
+            Light(c.from, id, ON_VEHICLE, c.entityId, car->GetPosition(), 1.0f, true);
+            if (auto it = g_copies.find(id); it != g_copies.end()) it->second.relit = c.relit + 1;
+        }
         Scan();
+        LightPending();
     }
 
     static Fires& Instance() {
@@ -576,6 +669,7 @@ private:
     static void Forget() {
         g_sent.clear();
         g_copies.clear();
+        g_pending.clear();
         g_jets.clear();
         g_jetSent.clear();
     }

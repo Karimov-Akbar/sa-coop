@@ -91,7 +91,7 @@ void CameraState::Write(Writer& w) const {
     w.Angle(alpha);
     w.Angle(beta);
     w.I16(Writer::Quant(lookPitch, 3.2f));
-    w.Bool(useMouse3rd);
+    w.U8((useMouse3rd ? 1 : 0) | (lookLeft ? 2 : 0) | (lookRight ? 4 : 0) | (driveByOff ? 8 : 0));
     w.Unit8(chairX);
     w.Unit8(chairY);
 }
@@ -107,7 +107,8 @@ void CameraState::Read(Reader& r) {
     alpha = game::WrapAngle(r.Angle());
     beta = game::WrapAngle(r.Angle());
     lookPitch = r.I16() / 32767.0f * 3.2f;
-    useMouse3rd = r.Bool();
+    uint8_t bits = r.U8();
+    useMouse3rd = bits & 1, lookLeft = bits & 2, lookRight = bits & 4, driveByOff = bits & 8;
     chairX = r.Unit8();
     chairY = r.Unit8();
 }

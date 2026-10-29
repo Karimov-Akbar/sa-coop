@@ -75,6 +75,7 @@ struct NetPed {
     uint64_t weaponMs = 0;     // the last weapon change: its own timer, the walk tasks' held a walking mirror's gun back
     uint16_t enterVeh = 0;
     uint64_t enterTaskMs = 0, leaveTaskMs = 0;
+    uint64_t jackWaitMs = 0;  // out of its car in its game while a player gets in here: since then the jack here pulls it out
     uint64_t duckMs = 0;  // its crouch last set as the owner's
     bool hanging = false;  // its owner is in the air there (a rope, a fall): the copy is held where it is
     uint16_t animBlock = 0xFFFF, animIdx = 0;  // action animation replayed on the mirror
@@ -121,6 +122,8 @@ public:
     // a script that runs in each game for its own player made this ped (a shop's seller, the range's shooters, a
     // casino's dealers, an airport's guard): it stays this game's own (sideJob: a side job's, kept local only indoors)
     void MarkLocal(game::CPed* ped, bool sideJob);
+    // a ped fired a gun (CWeapon::Fire): ours shows as firing (F_FIRING), a copy's shot counts in the stats line
+    void ShotFired(game::CPed* ped);
     // a copy of the other game's ped sits on this seat of the car in its owner's game, or goes for it (seat -1: the
     // driver's), while the copy here is not there yet: Ryder sat beside the host there, his copy still walked here, and
     // our player took his seat ("Ryder sank into the ground")
@@ -128,6 +131,7 @@ public:
 
 private:
     void ScanOwned();
+    void HideTwins();
     void AskForTheirs();
     void Announce(NetPed& np);
     void SendState(NetPed& np);
@@ -150,6 +154,7 @@ private:
     std::set<int> m_ourSpecials;  // special slots SpecialModelFor asked for (no script or cutscene holds them)
     std::map<game::CPed*, uint8_t> m_giveAway;  // to hand over after the population code (ped -> player)
     std::map<int, bool> m_local;                // MarkLocal: script handle -> made by a side job
+    std::set<int> m_hiddenTwins;                // of m_local: hidden while a copy of the host's mission person stands there
     uint64_t m_lastScan = 0, m_lastStatsMs = 0;
     bool m_wasReady = false;
     int m_mirrorShots = 0;  // diagnostics: shots fired by mirrors since the last stats line

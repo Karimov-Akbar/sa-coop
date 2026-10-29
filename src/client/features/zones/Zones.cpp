@@ -75,7 +75,7 @@ int32_t& WarState2() { return Ref<int32_t>(0x96AB4C); }  // a defence
 uint8_t& WarsActive() { return Ref<uint8_t>(0x96AB90); }  // bGangWarsActive (the story's "Doberman")
 bool StoryHoldsWars() { return Ref<uint8_t>(0x96AB91) || Ref<int32_t>(0x96AB94); }  // bTrainingMission, NumSpecificZones
 bool Fought() { return Call<0x443AC0, bool>(); }  // CGangWars::GangWarFightingGoingOn
-enum : uint8_t { WAR_ALLOWED = 1, WAR_STORY = 2, WAR_MISSION = 4 };  // G_GANG_WAR's flags, host only
+enum : uint8_t { WAR_ALLOWED = 1, WAR_STORY = 2, WAR_MISSION = 4, WAR_DEFENCE = 8 };  // G_GANG_WAR's flags, host only
 enum : uint8_t { TURF_START = 1, TURF_ZONE = 2, TURF_END = 3, TURF_STOP = 4 };
 enum : uint8_t { TURF_WON = 0, TURF_LEFT = 1, TURF_CALLED_OFF = 2 };
 
@@ -87,6 +87,7 @@ WarFn g_origWar[2] = {};
 uint64_t g_otherWarUntil = 0;  // the other player said a war of its game is fought, until then
 uint8_t g_otherWarFrom = 0xFF;
 uint8_t g_hostWarFlags = WAR_ALLOWED;  // partner: what the host's world allows
+bool g_hostWarShown = false;           // partner: the chat told of the host's war going on
 bool g_sentWar = false;
 uint8_t g_sentFlags = 0xFF;
 uint64_t g_sentWarAt = 0;
@@ -265,11 +266,28 @@ void WatchOwnWar() {
 void HandleGangWar(uint8_t from, Reader& r) {
     bool fought = r.U8() != 0;
     uint8_t flags = r.U8();
+    int zone = r.U16();
     if (!r.Ok() || from == Net().MyId()) return;
     g_otherWarUntil = fought ? NowMs() + 6000 : 0;
     g_otherWarFrom = from;
     if (from != Net().HostId() || Net().IsHost()) return;
     g_hostWarFlags = flags;
+    // the host's war in the partner's chat too, as the partner's own war is in the host's (#72)
+    if (fought != g_hostWarShown && core::IsPlayerReady() && flow::InHostWorld()) {
+        g_hostWarShown = fought;
+        std::string who = Net().PeerName(from), name = zone < Count() ? ZoneName(zone) : std::string();
+        if (!fought)
+            ui::TheChat().AddSystem(Format(TR("Война банд у игрока %s закончилась.", "%s's gang war is over."), who.c_str()));
+        else if (flags & WAR_DEFENCE)
+            ui::TheChat().AddSystem(name.empty() ? Format(TR("%s отбивает нападение банд на свой район.", "%s fights off a gang attack."), who.c_str())
+                                                 : Format(TR("%s отбивает нападение банд на район %s.", "%s fights off a gang attack on %s."),
+                                                          who.c_str(), name.c_str()));
+        else
+            ui::TheChat().AddSystem(name.empty() ? Format(TR("%s начинает войну банд за район.", "%s starts a gang war for a district."), who.c_str())
+                                                 : Format(TR("%s начинает войну банд за район %s.", "%s starts a gang war for %s."),
+                                                          who.c_str(), name.c_str()));
+        LOGI("The host's gang war%s: %s", (flags & WAR_DEFENCE) ? " (a defence)" : "", fought ? "fought" : "over");
+    }
     // the host's world says whether wars are on yet ("Doberman"): ours follows it, the snapshot may be older
     if (core::IsPlayerReady() && flow::InHostWorld()) WarsActive() = (flags & WAR_ALLOWED) ? 1 : 0;
 }
@@ -279,12 +297,16 @@ void SendGangWar() {
     bool war = Fought();
     uint8_t flags = 0;
     if (Net().IsHost())
-        flags = (WarsActive() ? WAR_ALLOWED : 0) | (StoryHoldsWars() ? WAR_STORY : 0) | (core::IsOnMission() ? WAR_MISSION : 0);
+        flags = (WarsActive() ? WAR_ALLOWED : 0) | (StoryHoldsWars() ? WAR_STORY : 0) | (core::IsOnMission() ? WAR_MISSION : 0) |
+                (war && WarState2() && !WarState() ? WAR_DEFENCE : 0);
     if (war == g_sentWar && flags == g_sentFlags && !(war && NowMs() - g_sentWarAt > 3000)) return;
     g_sentWar = war, g_sentFlags = flags, g_sentWarAt = NowMs();
+    uintptr_t info = Ref<uintptr_t>(0x96AB8C);  // CGangWars::pZoneInfoToFightOver
+    int zone = war && info >= kZoneInfos && info < kZoneInfos + (uintptr_t)Count() * 0x11 ? (int)((info - kZoneInfos) / 0x11) : 0xFFFF;
     Writer w(proto::G_GANG_WAR);
     w.U8(war ? 1 : 0);
     w.U8(flags);
+    w.U16((uint16_t)zone);
     Net().Send(proto::CH_RELIABLE, w);
 }
 
@@ -318,7 +340,7 @@ public:
     void OnSessionEnd() override {
         g_sent.clear();
         g_partnerWar = g_ownWar = {};
-        g_sentWar = false, g_sentFlags = 0xFF, g_otherWarUntil = 0, g_hostWarFlags = WAR_ALLOWED;
+        g_sentWar = false, g_sentFlags = 0xFF, g_otherWarUntil = 0, g_hostWarFlags = WAR_ALLOWED, g_hostWarShown = false;
     }
     void OnGameStarted() override {
         g_sent.clear();

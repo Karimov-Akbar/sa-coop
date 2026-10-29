@@ -38,6 +38,7 @@ public:
     const std::string& FailReason() const { return m_failReason; }
     const std::string& ServerName() const { return m_serverName; }
     bool FriendlyFire() const { return Online() && m_friendlyFire; }  // the host let the players hurt each other
+    bool PartnerTeleport() const { return m_partnerTeleport; }  // the host let its partners use /tp and /tphere
     const std::map<uint8_t, PeerInfo>& Peers() const { return m_peers; }
     const PeerInfo* Peer(uint8_t id) const;
     std::string PeerName(uint8_t id) const;
@@ -78,6 +79,7 @@ private:
     uint8_t m_myId = 255, m_hostId = 255;
     std::string m_serverName;
     bool m_friendlyFire = false;
+    bool m_partnerTeleport = true;
     std::string m_inviteCode;
     std::map<uint8_t, PeerInfo> m_peers;
     Handler m_handlers[256] = {};

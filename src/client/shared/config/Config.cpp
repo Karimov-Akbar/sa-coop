@@ -44,6 +44,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     wantsHost = ToLower(ini.Get("connect", "mode", "join")) == "host";
     loadSlot = ini.GetInt("connect", "load_slot", 0);
     friendlyFire = ini.GetBool("connect", "friendly_fire", friendlyFire);
+    partnerTeleport = ini.GetBool("connect", "partner_teleport", partnerTeleport);
 
     windowed = ini.GetBool("game", "windowed", windowed);
     windowedStrict = ini.GetBool("game", "windowed_strict", windowedStrict);
@@ -55,11 +56,15 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     windowTitle = ini.Get("game", "window_title", "");
     multiInstance = ini.GetBool("game", "multi_instance", multiInstance);
     runInBackground = ini.GetBool("game", "run_in_background", runInBackground);
+    streamCache = ini.GetBool("game", "stream_cache", streamCache);
     noPauseMenu = ini.GetBool("game", "no_pause_menu", noPauseMenu);
     userDir = ini.Get("game", "user_dir", "");
     skipIntro = ini.GetBool("game", "skip_intro", skipIntro);
     partnerBlip = ini.GetBool("game", "partner_blip", partnerBlip);
+    markColour = ini.Get("game", "mark_colour", "");
+    partnerArrow = ini.GetBool("game", "partner_arrow", partnerArrow);
     nameTags = ini.GetBool("game", "name_tags", nameTags);
+    gps = ini.GetBool("game", "gps", gps);
 
     voiceEnabled = ini.GetBool("voice", "enabled", voiceEnabled);
     voiceKey = ini.GetInt("voice", "push_to_talk_key", voiceKey);

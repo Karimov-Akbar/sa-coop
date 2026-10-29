@@ -38,7 +38,7 @@ enum : uint8_t {
     PU_ON_STREET = 2, PU_ONCE = 3, PU_ONCE_TIMEOUT = 4, PU_ONCE_TIMEOUT_SLOW = 5, PU_MONEY = 8, PU_ON_STREET_SLOW = 15,
     PU_ASSET_REVENUE = 16, PU_MONEY_DOESNTDISAPPEAR = 19, PU_SNAPSHOT = 20, PU_ONCE_FOR_MISSION = 22,
 };
-enum : uint8_t { EV_TAKEN = 1, EV_TAKINGS = 2, EV_PHOTOGRAPHED = 3, EV_TAG = 4, EV_STATE = 5, EV_TAG_AREA = 6 };
+enum : uint8_t { EV_TAKEN = 1, EV_TAKINGS = 2, EV_PHOTOGRAPHED = 3, EV_TAG = 4, EV_STATE = 5, EV_TAG_AREA = 6, EV_GONE = 7 };
 constexpr int kModelInfo = 1239, kModelSave = 1277;  // info icon, save disk
 
 uintptr_t Pickup(int i) { return kPickups + (uintptr_t)i * 0x20; }
@@ -143,8 +143,8 @@ GenerateFn g_origGenerate = nullptr;
 bool Announced(int type, int model) {
     if (g_applying || !flow::InSharedWorld() || !core::IsPlayerReady() || PlayerInFocus() != 0) return false;  // the remote
     if (!Shared((uint8_t)type, model)) return false;                                  // player's drops are its game's
-    if (void* script = CurrentScript())  // a script: only the host's mission is not run by both games
-        return Net().IsHost() && Field<uint8_t>(script, 0xDC) && HostReplicating();  // CRunningScript::m_bIsMission
+    if (void* script = CurrentScript())  // a script: only the host's mission is not run by both games, and Big Smoke's courier
+        return Net().IsHost() && ((Field<uint8_t>(script, 0xDC) && HostReplicating()) || CourierThread(script));  // m_bIsMission
     return true;  // the engine: loot, a dropped jetpack, gang war rewards
 }
 void SendCreate(uintptr_t p) {
@@ -165,6 +165,29 @@ int __cdecl HookGenerateNewOne(float x, float y, float z, uint32_t model, int ty
         g_announced.push_back(handle);
     }
     return handle;
+}
+
+// The host's courier script takes its package's pickup away (laid on the ground anew, or the courier's end): the
+// partners' copy goes as well. A mission's pickup stays there as before.
+using RemovePickUpFn = void(__cdecl*)(int);
+RemovePickUpFn g_origRemovePickUp = nullptr;
+void __cdecl HookRemovePickUp(int handle) {
+    bool tell = handle != -1 && (handle & 0xFFFF) < kNumPickups && Net().Online() && Net().IsHost() &&
+                CourierThread(CurrentScript()) && std::find(g_announced.begin(), g_announced.end(), handle) != g_announced.end();
+    int16_t pos[3] = {};
+    uint16_t model = 0;
+    if (tell) {
+        uintptr_t p = Pickup(handle & 0xFFFF);
+        for (int k = 0; k < 3; ++k) pos[k] = Pos(p)[k];
+        model = (uint16_t)Model(p);
+    }
+    g_origRemovePickUp(handle);
+    if (!tell) return;
+    Writer w(proto::G_PICKUP_EVENT);
+    w.U8(EV_GONE);
+    w.U16(model);
+    for (int16_t c : pos) w.I16(c);
+    Net().Send(proto::CH_RELIABLE, w);
 }
 
 // ---------------------------------------------------------------- the other game's player took one
@@ -296,6 +319,23 @@ void HandleEvent(uint8_t from, Reader& r) {
         LOGI("The host's mission set the tags in %.0f,%.0f .. %.0f,%.0f to %u: here too", rect[0], rect[1], rect[2], rect[3], alpha);
         return;
     }
+    if (what == EV_GONE) {
+        uint16_t model = r.U16();
+        int16_t pos[3];
+        for (int16_t& c : pos) c = r.I16();
+        if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady()) return;
+        for (int i = 0; i < kNumPickups; ++i) {
+            uintptr_t p = Pickup(i);
+            const int16_t* q = Pos(p);
+            if (!Type(p) || Model(p) != model || std::max({std::abs(q[0] - pos[0]), std::abs(q[1] - pos[1]), std::abs(q[2] - pos[2])}) >= 13)
+                continue;
+            g_applying = true;
+            CallMethod<0x4556C0>((void*)p);  // CPickup::Remove
+            g_applying = false;
+            LOGD("The host's courier took its pickup %d away: here too", model);
+        }
+        return;
+    }
     if (what == EV_TAG) {
         Vec3 v = r.Vec();
         if (!r.Ok() || !core::IsPlayerReady() || !flow::InSharedWorld()) return;
@@ -361,6 +401,7 @@ public:
         mem::HookFn(0x457410, &HookPickupUpdate, &g_origPickupUpdate, "CPickup::Update");
         mem::HookFn(0x456A70, &HookPictureTaken, &g_origPictureTaken, "CPickups::PictureTaken");
         mem::HookFn(0x456F20, &HookGenerateNewOne, &g_origGenerate, "CPickups::GenerateNewOne");
+        mem::HookFn(0x4573D0, &HookRemovePickUp, &g_origRemovePickUp, "CPickups::RemovePickUp");
         mem::RedirectCallFn(0x565C5E, &HookSprayTag, &g_origSetAlpha);  // CWorld::SprayPaintWorld -> CTagManager::SetAlpha
         mem::RedirectCallFn(0x498D54, &HookSetAlphaInArea, &g_origAlphaInArea);  // SET_TAG_STATUS_IN_AREA
         mem::RedirectCallFn(0x498D6A, &HookSetAlphaInArea, &g_origAlphaInArea);

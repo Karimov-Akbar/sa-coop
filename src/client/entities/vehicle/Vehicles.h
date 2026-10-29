@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <map>
+#include <set>
 
 #include "entities/vehicle/VehicleState.h"
 #include "shared/game/Game.h"
@@ -40,6 +41,7 @@ struct NetVehicle {
     uint8_t origBy = 0;        // what this game had it created by before it became a mirror here (0: spawned as one)
     bool heldHere = false;     // a script of this game held it when it became a mirror here
     bool crashProofHere = false;  // made collision-proof here as a mirror (taken off when it is this game's again)
+    uint64_t bumpMs = 0;           // mirror: our player's car last touched it then
 
     bool hasState = false;
     VehicleState state;
@@ -86,6 +88,9 @@ public:
     void Reannounce();
     // this game would drop the car, the other player is nearer: it goes to that player's game (false: not ours to give)
     bool QueueGiveAway(game::CVehicle* v, uint8_t to);
+    // a car each game makes of its own at one place as its player comes near (the police impound's, IMPND): not announced
+    // while nobody drives it (a copy of the other game's stood on top of it)
+    void KeepLocal(game::CVehicle* v);
     // The host's mission cleared an area: the other players' empty cars there go from this game at once (their copies
     // are mission cars here, CLEAR_AREA left them). Returns their ids for the owners (G_VEH_CLEAR).
     std::vector<uint16_t> ClearMirrors(const game::CVector& at, float radius);
@@ -121,6 +126,7 @@ private:
     std::map<game::CVehicle*, uint16_t> m_byPtr;
     std::map<uint16_t, VehicleSpawn> m_pending;  // announced mirrors waiting for their model to stream in
     std::map<game::CVehicle*, uint8_t> m_giveAway;  // to hand over after the population code (vehicle -> player)
+    std::set<int> m_local;                           // handles of KeepLocal's cars
     uint16_t m_nextId = 1;
     uint64_t m_lastScan = 0;
     int m_lastDriven = -1, m_kept = -1;  // handles: the car the local player last drove, and it kept while inside

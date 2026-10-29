@@ -166,7 +166,7 @@ void Server::OnConnect(ENetPeer* peer) {
     slot->peer = peer;
     slot->connectTime = NowMs();
     peer->data = slot;
-    enet_peer_timeout(peer, 0, 10000, 20000);
+    enet_peer_timeout(peer, 0, 15000, 20000);  // as the client's: a lossy line dropped players now and then
     LOGI("Подключение от %s (слот %d)", ip, id);
 }
 
@@ -334,6 +334,7 @@ void Server::HandleHello(Player& p, Reader& r) {
     // the default greeting has an English one, a greeting of the server's owner is shown as it is
     wel.motdEn = m_cfg.motd == Config{}.motd ? "Welcome! Type /help to see the commands." : "";
     wel.friendlyFire = m_cfg.friendlyFire;
+    wel.partnerTeleport = m_cfg.partnerTeleport;
     wel.worldAvailable = !m_world.empty();
     Writer w(S_WELCOME);
     wel.Write(w);
@@ -392,8 +393,10 @@ void Server::HandleCommand(Player* p, const std::string& text) {
         if (admin)
             reply(kColorServer, "Для хоста: /kick <ник или номер> [причина], /say <текст>",
                   "For the host: /kick <nickname or number> [reason], /say <text>");
-        reply(kColorServer, "В игре: /tp (переместиться к напарнику), /tphere (позвать напарника к себе), не в здании",
-              "In the game: /tp (go to your partner), /tphere (bring your partner to you), outside buildings");
+        if (admin || m_cfg.partnerTeleport)
+            reply(kColorServer, "В игре: /tp (переместиться к напарнику), /tphere (позвать напарника к себе). Напарник отвечает Y или N",
+                  "In the game: /tp (go to your partner), /tphere (bring your partner to you). Your partner answers Y or N");
+        reply(kColorServer, "F2: игроки, у кого сколько денег, перевод денег", "F2: the players, their money, giving money");
     } else if (cmd == "players" || cmd == "status") {
         for (auto& o : m_players) {
             if (!o.joined) continue;

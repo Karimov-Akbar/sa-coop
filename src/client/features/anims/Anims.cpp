@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <map>
 
 #include "common/api/protocol/Protocol.h"
@@ -186,6 +187,35 @@ bool EnsureBlockLoaded(const char* block) {
 }
 
 const char* BlockForGroup(int group) { return group == ANIM_GROUP_PLAYIDLES ? "playidles" : nullptr; }
+
+// A clothes shop's changing room door (props2.ide: CJ_SUBURB_DOOR_2, CJ_GAP_DOOR_, CJ_PRO_DOOR_01, CJ_BINCO_DOOR,
+// CJ_Victim_DOOR, CJ_DS_DOOR): each game's clothes.scm makes its own and swings it (PLAY_OBJECT_ANIM) for its own player
+// only, so the other player's copy walked into the booth through a shut door (28.10). The copy's walk in or out swings
+// the one here, as the script pairs them: CLO_In and CLO_Pose_Out with CLO_Pose_Out_O, CLO_Out and CLO_Pose_In with
+// CLO_Pose_In_O.
+constexpr int kBoothDoors[] = {2873, 2875, 2876, 2877, 2878, 2879};
+
+void SwingBoothDoor(CPed* copy, int block, void* h, float t) {
+    void* b = (void*)anim::Block(block);
+    if (_stricmp((const char*)b, "CLOTHES")) return;
+    auto is = [&](const char* n) { return h == Call<0x4D42F0, void*>(n, b); };  // CAnimManager::GetAnimation
+    const char* name = is("CLO_IN") || is("CLO_POSE_OUT") ? "CLO_POSE_OUT_O" : is("CLO_OUT") || is("CLO_POSE_IN") ? "CLO_POSE_IN_O" : nullptr;
+    void* swing = name ? Call<0x4D42F0, void*>(name, b) : nullptr;
+    CPoolHeader* pool = swing ? ObjectPool() : nullptr;
+    for (int i = 0; pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* o = (CObject*)(pool->objects + (size_t)i * kObjectPoolElemSize);
+        auto* clump = (uint8_t*)o->RwObject();
+        if (std::find(std::begin(kBoothDoors), std::end(kBoothDoors), o->ModelIndex()) == std::end(kBoothDoors) || !clump ||
+            clump[0] != 2 /* rpCLUMP */ || (o->GetPosition() - copy->GetPosition()).Length() > 4.0f)
+            continue;
+        if (!Call<0x4D6760, bool>(clump)) Call<0x4D6720>(clump);  // RpAnimBlendClumpIsInitialized, RpAnimBlendClumpInit
+        // flags 0 as the script's: once, held shut on its last frame (BlendAnimation restarts a finished one)
+        if (void* a = anim::Blend(clump, swing, 0, 4.0f)) anim::SetCurrentTime(a, std::min(t, anim::TotalTime(swing)));
+        LOGD("The other player's changing room door: %s", name);
+        return;
+    }
+}
 
 // a group's block is in memory and its associations are made (a gun's group comes with the gun in the copy's hand)
 bool GroupReady(int group) {
@@ -404,7 +434,8 @@ private:
         for (auto& [id, w] : m_remote) {
             if (w.seq == w.appliedSeq) continue;
             RemotePlayer* rp = Players::Instance().Get(id);
-            if (!rp || !rp->ped || rp->mode != RemotePlayer::Mode::OnFoot || !rp->ped->RwObject()) continue;
+            // in a script person's place its animations are that one's (Players' FollowAvatar): its owner's wait
+            if (!rp || !rp->ped || rp->mode != RemotePlayer::Mode::OnFoot || !rp->ped->RwObject() || rp->avatar >= 0) continue;
             void* clump = rp->ped->RwObject();
             void* h = nullptr;
             if (w.a.block >= 0 && !(h = anim::Resolve(w.a.block, w.a.idx))) continue;  // its IFP is being loaded
@@ -442,6 +473,7 @@ private:
                     Field<float>(a, 0x24) = w.a.speed;
                     float t = w.a.time + (float)(NowMs() - w.recvMs) / 1000.0f * w.a.speed, total = anim::TotalTime(h);
                     anim::SetCurrentTime(a, (w.a.flags & anim::F_LOOPED) && total > 0 ? std::fmod(t, total) : std::min(t, total));
+                    SwingBoothDoor(rp->ped, w.a.block, h, t);
                 }
                 LOGI("Remote player %d activity animation %s/%d (flags %04X%s)", id, (const char*)anim::Block(w.a.block), w.a.idx,
                      w.a.flags, a ? "" : ", not blended");

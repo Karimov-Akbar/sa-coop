@@ -1,0 +1,8 @@
+Font Awesome Free 7.3.1 by Fonticons, Inc. (https://fontawesome.com)
+Copyright 2026 Fonticons, Inc.
+
+SA:COOP uses one of its icons, "microphone" (solid): src/client/features/voice/ui/microphone.svg, built into
+coop.asi as the voice chat's microphone indicator.
+
+Font Awesome Free icons are licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
+The Font Awesome Free license: https://fontawesome.com/license/free

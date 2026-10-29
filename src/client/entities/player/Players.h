@@ -20,6 +20,7 @@ struct RemotePlayer {
     game::CPlayerPed* ped = nullptr;
     int pedHandle = -1;
     int blip = 0;
+    std::string markColour;  // the colour its owner chose for its mark here (G_MARK_COLOUR; empty: the allies' blue)
 
     bool hasState = false;
     OnFootState state;          // latest received state (pad/camera/health are also filled in vehicles)
@@ -33,6 +34,9 @@ struct RemotePlayer {
     uint16_t vehNetId = 0;
     int8_t seat = -1;           // -1 driver, 0.. passenger seats
     uint64_t enterTaskMs = 0;   // when we started the enter-car animation for this player
+    uint16_t enterNetId = 0;    // an enter that came before its vehicle's copy here (its model loading), and when
+    int8_t enterSeat = -1;
+    uint64_t enterAskedMs = 0;
     uint64_t exitTaskMs = 0;
     bool deadShown = false;     // the owner reported death and the local ped plays it
     uint64_t deadSinceMs = 0;   // the owner's state said dead (its death animation may come a moment later)
@@ -55,6 +59,10 @@ struct RemotePlayer {
     int8_t doorFromArea = 0;  // the area it was in then
     bool goneInDoor = false;    // it turned from the door on its way in: out of sight until it is inside
     uint64_t walkSetMs = 0;     // its body's walk set last asked for (KeepWalkSet)
+    // a person of a script here whose place and animation it takes instead of its owner's (the bar's opponent at a pool
+    // table when its owner plays there as the second player, Pool.cpp), by handle; -1: none
+    int avatar = -1;
+    void* avatarAnim = nullptr;  // the animation it plays of that person's
 };
 
 class Players : public Module {
@@ -77,10 +85,35 @@ public:
     // the copy's model as SET_PLAYER_MODEL changes a player's (0: CJ in his clothes); false if it cannot be loaded
     static bool SetModel(game::CPlayerPed* ped, int model);
     const std::map<uint8_t, RemotePlayer>& All() const { return m_remote; }
+    // our own mark in this colour on the other players' radar (BlipColour's names, empty: the allies' blue), saved in
+    // coop.ini and sent to them
+    void SetMarkColour(const std::string& colour);
+    // the other players as arrows turned with their heading, at the end of CRadar::DrawBlips (the radar and the menu
+    // map): Waypoints' hook of it calls this, and says whether it is in (MinHook takes one hook per function)
+    void DrawRadarArrows();
+    static void SetRadarArrowsHooked(bool hooked);
     // "G": enter the nearest vehicle as a passenger (prefers the partner's car).
     void TryEnterAsPassenger();
     // the vehicle this game's player drove last, while it exists (by handle: a reused pool slot is another car)
     game::CVehicle* LastCar() const { return game::GetVehicle(m_lastCar); }
+    // our player to a spot by another player, as /tp: into that player's area (its interior's door used as a door),
+    // out of its vehicle first when onFoot (else the vehicle goes along)
+    void GoTo(const RemotePlayer& by, const game::CVector& spot, bool onFoot = false);
+    // /tp (go over to that player) and /tphere (bring it over) once it said yes (Teleport.cpp): allowed now? (if not,
+    // the chat says why: buildings are entered through their doors), and done
+    bool TeleportAllowed(const RemotePlayer& other, bool bring);
+    void GoToPlayer(const RemotePlayer& other);
+    void Bring(uint8_t id);
+    // a vehicle of this model beside our player on free ground: its handle (the script's: MARK_CAR_AS_NO_LONGER_NEEDED
+    // is the caller's), -1 not yet (its model comes in the background, the pool is full), -2 no room around us
+    int VehicleBeside(int model);
+    // our player with another one in its vehicle: in a free seat of it (asSeat), else at the wheel of one like it beside
+    // us. Later: try again (its copy not seated here yet, the model loading, no room); None: nothing for us (it walks,
+    // or it is in a boat, a plane, a train)
+    enum class Ride { Later, Seat, OwnVehicle, None };
+    Ride RideWith(const RemotePlayer& leader, bool asSeat);
+    // that player's copy takes a script person's place and animation (RemotePlayer::avatar); -1 gives it back its own
+    void SetAvatar(uint8_t id, int pedHandle);
 
     static Players& Instance();
 
@@ -90,6 +123,10 @@ private:
     void DetectCarTasks();
     void FollowHost();
     void HoldForPassengerSeat();
+    void GroupRides(game::CPlayerPed* me);
+    void YieldClaimedSeat(game::CPlayerPed* me);
+    void PutAwayStuckPhone(game::CPlayerPed* me);
+    void PassengerWeaponWheel(game::CPlayerPed* me);
     void HandleOnFoot(uint8_t from, Reader& r);
     void HandleDriver(uint8_t from, Reader& r);
     void HandlePassenger(uint8_t from, Reader& r);
@@ -109,6 +146,7 @@ private:
 
     std::map<uint8_t, RemotePlayer> m_remote;
     uint64_t m_lastSend = 0;
+    uint64_t m_markSentMs = 0;  // our mark's colour went out last then
     PadState m_lastSentPad;
     game::CVehicle* m_enterReported = nullptr;
     bool m_exitReported = false;
@@ -119,6 +157,12 @@ private:
     uint64_t m_enterHeldSince = 0;  // the enter button (triangle) held on foot since
     bool m_enterHeldUsed = false;
     bool m_deathSent = false;  // our player's death animation went out (G_PLAYER_DEATH)  // our player's own knock-off setting while it rides behind on the other player's bike
+    uint64_t m_selfBrakeLogMs = 0;  // our car braking with no brake pressed, last told then
+    uint64_t m_groupRideMs = 0;
+    uint64_t m_yieldMs = 0;
+    int m_rideCar = -1;             // the other player's car we ride in, by handle, and since when
+    uint64_t m_rideSinceMs = 0;
+    std::vector<int> m_riders;      // our followers we sent into it
 };
 
 // helpers shared with other modules

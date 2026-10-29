@@ -52,6 +52,9 @@ struct CameraState {
     float alpha = 0, beta = 0;
     float lookPitch = 0;
     bool useMouse3rd = true;
+    // in a car: its camera looks aside (CCam +0x08/+0x09, what CVehicle::DoDriveByShootings asks), and its player may not
+    // shoot from it (CPlayerInfo +0x153 off: a mission's rule)
+    bool lookLeft = false, lookRight = false, driveByOff = false;
     float chairX = 0.53f, chairY = 0.4f;
 
     void Write(Writer& w) const;

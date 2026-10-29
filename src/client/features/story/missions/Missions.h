@@ -22,5 +22,13 @@ std::string SideCallText(std::string& hint);
 // Y (yes) or N: answers the call (a side activity's, or the partner's from a mission's start point), or makes it. False
 // when there was nothing to answer (the key goes on to the game).
 bool SideCallKey(bool yes);
+// the call of this player's side activity to play it together can be made now (its box shows); withdrawn: not any more
+// (it is played as a contest)
+bool SideCallOpen();
+void SideCallWithdraw();
+
+// a meter of this game's own player (a bar of COnscreenTimer on the script variable at varOffset, its GXT label) added in
+// a free counter or taken away: kept over the counters the other game's mission sends (its own meter of its player)
+void ShowOwnCounter(uint32_t varOffset, const char* label, bool on);
 
 }  // namespace coop

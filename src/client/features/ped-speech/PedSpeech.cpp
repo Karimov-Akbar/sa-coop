@@ -3,7 +3,9 @@
 // camera, so each game had its own lines and the other's copies stayed silent. The game of the ped's owner reports the
 // line its ped starts (sound bank and sound, CAEPedSpeechAudioEntity::LoadAndPlaySpeech), and the other game plays that
 // very line on its copy of the ped or of the player. The copies say nothing of their own: what makes the real one
-// talk happens in its owner's game.
+// talk happens in its owner's game. A police helicopter's or boat's loudspeaker (CAEPedlessSpeechAudioEntity) talks only
+// in the police AI of its game, which the other game's copy never runs: its game reports the line's context, and the
+// other game says a line of that context from its copy.
 #include <algorithm>
 
 #include "common/api/protocol/Protocol.h"
@@ -11,6 +13,7 @@
 #include "common/lib/util/Util.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "entities/vehicle/Vehicles.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
@@ -25,7 +28,8 @@ constexpr uintptr_t kSlots = 0xB61C38;      // CAEPedSpeechAudioEntity::s_PedSpe
 constexpr int kPedSlots = 5;
 constexpr int kSpeechOffset = 0x294;        // CPed::m_pedSpeech
 constexpr float kHeardWithin = 40.0f;       // CAEPedSpeechAudioEntity::AddSayEvent: no farther from the camera
-enum : uint8_t { BY_PLAYER = 0, BY_PED = 1 };
+enum : uint8_t { BY_PLAYER = 0, BY_PED = 1, BY_VEHICLE = 2 };
+constexpr uintptr_t kPedless = 0xB6DAC8;  // AudioEngine.m_PedlessSpeechAE: its m_AttachedTo (+0x114) the speaking vehicle
 enum : int16_t { SLOT_FREE = 0, SLOT_RESERVED = 4 };
 
 int16_t SlotStatus(int slot) { return Ref<int16_t>(kSlots + (uintptr_t)slot * 0x1C); }
@@ -88,10 +92,17 @@ void __fastcall HookLoadAndPlaySpeech(void* s, void* edx, uint32_t delay) {
     g_origPlay(s, edx, delay);
     if (g_injecting || !starts || !Net().Online() || !core::IsPlayerReady()) return;
     auto* e = Field<CEntity*>(s, 0x04);  // CAEAudioEntity::m_pEntity
-    if (!e || !e->IsPed()) return;       // the pedless speech of police boats and helicopters
+    auto* loud = s == (void*)kPedless ? Field<CEntity*>(s, 0x114) : nullptr;
     uint8_t by;
     uint16_t id = 0;
-    if (e == FindPlayerPed(0)) {
+    if (loud) {  // a police helicopter's or boat's loudspeaker: our vehicle's (a copy's lines come from its owner's game)
+        NetVehicle* nv = loud->IsVehicle() ? Vehicles::Instance().Find((CVehicle*)loud) : nullptr;
+        if (!nv || Vehicles::Instance().IsMirror(*nv)) return;
+        by = BY_VEHICLE;
+        id = nv->netId;
+    } else if (!e || !e->IsPed()) {
+        return;
+    } else if (e == FindPlayerPed(0)) {
         by = BY_PLAYER;
     } else if (NetPed* np = Peds::Instance().Find((CPed*)e); np && np->owner == Net().MyId()) {
         by = BY_PED;
@@ -156,6 +167,16 @@ void Handle(uint8_t from, Reader& r) {
     float volume = r.F32();
     bool forced = r.U8() != 0;
     if (!r.Ok() || !core::IsPlayerReady() || bank < 0 || sound < 0) return;
+    if (by == BY_VEHICLE) {  // its copy never runs the police AI that talks: a line of the same context from it here
+        NetVehicle* nv = Vehicles::Instance().Find(id);
+        if (!nv || !Vehicles::Instance().IsMirror(*nv) || !IsVehicleValid(nv->veh) || cam::WideScreenOn()) return;
+        g_injecting = true;
+        CallMethod<0x5073C0>((void*)0xB6BC90, 0x34, (int)ctx, (CEntity*)nv->veh, std::min<uint32_t>(delay, 2000), 1.0f,
+                             (uint8_t)0, (uint8_t)forced, (uint8_t)0);  // CAudioEngine::SayPedless (AE_SPEECH_PEDLESS)
+        g_injecting = false;
+        LOGD("Loudspeaker of player %d's vehicle %04X: context %d", from, id, ctx);
+        return;
+    }
     // CAEMP3BankLoader::LoadSound (0x4E07A0) lets a bank one past its lookup table through (it compares with >) and
     // reads that garbage: what the banks here do not have (other audio files) is not played
     auto* loader = Ref<uint8_t*>(0xB5F8B8 + 0xD98);  // AEAudioHardware.m_pMP3BankLoader

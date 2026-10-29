@@ -12,8 +12,10 @@
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
 #include "entities/vehicle/VehicleState.h"
+#include "entities/vehicle/Vehicles.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
@@ -38,6 +40,7 @@ struct Thing {
     Quat rot;
     uint8_t weapon = 0;    // what broke it (CObject::m_nLastWeaponDamage): the same proofs decide in the other game
     bool remote = false;   // the other game's: this one follows
+    bool byCopy = false;   // its first change here was a copy's of the other game's car or person (CopyNear): not ours
     bool following = false;  // our copy plays the other game's moves
     uint64_t updatedMs = 0, sentMs = 0, appliedMs = 0;
 };
@@ -62,6 +65,9 @@ bool Shared(CObject* o) {
     if (Field<void*>(o, 0x138)) return false;  // m_pControlCodeList: garage doors, crossings, cranes, sam sites...
     uint8_t special = Field<uint8_t>(o, 0x145);  // m_nSpecialColResponseCase
     if (special >= 6 && special <= 9) return false;  // swinging and locked doors, hanging things, pool balls
+    // pool tables (k_pooltablesm, k_pooltableb): POOL2 lowers its own by 10 cm for a game and raises it after, which no
+    // record here follows (back where the map has it is no change): Pool.cpp moves the other game's
+    if (o->ModelIndex() == 2964 || o->ModelIndex() == 3094) return false;
     void* info = Field<void*>(o, 0x160);  // m_pObjectInfo
     return !info || !Field<uint8_t>(info, 0x1F);  // m_bCausesExplosion: CObject::Explode names this game's player
 }
@@ -146,6 +152,35 @@ void CatchUp(CObject* o, Thing& t, bool driven) {
     t.following = driven;
 }
 
+// What touched a thing at its first change here: the nearest car within 8 m or person on foot within 2 m, a copy of the
+// other game's one or this game's own (its player, its cars and people, the ones it took over)
+bool CopyNear(const CVector& at) {
+    float best = 1e9f;
+    bool copy = false;
+    uint8_t my = Net().MyId();
+    if (CPoolHeader* pool = VehiclePool())
+        for (int i = 0; i < pool->size; ++i) {
+            if (pool->byteMap[i] < 0) continue;
+            auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
+            float d = (v->GetPosition() - at).Length();
+            if (d >= 8.0f || d >= best) continue;
+            best = d;
+            NetVehicle* nv = Vehicles::Instance().Find(v);
+            copy = nv && nv->owner != my;
+        }
+    if (CPoolHeader* pool = PedPool())
+        for (int i = 0; i < pool->size; ++i) {
+            if (pool->byteMap[i] < 0) continue;
+            auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+            float d = (p->GetPosition() - at).Length();
+            if (p->InVehicle() || d >= 2.0f || d >= best) continue;
+            best = d;
+            NetPed* np = Peds::Instance().Find(p);
+            copy = Players::Instance().FindByPed(p) || (np && np->owner != my);
+        }
+    return copy;
+}
+
 void Scan() {
     CPlayerPed* me = FindPlayerPed(0);
     CPoolHeader* pool = ObjectPool();
@@ -182,10 +217,25 @@ void Scan() {
         }
         bool changed = t->remote || stage != t->stage || moved != t->moved || moving != t->moving ||
                        (moved && !moving && (at - t->pos).Length() > 0.1f);
-        // a loose one that hardly moves (rocking on a slope, bobbing in the water: the game never makes it static again)
-        // went out ten times a second for as long as it lay there; such goes once a second
-        bool stirring = moving && ((at - t->pos).Length() > 0.05f || ((CPhysical*)o)->TurnSpeed().Length() > 0.002f);
-        if (!changed && !(moving && now - t->sentMs >= (stirring ? 100u : 1000u))) continue;
+        // A copy of the other game's car or person at it at its first change here: the copy clipped it off its owner's
+        // way (it runs a little off the real one), and the other game tells its own change if there was one there. Sent,
+        // posts and traffic lights fell in the other game by themselves (28.10). It stays as it is here.
+        if (!t->remote && !t->byCopy && t->stage == 0 && !t->moved && changed && CopyNear(at)) {
+            t->byCopy = true;
+            LOGD("World object %d at %.1f,%.1f: changed here by a copy of the other game's, not sent", t->model, origin.x, origin.y);
+        }
+        if (t->byCopy && !t->remote) {
+            t->stage = stage, t->moved = moved, t->moving = moving, t->pos = at, t->updatedMs = now;
+            continue;
+        }
+        // A loose one that hardly moves (rocking on a slope, bobbing in the water: the game never makes it static again)
+        // went out ten times a second, and then once a second for as long as it lay there: 170 messages in 10 s from 21
+        // objects (#18). On the move it goes ten times a second; turning on the spot by a few degrees, once a second;
+        // within 5 cm and those degrees of what went last, it lies there and goes no more.
+        Quat rot = Quat::FromMatrix(*o->Matrix());
+        float dot = std::fabs(rot.x * t->rot.x + rot.y * t->rot.y + rot.z * t->rot.z + rot.w * t->rot.w);
+        bool stirring = moving && (at - t->pos).Length() > 0.05f, rocking = moving && !stirring && dot < 0.9995f;  // ~3.6 degrees
+        if (!changed && !(stirring && now - t->sentMs >= 100u) && !(rocking && now - t->sentMs >= 1000u)) continue;
         if (sends >= kMaxSendsPerScan) continue;
         ++sends;
         if (t->remote) LOGD("World object %d at %.1f,%.1f: ours now", t->model, origin.x, origin.y);
@@ -194,7 +244,7 @@ void Scan() {
         t->moved = moved;
         t->moving = moving;
         t->pos = at;
-        t->rot = Quat::FromMatrix(*o->Matrix());
+        t->rot = rot;
         t->speed = ((CPhysical*)o)->MoveSpeed();
         t->turn = ((CPhysical*)o)->TurnSpeed();
         t->weapon = Field<uint8_t>(o, 0x148);  // m_nLastWeaponDamage

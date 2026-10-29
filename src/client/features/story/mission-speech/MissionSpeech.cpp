@@ -6,6 +6,7 @@
 // so it is as loud as that person is near. A line said by nobody the partner's game has (a person far away, a phone
 // call) is heard only near the host.
 #include <cmath>
+#include <cstring>
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
@@ -42,9 +43,14 @@ AttachFn g_origAttachPed = nullptr, g_origAttachObject = nullptr, g_origAttachPh
 
 void* Engine() { return (void*)kAudioEngine; }
 
-// a script of the host's story mission (or a thread it started: AUDIOL says the lines of "Cesar Vialpando"'s scenes),
-// with a partner to hear it
-bool Sharing() { return HostReplicating() && MissionThread(CurrentScript()); }
+// a script of the host's story mission (or a thread it started: AUDIOL says the lines of "Cesar Vialpando"'s scenes), or
+// a story phone call between missions (main.scm's MOB_LA1, MOB_SF and the others raise the mission flag, no mission runs:
+// the partner heard nothing of the call, Dr.BaldBall 28.10; MOB_RAN's are side calls, not replicated), with a partner to
+// hear it
+bool Sharing() {
+    void* s = CurrentScript();
+    return HostReplicating() && (MissionThread(s) || (s && !RunningMission() && !strncmp(Field<char[8]>(s, 0x08), "mob_", 4)));
+}
 
 Writer Begin(uint8_t op, uint8_t slot) {
     Writer w(proto::G_MISSION_AUDIO);
@@ -147,6 +153,11 @@ void Handle(uint8_t from, Reader& r) {
         case OP_LOAD: {
             int32_t sample = r.I32();
             if (!r.Ok() || sample < 0) return;
+            // our own player on the phone: its call's lines are in these slots (the host's line is not played here)
+            if (void* intel = FindPlayerPed(0)->Intelligence(); intel && CallMethod<0x681740, void*>((uint8_t*)intel + 4, 1600)) {
+                s = Slot{};
+                return;
+            }
             g_origPreload(Engine(), nullptr, slot, sample);
             s = Slot{};
             s.loaded = true;

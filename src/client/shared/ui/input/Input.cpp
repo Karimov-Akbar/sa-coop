@@ -8,6 +8,7 @@
 #include "common/lib/log/Log.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
+#include "shared/lib/memory/Memory.h"
 
 namespace coop::ui {
 
@@ -17,6 +18,18 @@ Input& In() {
 }
 
 static WNDPROC g_origProc = nullptr;
+
+// The window has its focus back (the game's MainWndProc on WM_SETFOCUS, 0x748063): the game asks for its pause menu in the
+// next frame (0x53BC60). In a co-op session that would stop the shared world for everyone, so only that request is dropped.
+// WM_SETFOCUS itself goes on to the game and its DefWindowProc, where GInput learns the window is active again: kept from
+// it, the pad stayed off after the first Alt+Tab in a session (#74, GInput's DisableOnFocusLost).
+using VoidFn = void(__cdecl*)();
+static VoidFn g_origFocusMenu = nullptr;
+static bool g_focusMenuHooked = false;
+static void __cdecl HookFocusMenu() {
+    if (core::IsInCoopSession() && game::GameState() == game::GAME_STATE_IDLE) return;
+    g_origFocusMenu();
+}
 
 static LRESULT CALLBACK CoopWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (In().OnMessage(msg, wp, lp)) return 0;
@@ -28,6 +41,7 @@ void Input::Install(void* hwnd) {
     m_hwnd = hwnd;
     g_origProc = (WNDPROC)SetWindowLongPtrW((HWND)hwnd, GWLP_WNDPROC, (LONG_PTR)&CoopWndProc);
     LOGI("Window procedure subclassed (hwnd %p)", hwnd);
+    g_focusMenuHooked = mem::RedirectCallFn(0x748063, &HookFocusMenu, &g_origFocusMenu);
 }
 
 void Input::ClearGameKeys() {
@@ -147,9 +161,10 @@ bool Input::OnMessage(unsigned msg, uintptr_t wParam, intptr_t lParam) {
         case WM_MBUTTONUP:
             return m_mouseCapture;
         case WM_SETFOCUS:
-            // Vanilla opens the pause menu when the window regains focus; in co-op that would pause the
-            // shared world for everyone, so only restore the foreground flag.
-            if (core::IsInCoopSession() && game::GameState() == game::GAME_STATE_IDLE) {
+            // Vanilla opens the pause menu when the window regains focus; in co-op that would pause the shared world
+            // for everyone. Its request is dropped where the game makes it (HookFocusMenu); if another mod took that
+            // call, the message is kept from the game as before and only the foreground flag comes back.
+            if (!g_focusMenuHooked && core::IsInCoopSession() && game::GameState() == game::GAME_STATE_IDLE) {
                 game::Ref<uint8_t>(game::addr::ForegroundApp) = 1;
                 return true;
             }

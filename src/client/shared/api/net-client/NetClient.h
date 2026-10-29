@@ -40,6 +40,7 @@ public:
     uint64_t BytesOut() const { return m_bytesOut.load(); }
     // the last connect by an invite code could not reach its channel (ntfy.sh): the host never heard of us
     bool SignalFailed() const;
+    bool ViaCode() const;  // the last connection went by an invite code
 
 private:
     void ThreadMain(std::string host, uint16_t port);

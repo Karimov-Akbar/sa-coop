@@ -64,4 +64,21 @@ inline void* Blend(void* clump, void* h, uint16_t flags, float delta) {
     return Call<0x4D4410, void*>(clump, h, (int)(flags & ~(F_BLOCK_REFERENCED | F_INDESTRUCTIBLE)), delta);
 }
 
+// The animation a ped is seen playing: a script's (TASK_PLAY_ANIM blends it by name, with no group, as a partial one laid
+// over the rest) before the strongest full-body one. A face's, an arm's and a flinch are partial too, each of a group or
+// flagged so. With full-body ones only, a copy stood upright at the pool table while its person aimed and struck: POOL's
+// are all partial (28.10).
+inline void* Main(void* clump) {
+    void *named = nullptr, *body = nullptr;
+    for (void* a = First(clump); a; a = Next(a)) {
+        int block, idx;
+        if (BlendDelta(a) < 0.0f || !Locate(Hierarchy(a), block, idx)) continue;
+        bool partial = (Flags(a) & F_PARTIAL) != 0;
+        if (partial && (Group(a) >= 0 || (Flags(a) & (F_SECONDARY | F_INDESTRUCTIBLE)))) continue;
+        void*& best = partial ? named : body;
+        if (!best || BlendAmount(a) > BlendAmount(best)) best = a;
+    }
+    return named ? named : body;
+}
+
 }  // namespace game::anim

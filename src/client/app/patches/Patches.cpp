@@ -11,6 +11,9 @@
 
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/mission/Mission.h"
+#include "entities/vehicle/Vehicles.h"
+#include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Anim.h"
 #include "shared/game/Game.h"
@@ -85,12 +88,29 @@ VoidFn g_origStartUserPause = nullptr;
 
 // Two copies of the game on one PC (multi_instance): a pad plugin reading XInput (GInput) feeds every copy, focused or
 // not, and the player of the other window jumped and walked along. Only the focused window's player takes the pads.
+// Typing in the chat or a window of ours, no key plays the game, whatever brings it to the pad: the window procedure
+// keeps the key messages from the game, and still Shift with Alt (the keyboard's layout) or a space in the chat made CJ
+// jump with jump on that key (30.10).
 VoidFn g_origUpdatePads = nullptr;
 void __cdecl HookUpdatePads() {
     g_origUpdatePads();
-    if (GetForegroundWindow() == (HWND)game::GameWindow()) return;
+    if (ui::In().KeyboardCaptured()) {
+        game::GetPad(0)->NewState = game::CControllerState{};
+        return;
+    }
+    if (!Cfg().multiInstance || GetForegroundWindow() == (HWND)game::GameWindow()) return;
     for (int i = 0; i < 2; ++i) game::GetPad(i)->NewState = game::CControllerState{};
 }
+// F1 plays the last seconds again (CReplay), F3 a replay saved on the disk: in a session it stopped this world alone, and
+// the copy of the other player, a PLAYER1 ped with no clothes of its own in the recording, crashed the playback
+// (ThomasAckles, 29.10: CReplay::RestoreClothesDesc reading a missing record, 0x45C7D4).
+using TriggerReplayFn = void(__cdecl*)(uint8_t, float, float, float, bool);
+TriggerReplayFn g_origTriggerReplay = nullptr;
+void __cdecl HookTriggerReplay(uint8_t camMode, float x, float y, float z, bool loadScene) {
+    if (core::IsInCoopSession()) return;
+    g_origTriggerReplay(camMode, x, y, z, loadScene);
+}
+
 void __cdecl HookStartUserPause() {
     // In a co-op session the world is shared: the pause menu must not freeze it.
     if (Cfg().noPauseMenu && core::IsInCoopSession()) return;
@@ -313,6 +333,21 @@ void __cdecl HookConstructPedModel(uint32_t model, void* clothes, const void* ol
         if (!told) LOGW("Player model %u has no texture dictionary (slot %d): not rebuilt", model, slot);
         told = true;
         return;
+    }
+    // The cutscene CJ takes the textures model 0 left in the dictionary they share, by the slot's name (0x5A6B3F): an
+    // accessory with no texture there got no material, and building its mesh crashed (#72). It goes without that one.
+    if (cutscene && clothes) {
+        auto* desc = (const uint32_t*)clothes;  // CPedClothesDesc: m_anModelKeys[10], m_anTextureKeys[18], fat, muscle
+        uint32_t safe[0x78 / 4];
+        bool cut = false;
+        for (int i = 0; i < 5; ++i) {  // necklace, watch, glasses, hat, extra1: models 4-8, textures 13-17
+            const char* name = game::Ref<const char*>(0x8D0A7C + (uintptr_t)(5 + i) * 4);
+            if (!desc[4 + i] || game::Call<0x7F39F0, void*>(dict, name)) continue;  // RwTexDictionaryFindNamedTexture
+            if (!cut) memcpy(safe, desc, sizeof safe), cut = true;
+            safe[4 + i] = safe[10 + 13 + i] = 0;
+            LOGW("Cutscene CJ: no \"%s\" texture for its accessory, built without it", name);
+        }
+        if (cut) return g_origConstructPedModel(model, safe, old, cutscene);
     }
     g_origConstructPedModel(model, clothes, old, cutscene);
 }
@@ -629,6 +664,39 @@ __attribute__((naked)) void StreamCursorStub() {
         "ret\n\t");
 }
 
+}  // namespace
+}  // namespace coop::patches
+
+// CdStreamSync (moved in this exe to 0x156CD80) waits for a channel's read with no deadline: it raises the channel's
+// "waiting" flag (+0x0D) after it saw a read on (+0x04), and the reading thread lets the waiter go only if that flag was up
+// when the read ended. A read that ended between the two left the game waiting for good (#31: a hang loading a save or
+// walking out of CJ's house). The wait goes in slices and ends once the read is over.
+extern "C" __attribute__((used)) unsigned long __cdecl CoopCdSyncWait(uint8_t* channel, void* sema) {
+    for (int slices = 1;; ++slices) {
+        DWORD r = WaitForSingleObject(sema, 100);
+        if (r != WAIT_TIMEOUT) return r;
+        if (!game::Field<int32_t>(channel, 4)) {
+            static int told = 0;
+            if (told++ < 5) LOGW("CdStreamSync: a read ended with its waiter not told, the game would have hung");
+            return WAIT_OBJECT_0;
+        }
+        // a read that does not end at all (a freeze on a cutscene's black screen, 27.10): at least the log says so
+        if (slices == 50) LOGW("CdStreamSync: a read of the game's files has taken 5 s and goes on");
+    }
+}
+// in place of "call [WaitForSingleObject]" (the semaphore and INFINITE on the stack, the channel in esi)
+extern "C" __attribute__((naked)) void CoopCdSyncWaitStub() {
+    __asm__ volatile(
+        "pushl 4(%esp)\n\t"
+        "pushl %esi\n\t"
+        "calll _CoopCdSyncWait\n\t"
+        "addl $8, %esp\n\t"
+        "ret $8\n\t");
+}
+
+namespace coop::patches {
+namespace {
+
 // A mission may create a car of a model it requested a while before without checking that it is still there: OG Loc's
 // chase asks for the Manana while loading its car recordings, lets it go later and creates three of them on a timer.
 // A model not in memory crashed CVehicleModelInfo::CreateInstance (0x4C9691) in a host's game. It is loaded first.
@@ -640,7 +708,12 @@ game::CVehicle* __cdecl HookCreateCarForScript(int model, game::CVector pos, uin
         game::RequestModel(model, 0x10 /* PRIORITY_REQUEST: the car holds it, nothing keeps it after */);
         game::LoadAllRequestedModels(false);
     }
-    return g_origCreateCarForScript(model, pos, missionCleanup);
+    game::CVehicle* v = g_origCreateCarForScript(model, pos, missionCleanup);
+    // the police impound's cars: each game's IMPND makes them as its player comes near, and the copies of the other
+    // game's stood on top of them (28.10)
+    void* s = Net().Online() && !game::script::Running() ? CurrentScript() : nullptr;
+    if (v && s && !_strnicmp((const char*)s + 0x08, "impnd", 8)) Vehicles::Instance().KeepLocal(v);  // CRunningScript::m_szName
+    return v;
 }
 
 // The commands that make and move script entities (CREATE_CAR, CREATE_CHAR, CREATE_OBJECT, SET_CHAR_COORDINATES,
@@ -716,18 +789,31 @@ void Apply() {
         IsolateInstance();
     }
 
-    if (cfg.multiInstance) mem::RedirectCallFn(0x53BEE6, &HookUpdatePads, &g_origUpdatePads);  // CGame::Process -> CPad::UpdatePads
+    mem::RedirectCallFn(0x53BEE6, &HookUpdatePads, &g_origUpdatePads);  // CGame::Process -> CPad::UpdatePads
 
     // CdStreamInit opens the IMG archives past Windows' file cache (FILE_FLAG_NO_BUFFERING when the disk's sector is 2 KB
     // or less). A player's clothes are built from pieces read one by one and let go at once (CClothesBuilder: up to 10
     // models and 18 textures of player.img), and the other player's copy is built again at each look it sends and at
     // each spawn: every time from the disk, a second or two on a hard disk. Through the cache they come from memory.
     static const uint8_t kNoBuffering[] = {0xB8, 0x00, 0x00, 0x00, 0x20};  // mov eax, FILE_FLAG_NO_BUFFERING
-    if (mem::Check(0x406BC8, kNoBuffering, sizeof kNoBuffering)) {
+    if (!cfg.streamCache) {
+        LOGI("Stream cache off (coop.ini): the game reads its files as it does");
+    } else if (mem::Check(0x406BC8, kNoBuffering, sizeof kNoBuffering)) {
         static const uint8_t kBuffered[] = {0xB8, 0x00, 0x00, 0x00, 0x00};
         mem::Write(0x406BC8, kBuffered, sizeof kBuffered);
     } else {
         LOGW("Stream cache patch skipped: unexpected bytes at 0x406BC8 (another mod has it)");
+    }
+    // only in an exe whose CdStreamSync was moved out there (0x406460: jmp 0x156CD80): another one has nothing at 0x156CDAE
+    static const uint8_t kSyncMoved[] = {0xE9, 0x1B, 0x69, 0x16, 0x01};
+    static const uint8_t kSyncWait[] = {0xFF, 0x15, 0x88, 0x80, 0x85, 0x00};  // call [__imp_WaitForSingleObject]
+    if (mem::Check(0x406460, kSyncMoved, sizeof kSyncMoved) && mem::Check(0x156CDAE, kSyncWait, sizeof kSyncWait)) {
+        uint8_t call[6] = {0xE8, 0, 0, 0, 0, 0x90};
+        int32_t rel = (int32_t)((uintptr_t)&CoopCdSyncWaitStub - (0x156CDAE + 5));
+        memcpy(call + 1, &rel, 4);
+        mem::Write(0x156CDAE, call, sizeof call);
+    } else {
+        LOGW("CdStreamSync wait fix skipped: unexpected bytes at 0x156CDAE (another exe or mod)");
     }
     if (cfg.runInBackground) {
         // WinMain: "if (!ForegroundApp) { Sleep(100); continue; }" -> never sleep
@@ -741,6 +827,7 @@ void Apply() {
     mem::RedirectCallFn(0x53E9F1, &HookIdleMouseSetPos, &g_origIdleMouseSetPos);  // Idle -> RsMouseSetPos
     mem::HookFn(0x53F3C0, &HookUpdateMouse, &g_origUpdateMouse, "CPad::UpdateMouse");
     mem::HookFn(0x561AF0, &HookStartUserPause, &g_origStartUserPause, "CTimer::StartUserPause");
+    mem::HookFn(0x4600F0, &HookTriggerReplay, &g_origTriggerReplay, "CReplay::TriggerPlayback");
     mem::RedirectCallFn(0x576C55, &HookMenuStopRadio, &g_origMenuStopRadio);  // CMenuManager::CheckForMenuClosing
     mem::RedirectCallFn(0x5737A5, &HookMenuStopRadio, &g_origMenuStopRadio);  // CMenuManager::SwitchToNewScreen
     mem::RedirectCallFn(0x4EB9F4, &HookCheckForStationRetune, &g_origRetune);   // CAERadioTrackManager::Service

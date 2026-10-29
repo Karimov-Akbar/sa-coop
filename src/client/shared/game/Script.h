@@ -109,6 +109,15 @@ enum : uint16_t {
     OP_SET_CHAR_RELATIONSHIP = 0x077A,
 };
 
+// A command's arguments in a mission script's code, of the types CRunningScript reads: where the one after arg starts
+// (null for a type not known here), and the place of an output variable written there (a global, or a local of the
+// mission; null for anything else)
+const uint8_t* NextArg(const uint8_t* arg);
+int32_t* OutVar(const uint8_t* arg);
+// an argument's value as the command read it: a number in the code or a variable's; false for anything else. After a
+// command with outputs ScriptParams hold those, not its inputs.
+bool ArgValue(const uint8_t* arg, int32_t& value);
+
 bool Running();  // one of our commands runs now (a game function it calls may ask)
 // tests: our commands count as a mission script's (m_bIsMission) while on, as the host's mission would run them
 void AsMission(bool on);

@@ -19,6 +19,7 @@ struct Config {
     std::string password;
     std::string motd = "Добро пожаловать! Чтобы увидеть список команд, напишите /help.";
     bool friendlyFire = false;  // the players can hurt each other
+    bool partnerTeleport = true;  // the partners may use /tp and /tphere
     uint16_t port = 7788;
     int maxPlayers = 2;
     std::wstring dataDir;    // profiles/, world/
