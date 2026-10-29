@@ -125,8 +125,8 @@ F9 window, and each player picks their own: the host can play in Russian while t
 ### Everything else
 
 Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
-quarry are played by each player in their own game. A side job or a race can be played together: within 20 seconds
-of its start press Y, and the other player gets an invitation (Y: yes, N: no). Whoever accepts sees its markers,
+quarry are played by each player in their own game. A side job, a race, a stadium event, the quarry, a valet shift or
+a shooting range round can be played together: within 20 seconds of its start press Y, and the other player gets an invitation (Y: yes, N: no). Whoever accepts sees its markers,
 checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
 gets the same money at its end. The job's levels stay with the player who started it, and the reward for
 completing the job goes to both. There is text chat and voice chat, and the farther away the
@@ -148,8 +148,8 @@ Rockstar Games Launcher, downgrade it to 1.0 US first, for example with GTA SA D
 
 1. Download `SA-COOP.zip` from the [Releases](../../releases) page and unpack it into the game folder so that
    `coop.asi`, `install.bat` and the `coop` folder end up next to `gta_sa.exe`.
-2. Run `install.bat`. In a clean game it installs an ASI plugin loader, and in a build that already has one it
-   changes nothing.
+2. Run `install.bat`. In a clean game it installs an ASI plugin loader, and in a build that already has one (for
+   example, the one Widescreen Fix brings) it changes nothing.
 3. Start the game. The SA:COOP window opens in the main menu, and later you can bring it up with F9. Enter your
    nickname. To switch the window to English, click EN at the top of it.
 
@@ -191,17 +191,19 @@ sees "The server does not answer", even on a home network. If an antivirus remov
 | G | get into the nearest car as a passenger |
 | Triangle (hold) | on a gamepad: get in as a passenger |
 | Right mouse button | as a passenger: lean out of the window with the gun, fire with the left button |
-| F2 | the player list |
+| F2 | the players: money and giving money |
 | Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
-The chat supports the `/help`, `/players` and `/tp` (go to your partner unless they are inside a building)
-commands. The host can kick a player with `/kick <nickname> [reason]`.
+The chat supports the `/help`, `/players`, `/tp` (go to your partner unless they are inside a building) and `/tphere`
+(bring your partner over) commands. Your partner answers `/tp` and `/tphere` with Y or N. The host can kick a player
+with `/kick <nickname> [reason]` and, creating the game, turn `/tp` and `/tphere` off for partners.
 
 The chat, passenger and player list keys can be changed in `coop\coop.ini`, in the `[keys]` section (the `chat`,
 `enter_as_passenger` and `player_list` lines take a Windows key code, for example `chat = 0x75` for F6). The `[game]`
 section there can also hide the partner's radar mark (`partner_blip = 0`) and the name tag over their head
-(`name_tags = 0`), for a shoot-out where you have to find each other. Change the keys if,
-say, T gets in the way of typing cheat codes.
+(`name_tags = 0`), for a shoot-out where you have to find each other. `gps = 0` there turns off the road route to
+the map waypoint or the mission's destination that the radar shows in a vehicle. Change the keys if, say, T gets in the way of typing cheat
+codes.
 
 Three more lines help to record video in windowed mode (`windowed = 1`). `borderless = 1` takes the frame off the
 window, so a window the size of the screen looks like a fullscreen game. `window_title = ...` gives the window a title
@@ -213,7 +215,8 @@ section clears everything the mod draws: the chat, the names over the players an
 - The partner's girlfriend progress is not kept: it comes from the host's world. The income of the partner's
   businesses lies in the shared world, and either player can pick it up, as with the host's.
 - Story missions and Cesar's races run in the host's game: a mission does not begin without the host in the marker.
-- You see the other player's train but cannot get into it: it is driven by the player whose game made it.
+- During the host's story mission the partner cannot get into the host's trains. Outside missions either player can
+  get into a train the other player is not driving and drive it.
 - The partner gets story progress (new areas, gyms) by loading the host's world. This happens in the next
   mission's marker, or after 10 minutes without missions, and takes a couple of seconds. The partner keeps their
   position, weapons and progress.
@@ -283,14 +286,16 @@ inside and why it is built this way is described in [docs/ARCHITECTURE.md](docs/
 
 - [ENet](http://enet.bespin.org) (MIT license): network transport, `third_party/enet`.
 - [MinHook](https://github.com/TsudaKageyu/minhook) (BSD 2-Clause license): function hooking, `third_party/minhook`.
+- [Font Awesome Free](https://fontawesome.com) (CC BY 4.0 license): the voice chat's microphone icon,
+  `src/client/features/voice/ui/microphone.svg`.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw): the compiler, downloaded during the build.
 - Engine addresses and structures were checked against [gta-reversed](https://github.com/gta-reversed/gta-reversed)
   and [plugin-sdk](https://github.com/DK22Pac/plugin-sdk).
 
 ## License
 
-The SA:COOP code is released under the MIT license (see [LICENSE](LICENSE)). ENet and MinHook have their own
-licenses, and their texts are in `third_party` and in the `coop\licenses` folder of the archive.
+The SA:COOP code is released under the MIT license (see [LICENSE](LICENSE)). ENet, MinHook and the Font Awesome
+icon have their own licenses, and their texts are in `third_party` and in the `coop\licenses` folder of the archive.
 
 SA:COOP is not affiliated with Rockstar Games or Take-Two Interactive. You need your own copy of GTA San Andreas,
 and the repository contains no game files.
