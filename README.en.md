@@ -18,151 +18,162 @@ SA:COOP is a mod for GTA San Andreas that lets two, three or four players go thr
 network. One player is the host: the game runs on their save, and they start the missions. The others connect to them
 and play in the same world as characters of their own, with their own money, skills and look.
 
-![The host and the partner on Grove Street](docs/images/en/street-host.jpg)
+![CJ and the partner in a green jacket at a wall they have just tagged](docs/images/hero.jpg)
 
 ## What the mod does
 
-### The story for two
+### The story together
 
-The host starts a mission, but it only begins once both players stand in the marker. If the partner reaches the
-marker first, the host gets an invitation and presses Y to be there at once. The partner sees the same
-texts, subtitles, radar blips, markers, race checkpoints and timers, and the texts come in the language of the
-partner's own game. The partner also hears the lines characters say during missions outside cutscenes. Weapons
-the mission gives CJ go to the partner as well. When the story takes all of CJ's weapons, a partner near the host
-loses theirs too. Both players get the mission reward. Enemies attack both of them, and either player can hurt them. If the mission moves CJ somewhere else after a cutscene, the partner ends up next
-to the host. The mission's limits on the wanted level apply to a partner near the host, away from the host the wanted level works as usual, the stars a mission gives CJ go to a
-partner near the host too, and the gates and buildings a mission opens or changes change for the partner too, as do the parts of the map a mission adds, such as the weed field
-in "Are You Going To San Fierro?". The partner can also take the photos a mission asks for. A partner
-killed during a mission comes back next to the host. If the host gets on a bike or into a vehicle with no seat
-left, the partner is put straight into the same kind of vehicle. The partner watches a mission's in-engine scenes
-through the same camera as the host. In the lowrider contest and the beach dance the partner plays next to the
-host, and their points go into the shared score. Either player can carry the crates in the house robbery with Ryder
-and load them into the van.
+The host starts a mission, but it only begins once all players stand in the marker. If the partner reaches the
+marker first, the host gets an invitation and presses Y to be there at once. The partners see the same texts,
+subtitles, radar blips, markers, race checkpoints and timers, and the texts come in the language of each partner's
+own game. The partners also hear the lines characters say during missions outside cutscenes. Weapons the mission
+gives CJ go to the partners as well. When the story takes all of CJ's weapons, partners near the host lose theirs
+too. Every player gets the mission reward. Enemies attack everyone, and any player can hurt them.
 
-| The host stands in the marker | The partner sees that the host is waiting |
+If the mission moves CJ somewhere else after a cutscene, the partner ends up next to the host. The mission's limits
+on the wanted level apply to a partner near the host, and away from the host the wanted level works as usual. The
+stars a mission gives CJ go to a partner near the host too. The gates and buildings a mission opens or changes change
+for the partner too, as do the parts of the map a mission adds, such as the weed field in "Are You Going To San
+Fierro?". The partner can also take the photos a mission asks for. A partner killed during a mission comes back next
+to the host. The partner watches a mission's in-engine scenes through the same camera as the host.
+
+The partner takes part in the missions themselves. They plant the charges in "Dam and Blast" and the bug in
+"Amphibious Assault", drive a bike onto the truck in "Cop Wheels" and throw crates off the train in "Catalyst". They
+see the missions' smoke, searchlight beams and sparks, and their shots raise the alarm. Any player can carry the
+crates in the house robbery with Ryder and load them into the van. In the lowrider contest and the beach dance the
+partner plays next to the host, and their points go into the shared score.
+
+If the host gets on a bike or into a vehicle with no seat left, the partner is put straight into the same kind of
+vehicle. In story missions the partner gets a plane or a helicopter of their own, such as the Hydra in "Vertical
+Bird", and in Toreno's missions a jetpack of their own as well. In Zero's missions the partner gets a minigun of their
+own next to the host's turret or an RC toy of their own: one with a gun or, in "New Model Army", with a magnet. A
+partner far from Zero's shop gets the toy at its door. When the host is a gunner on a helicopter or a car, as in "The
+Da Nang Thang" and "Reuniting the Families", the partner shoots beside them from the other side. If the host reaches a
+mission's objective while the partner is still on the way, the mission waits for the partner up to 45 seconds.
+
+| "Black Project": a jetpack for each player | The beach dance together, one shared score |
 |---|---|
-| ![The host waits for the partner in the marker](docs/images/en/marker-host.jpg) | ![The partner is told that the host waits at the marker](docs/images/en/marker-partner.jpg) |
+| <img src="docs/images/jetpack.gif" alt="The host and the partner fly up the shaft with jetpacks in Black Project"> | <img src="docs/images/dance.gif" alt="The host and the partner dance side by side on the beach"> |
 
 ### Cutscenes
 
-Cutscenes play for both players at the same time, and the partner's character is next to CJ in them: standing at
-his side, or riding with him in the car during drives. The character listens to the conversation, shifts their weight, nods
-and looks at whoever is talking, and when CJ walks, keeps a little behind him and to the side. These movements
-come from the animations of the cutscenes themselves. A cutscene can only be skipped by both players: one presses
-Enter, and the other agrees with Enter or refuses with Esc.
+Cutscenes play for all players at the same time, and the partner is next to CJ in them. The partner walks with him:
+follows CJ at a walking pace without jumping from spot to spot, and while standing listens to the conversation and
+turns to whoever is talking. The paths for 130 cutscenes are worked out in advance from the game's map, and the second
+and third partner have paths of their own. During drives the partner rides in the car with CJ if there is a seat. A
+cutscene can only be skipped by everyone together: one player presses Enter, and the others agree with Enter or
+refuse with Esc.
 
-| | |
-|---|---|
-| ![Cutscene in the garage: CJ on the right, the partner's character behind him](docs/images/cutscene-garage.jpg) | ![Cutscene in the yard: the partner's character behind CJ and Ryder](docs/images/cutscene-yard.jpg) |
-| ![Cutscene at the party: the partner's character by the wall on the left](docs/images/cutscene-party.jpg) | ![Cutscene with Emmet: the partner's character next to CJ](docs/images/cutscene-gun.jpg) |
+<p align="center"><img src="docs/images/cutscenes.gif" alt="The partner in a green jacket next to CJ in three cutscenes"></p>
 
 ### A shared world
 
-Both players have the same pedestrians, people inside buildings, cars and police, the same time of day and the
-same weather. Pedestrians chat and swear the same way for both, and police roadblocks with their barriers are seen
-by both. When one player drives away, the pedestrians and cars near the other one move over to the other
-player's game instead of vanishing. Knocked-down lamp posts and signs, broken glass and crates, fire, gang
-territories, the building doors a mission opens and the doors of Pay 'n' Spray and mod shops look the same for
-both. Horseshoes, oysters, snapshots and tags count toward the shared world. New pedestrians and cars no longer
-appear right in front of the other player. Gang members from the two players' games fight each other, the police
-chase whoever is wanted, and SWAT officers slide down ropes from the helicopter for both. Police officers move
-the same way on both screens: they hold a pistol in both hands, crouch to shoot and sidestep around their target.
-The police helicopter's gun fires on both screens, and police cars no longer vanish for the partner when the host
-dies. Bodies and wrecks thrown by explosions lie in the same places for both.
-Pool balls, shooting range targets and other activity objects are seen by both.
-
-| The host's screen | The partner's screen |
-|---|---|
-| ![A Ballas member fights the partner, on the host's screen](docs/images/world-host.jpg) | ![The same fight on the partner's screen](docs/images/world-partner.jpg) |
+All players have the same pedestrians, people inside buildings, cars and police, the same time of day and the same
+weather. Pedestrians chat and swear the same way for everyone, and police roadblocks with their barriers are seen by
+all. When one player drives away, the pedestrians and cars near another player move over to that player's game
+instead of vanishing. Knocked-down lamp posts and signs, broken glass and crates, fire, gang territories, the building
+doors a mission opens and the doors of Pay 'n' Spray and mod shops look the same for everyone. Horseshoes, oysters,
+snapshots and tags count toward the shared world. New pedestrians and cars no longer appear right in front of another
+player. Gang members from different players' games fight each other, the police chase whoever is wanted, and SWAT
+officers slide down ropes from the helicopter for everyone. Police officers move the same way on every screen: they
+hold a pistol in both hands, crouch to shoot and sidestep around their target. The police helicopter's gun fires on
+every screen, and police cars no longer vanish for the partner when the host dies. Bodies and wrecks thrown by
+explosions lie in the same places for everyone. Pool balls, shooting range targets and other activity objects are
+seen by the other players.
 
 ### Cars
 
-Each player drives on their own or rides as a passenger with the other. A passenger can shoot from the window: the
+Each player drives on their own or rides as a passenger with another. A passenger can shoot from the window: the
 right mouse button leans out with the gun, the left one fires. A passenger fires the RPG and the heat-seeking
 launcher that way too, only without the lock-on. The driver also aims and fires anywhere while holding the right
-mouse button, on a motorbike as well. Both players in a car hear one radio: the driver changes the station, and
-the passenger hears the same song from the same point. Tuning and damage are visible to the other player.
-Plane landing gear and nozzles, tank and fire truck turrets, hydraulics, the horn, the police helicopter's
-searchlight, trailers, the tow truck and the airport tug all work. Explosions, rockets, grenades, tank shells,
-fire truck water, NPC drive-bys, trains and RC toys are seen by both players. Either player can leave a car in the
-garage at a safe house or take one out, and the host's world keeps them.
+mouse button, on a motorbike as well. Everyone in a car hears one radio: the driver changes the station, and the
+passengers hear the same song from the same point. Tuning and damage are visible to the other players. Plane landing
+gear and nozzles, tank and fire truck turrets, hydraulics, the horn, the police helicopter's searchlight, trailers,
+the tow truck and the airport tug all work. Explosions, rockets, grenades, tank shells, fire truck water, NPC
+drive-bys, trains and RC toys are seen by everyone. Any player can leave a car in the garage at a safe house or take
+one out, and the host's world keeps them.
 
-![The partner rides as a passenger in the host's car](docs/images/car.jpg)
+![The lowrider contest on the partner's screen: each player has a lowrider of their own](docs/images/lowrider.jpg)
 
 ### Your own progress
 
 Food and the gym, weapon skills, clothes, haircuts, tattoos and money are separate for each player. Driving,
-motorbike, cycling and flying skills are shared: both players have the better of the two. The stats in the menu are
-shared too. A side job or challenge completed by one player counts for both, reward included. The export list at the docks is shared: a car one player delivers is crossed out for both, and both get the money. What a player does at a diner, the gym, a barber's or a tattoo parlour, the other player sees as
-well, along with a tray of food, a cigarette, a phone at the ear, a parachute jump, a fighting style learned at the
-gym, crouching with its rolls, reloading and walking in through shop doors. If a player changes their character model, for example with a skin selector, the other player sees the new
-model too. The friend comes into the host's world as their own CJ, in the clothes and with the tattoos their CJ
-has in their own game. If the friend joined from the main menu, the look comes from their latest save. When the
-host saves the game, the friend's progress is saved on the host's side as well. The partner's school lessons and
-medals, side job levels, gym, unique stunt jumps and businesses stay with the partner after the host's world is
-loaded again.
+motorbike, cycling and flying skills are shared: everyone has the best of the players' skills. The stats in the menu
+are shared too. A side job or challenge completed by one player counts for everyone, reward included. The export list
+at the docks is shared: a car one player delivers is crossed out for everyone, and everyone gets the money. What a
+player does at a diner, the gym, a barber's or a tattoo parlour, the other players see as well, along with a tray of
+food, a cigarette, a phone at the ear, a parachute jump, a fighting style learned at the gym, crouching with its
+rolls, reloading and walking in through shop doors. If a player changes their character model, for example with a
+skin selector, the others see the new model too.
 
-| The host sees the partner | The partner sees the host |
-|---|---|
-| ![The partner in their own clothes on the host's screen](docs/images/look-host.jpg) | ![The host on the partner's screen](docs/images/look-partner.jpg) |
+The friend comes into the host's world as their own CJ, in the clothes and with the tattoos their CJ has in their own
+game. If the friend joined from the main menu, the look comes from their latest save. When the host saves the game,
+the friend's progress is saved on the host's side as well. The partner's school lessons and medals, side job levels,
+gym, unique stunt jumps and businesses stay with the partner after the host's world is loaded again. When the host
+loads a save, the partner's weapons become what they were at that save.
+
+![The partner in their own clothes boxes at the gym](docs/images/boxing.jpg)
 
 ### Friendly fire
 
 Before creating the game, the host can allow friendly fire with a checkbox in the F9 window. Then the players can
 hurt and kill each other with bullets, fists, explosions, fire and cars. Without the checkbox they cannot harm
-each other, and a stealth kill with a knife from behind does not work either. A player knocked down falls and gets up on both screens.
-Next to it is the "Shared life" checkbox: with it, either player's death fails the host's story mission. Without
-it, a host who dies gets up next to the partner a couple of seconds later and the mission goes on. It fails only when
-both die.
-
-| | |
-|---|---|
-| ![The host swings a baseball bat at the partner](docs/images/friendly-fire-1.jpg) | ![The partner is knocked down, and the host stands over them with the bat](docs/images/friendly-fire-2.jpg) |
+each other, and a stealth kill with a knife from behind does not work either. A player knocked down falls and gets up
+on every screen. Next to it is the "Shared life" checkbox: with it, any player's death fails the host's story mission.
+Without it, a host who dies gets up next to a partner a couple of seconds later and the mission goes on. It fails only
+when everyone dies.
 
 ### Russian and English
 
 The SA:COOP window, the chat and the hints come in Russian and English. The language switch is at the top of the
 F9 window, and each player picks their own: the host can play in Russian while the partner plays in English.
 
-| The host's screen | The partner's screen |
+### Animations
+
+The U key opens the animations window. It holds 250 animations: emotions, poses, actions and dances from the game,
+16 animations for two (handshakes, gang greetings, a hand on the shoulder, a deal, a gift, an argument, a kiss) and 88
+animations from other authors' packs, among them Fortnite dances, breakdance and parkour. The tabs hold the main
+animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. The chosen animation shows
+at once in the window on a copy of your CJ, and the other players see it on your character. Your partner accepts an
+animation for two with Y, and their CJ steps in front of yours. Poses, stances, dances and sitting last until you press
+Space or F. A short animation stops at any movement. Your own animations from .ifp files go into the `coop/anims`
+folder: another player sees them if they have the same file. The mod brings the pack animations along, and they load
+on their own and replace nothing in the game.
+
+<p align="center"><img src="docs/images/animations.gif" alt="The animations window with a copy of CJ, then CJ dances on Grove Street"></p>
+
+### Side jobs and activities together
+
+Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
+quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a
+race, a stadium event, the quarry, a valet shift or a shooting range round can be played together: within 20 seconds
+of its start press Y, and the other players get an invitation (Y: yes, N: no). Whoever accepts sees its markers,
+checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
+gets the same money at its end. The job's levels stay with the player who started it, and the reward for completing
+the job goes to everyone. Taxi fares, stolen goods, trucking runs and quarry jobs count together for the reward.
+
+In a joint race, a story race too, the second player races as well, with their own checkpoints and their own place on
+the screen. Whoever rides with a racer sees the racer's place. Pool for two is played for money: the loser gives the
+stake to the winner. Two players can be at one school at once: during a lesson the other player's car is not shown
+and does not get in the way.
+
+| Firefighters together | Pool for two, for money |
 |---|---|
-| ![The player list and the server's reply in Russian on the host's screen](docs/images/lang-host.jpg) | ![The same moment on the partner's screen, all in English](docs/images/lang-partner.jpg) |
+| <img src="docs/images/firefighters.gif" alt="The players' two fire trucks put out a burning car"> | <img src="docs/images/pool.gif" alt="The host and the partner play pool"> |
 
 ### Everything else
 
-Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
-quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a race, a stadium event, the quarry, a valet shift or
-a shooting range round can be played together: within 20 seconds of its start press Y, and the other players get an invitation (Y: yes, N: no). Whoever accepts sees its markers,
-checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
-gets the same money at its end. The job's levels stay with the player who started it, and the reward for
-completing the job goes to both. Taxi fares, stolen goods, trucking runs and quarry jobs count together for the
-reward. In a joint race, a story race too, the second player races as well, with their own
-checkpoints and their own place on the screen. Pool for two is played for money: the loser gives the stake to the
-winner. If the host reaches a mission's objective while the partner is still on the way, the mission waits for the
-partner up to 45 seconds. In Toreno's missions the partner gets a plane or a helicopter of their own when there is
-no seat for them with the host, and a jetpack of their own, and in Zero's missions a minigun of their own next
-to the host's turret or an RC toy of their own: one with a gun or, in "New Model Army", with a magnet. A partner far from Zero's shop gets the toy at its door. When the host is a gunner on a helicopter or a car, as in
-"The Da Nang Thang", the partner shoots beside them from the other side. Whoever rides with a racer sees the racer's place. There is text chat and voice chat, and the farther away the
-partner is, the quieter they sound. A waypoint one player sets on the map shows up on the other player's radar,
-and a house one player buys appears for both. Above the partner's head you see their health, armour, weapon and
-wanted stars, shown over their RC toy while they fly one. Turf wars near the host are the host's, and both players' kills of rival gang members provoke
-them. A partner more than 100 m from the host can start a war of their own, and the host sees in the chat which
-district it is for and how it ended. Cheats
-for the weather, traffic, pedestrians and game speed work for both players, while weapon, money and health cheats
-only work for the player who typed them. Theme cheats such as the beach party change the pedestrians for both,
-but only the player who typed the code gets the outfit and the katana.
-Two players can be at one school at once: during a lesson the other player's car is not shown and does not get in the way.
+There is text chat and voice chat, and the farther away the partner is, the quieter they sound. A waypoint one player
+sets on the map shows up on the other players' radar, and a house one player buys appears for everyone. Above the
+partner's head you see their health, armour, weapon and wanted stars, shown over their RC toy while they fly one.
+Turf wars near the host are the host's, and all players' kills of rival gang members provoke them. A partner more
+than 100 m from the host can start a war of their own, and the host sees in the chat which district it is for and how
+it ended. Cheats for the weather, traffic, pedestrians and game speed work for everyone, while weapon, money and
+health cheats only work for the player who typed them. Theme cheats such as the beach party change the pedestrians
+for everyone, but only the player who typed the code gets the outfit and the katana.
 
-The U key opens the animations window: emotions, poses, actions, dances and animations for two with your partner
-(handshakes, gang greetings, a hand on the shoulder, a deal, an argument). The tabs hold the main animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. The chosen animation shows at once in the
-window on a copy of your CJ, and the other player sees it on your character. Your partner accepts an animation for two
-with Y, and their CJ steps in front of yours. Poses, stances, dances and sitting last until you press Space or F. A
-short animation stops at any movement. Your own animations from .ifp files go
-into the `coop/anims` folder: the other player sees them if they have the same file. The Packs tab holds animations
-by other authors that the mod brings along: dances, tricks and gestures. They load on their own and replace nothing
-in the game.
-
-![Chat, voice and the player list on the partner's screen](docs/images/en/chat-voice.jpg)
+![The players' chat and the name tag over another player with their health and weapon](docs/images/chat.jpg)
 
 ## Installation
 
@@ -178,6 +189,10 @@ Rockstar Games Launcher, downgrade it to 1.0 US first, for example with GTA SA D
 
 The archive also contains a detailed player guide in Russian, `Инструкция.txt`.
 
+To update, unpack the new archive over the old files. Your settings and the partners' progress stay, and you don't
+need to run `install.bat` again. All players need to update: different versions of the mod do not connect to each
+other.
+
 ## How to play
 
 The host presses F9, opens the "Host a game" tab, picks a save and clicks "Start the server". If the host is
@@ -189,7 +204,9 @@ external IP address, so only send it to the people you play with.
 The friend opens the "Join a game" tab, pastes the code and clicks "Connect". After that, the host's world loads
 on the friend's side.
 
-![The SA:COOP window in the main menu](docs/images/en/menu.jpg)
+<p align="center"><img src="docs/images/menu.jpg" alt="The SA:COOP window in Russian: the Host a game tab with 4 players chosen" width="600"></p>
+
+The picture shows the window in Russian. EN at the top switches it to English.
 
 You can also start the story from the very beginning: the last item in the save list is "New game". The host
 plays the prologue alone, while the friend connects right away and waits. When CJ gets on the bike, the friend
@@ -227,6 +244,8 @@ The chat supports the `/help`, `/players`, `/tp` (go to your partner unless they
 with `/kick <nickname> [reason]` and, creating the game, turn `/tp` and `/tphere` off for partners.
 The `/anims` command opens the animations window, and `/anims` with a number plays that animation at once.
 
+<p align="center"><img src="docs/images/players.jpg" alt="The F2 window in Russian: the host and three partners with their numbers, money and buttons" width="600"></p>
+
 The chat, passenger, player list and voice keys can be changed in the F9 window, the "Keys" button. The microphone's
 mode is picked there too: while the key is held, a press turns it on and off, always on or off. The `[game]` section
 of `coop\coop.ini` can hide the partner's radar mark (`partner_blip = 0`) and the name tag over their head
@@ -242,27 +261,27 @@ section clears everything the mod draws: the chat, the names over the players an
 ## Limitations
 
 - The partner's girlfriend progress is not kept: it comes from the host's world. The income of the partner's
-  businesses lies in the shared world, and either player can pick it up, as with the host's.
+  businesses lies in the shared world, and any player can pick it up, as with the host's.
 - Story missions and Cesar's races run in the host's game: a mission does not begin without the host in the marker.
   With three or four players it begins once they all stand in the marker.
 - Pool and contests are for two. The others meanwhile do something of their own or watch.
-- During the host's story mission the partner cannot get into the host's trains. Outside missions either player can
-  get into a train the other player is not driving and drive it.
+- During the host's story mission the partner cannot get into the host's trains. Outside missions any player can
+  get into a train another player is not driving and drive it.
 - The partner gets story progress (new areas, gyms) by loading the host's world. This happens in the next
   mission's marker, or after 10 minutes without missions, and takes a couple of seconds. The partner keeps their
   position, weapons and progress.
 - The host keeps the partner's profile under the partner's nickname. With a different nickname, money and skills
   start over.
 - The Ammu-Nation clerk, the shooting range's shooters, the casino dealers and other people that shop and activity
-  scripts place are made by each game for its own player. The two players may see them looking different.
+  scripts place are made by each game for its own player. Different players may see them looking different.
 - Whatever gets knocked down or broken on the streets stays that way for a few minutes, then the map puts
   everything back, as in the normal game.
-- If both players are behind a "symmetric" NAT (common with mobile internet), the invite code cannot connect them
-  without a relay. Then you need `turn` or port 7788/UDP forwarded to the host's computer.
+- If the host and the partner are both behind a "symmetric" NAT (common with mobile internet), the invite code cannot
+  connect them without a relay. Then you need `turn` or port 7788/UDP forwarded to the host's computer.
 - Each player hears their own User Track Player. When the driver plays their own music, the passenger hears
   their own, or the radio is off for them if they have none.
 - Only `gta_sa.exe` version 1.0 US is supported. The players' builds may differ, but mods that change the story or
-  the saves are needed on both sides. If the partner's `data\script\main.scm` differs from the host's, the host's
+  the saves are needed by everyone. If the partner's `data\script\main.scm` differs from the host's, the host's
   world does not load for them, and the mod says so in the chat.
 - Mods installed through modloader work. Each player sees their own models, textures and effects. A car that a mod
   adds under a new ID is only visible to the player who has that mod.
