@@ -52,9 +52,12 @@ partner far from Zero's shop gets the toy at its door. When the host is a gunner
 Da Nang Thang" and "Reuniting the Families", the partner shoots beside them from the other side. If the host reaches a
 mission's objective while the partner is still on the way, the mission waits for the partner up to 45 seconds.
 
-| "Black Project": a jetpack for each player | The beach dance together, one shared score |
-|---|---|
-| <img src="docs/images/jetpack.gif" alt="The host and the partner fly up the shaft with jetpacks in Black Project"> | <img src="docs/images/dance.gif" alt="The host and the partner dance side by side on the beach"> |
+<p align="center">
+  <img src="docs/images/jetpack.gif" width="49%" alt="The host and the partner fly up the shaft with jetpacks in Black Project">
+  <img src="docs/images/rc-plane.gif" width="49%" alt="The partner's radio-controlled plane flies over a San Fierro street in a mission for Zero">
+  <img src="docs/images/lowrider.gif" width="49%" alt="The lowrider contest on the partner's screen: their lowrider hops, the host's lowrider is behind it">
+  <img src="docs/images/dance.gif" width="49%" alt="The host and the partner dance side by side on the beach">
+</p>
 
 ### Cutscenes
 
@@ -94,7 +97,10 @@ the tow truck and the airport tug all work. Explosions, rockets, grenades, tank 
 drive-bys, trains and RC toys are seen by everyone. Any player can leave a car in the garage at a safe house or take
 one out, and the host's world keeps them.
 
-![The lowrider contest on the partner's screen: each player has a lowrider of their own](docs/images/lowrider.jpg)
+<p align="center">
+  <img src="docs/images/drift.gif" width="49%" alt="A black sports car pulls away and drifts through a bend">
+  <img src="docs/images/drive-by.gif" width="49%" alt="CJ drives with the partner beside him, then guns fire from the car's windows on the move">
+</p>
 
 ### Your own progress
 
@@ -145,8 +151,8 @@ on their own and replace nothing in the game.
 
 ### Side jobs and activities together
 
-Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
-quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a
+Side jobs (taxi, paramedic, firefighter, vigilante, pimp, courier), races, schools, the shooting range, trucking and
+the quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a
 race, a stadium event, the quarry, a valet shift or a shooting range round can be played together: within 20 seconds
 of its start press Y, and the other players get an invitation (Y: yes, N: no). Whoever accepts sees its markers,
 checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
@@ -158,9 +164,20 @@ the screen. Whoever rides with a racer sees the racer's place. Pool for two is p
 stake to the winner. Two players can be at one school at once: during a lesson the other player's car is not shown
 and does not get in the way.
 
-| Firefighters together | Pool for two, for money |
-|---|---|
-| <img src="docs/images/firefighters.gif" alt="The players' two fire trucks put out a burning car"> | <img src="docs/images/pool.gif" alt="The host and the partner play pool"> |
+<p align="center">
+  <img src="docs/images/firefighters.gif" width="49%" alt="The players' two fire trucks put out a burning car">
+  <img src="docs/images/ambulance.gif" width="49%" alt="The partner's ambulance brings a patient to the hospital, a second ambulance stands nearby">
+  <img src="docs/images/courier.gif" width="49%" alt="The partner delivers packages on a BMX as a courier in Los Santos">
+  <img src="docs/images/pool.gif" width="49%" alt="The host and the partner play pool">
+</p>
+
+An activity can be turned into a contest. Within 20 seconds of its start press U, and the other players get a
+challenge (Y: yes, N: no). Whoever accepts first plays the same in their own game. While the contest is on, both
+results are shown at the top of the screen, and at the end each player learns who won. Contests work for basketball,
+pool, blackjack, roulette, the wheel of fortune, dancing in a club, the lowrider contest, the stadium events, races and
+triathlons.
+
+<p align="center"><img src="docs/images/club.gif" width="49%" alt="A dance contest: the host and the partner dance in a club, both scores at the top"></p>
 
 ### Everything else
 
