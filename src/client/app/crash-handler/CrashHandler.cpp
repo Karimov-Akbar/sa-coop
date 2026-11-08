@@ -201,7 +201,10 @@ DWORD WINAPI HangThread(void*) {
         }
         if (++still >= g_hangSeconds && !reported) {
             reported = true;
-            DumpThread(g_mainThreadId, "not responding");
+            // a minimized game waits in WinMain's loop and draws no frames: no hang, though it looked like one (#97)
+            uintptr_t ps = *(const uintptr_t*)0xC17054;  // RsGlobal.ps, its window first
+            HWND window = ps ? *(const HWND*)ps : nullptr;
+            DumpThread(g_mainThreadId, window && IsIconic(window) ? "not responding (its window minimized)" : "not responding");
         }
     }
 }

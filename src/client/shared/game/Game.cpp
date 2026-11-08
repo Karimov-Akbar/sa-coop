@@ -1,5 +1,6 @@
 #include "shared/game/Game.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "common/lib/log/Log.h"
@@ -74,6 +75,24 @@ bool LoadModelNow(int model) {
     LoadAllRequestedModels(false);
     return IsModelLoaded(model);
 }
+// A copy's model. A plain request does not last here: each frame CStreaming::StreamVehiclesAndPeds lets go of the police, FBI
+// and army models no wanted level of ours calls for, and that removes a model still only asked for (SetModelIsDeletable), a
+// request's PRIORITY flag does not save it. In the other game they stand on a mission's request. The soldiers of "Robbing
+// Uncle Sam" never came, their Patriots drove empty (found 04.11). KEEP_IN_MEMORY is what the game streams its own
+// cars and people with: it survives that and PurgeRequestList, and once loaded the model is an ordinary one, nothing to let go.
+void RequestCopyModel(int model, bool mission) { RequestModel(model, mission ? 0x8 | 0x10 /* first */ : 0x8); }
+
+// A player going through a door: for the ~2 s of the fade the game parks up to 32 things around the door in area 13
+// (CEntryExitManager::SetAreaCodeForVisibleObjects) and puts them back after it. Area 13 is a real interior too, so read
+// plainly an empty car by the door stood where no player is: it left the network, the other game took its copy over, and
+// after the fade both games had two (a car at Binco, found 04.11).
+int8_t TrueArea(CEntity* e) {
+    auto* list = (CEntity**)0x96A738;  // ms_visibleEntityList
+    for (int i = 0, n = std::min(Ref<int32_t>(0x96A7DC) /* ms_numVisibleEntities */, 32); i < n; ++i)
+        if (list[i] == e) return (int8_t)Ref<int32_t>(0x96A734);  // ms_oldAreaCode
+    return e->AreaCode();
+}
+
 void MarkModelNotNeeded(int model) {
     // CStreaming::SetModelIsDeletable
     if (IsValidModel(model)) Call<0x409C10>(model);

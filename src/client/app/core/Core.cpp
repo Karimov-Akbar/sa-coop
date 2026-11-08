@@ -14,9 +14,11 @@
 #include "common/lib/util/Util.h"
 #include "entities/player/Players.h"
 #include "entities/session/Flow.h"
+#include "features/anims/Emotes.h"
 #include "features/story/contest/Contest.h"
 #include "features/story/missions/Missions.h"
 #include "features/teleport/Teleport.h"
+#include "pages/anims-menu/AnimsMenu.h"
 #include "pages/connect-menu/ConnectMenu.h"
 #include "pages/players-menu/PlayersMenu.h"
 #include "shared/api/net-session/Session.h"
@@ -116,6 +118,7 @@ void __fastcall HookMenuProcess(void* self, void* edx) {
 std::string g_screenshotPath, g_screenshotOverlayPath;
 int g_screenshotScale = 2;
 uint64_t g_screenshotAt = 0;
+bool g_interfaceHidden = false;  // F7
 
 void RenderOverlay() {
     auto& g = ui::Gfx();
@@ -125,13 +128,18 @@ void RenderOverlay() {
     }
     if (!g.Begin()) return;
     // a recording takes the game's picture alone: the modules still run (the cutscene partner is placed from here)
-    g.SetHidden(Cfg().cleanScreen);
+    bool clean = Cfg().cleanScreen;
+    g.SetHidden(clean || g_interfaceHidden);
     ui::In().UpdateMouse(g.Width(), g.Height());
     if (IsPlayerReady())
         for (auto* m : Modules()) m->OnRender();
+    g.SetHidden(clean || (g_interfaceHidden && !ui::TheChat().IsOpen()));  // typed into after T: seen
     ui::TheChat().Render();
+    g.SetHidden(clean || g_interfaceHidden);
     ui::RenderOverlay();  // after the chat: the contest's board on top hides the ends of its longest lines
+    g.SetHidden(clean);   // the windows a key opens are drawn under F7 too
     ui::RenderPlayersMenu();
+    ui::RenderAnimsMenu();
     ui::RenderConnectMenu();
     g.End();
     ui::In().EndFrame();
@@ -197,6 +205,23 @@ void __cdecl HookShutDownForRestart() {
     g_origShutDownForRestart();
 }
 
+// F7 (03.11): the game's parts of the interface outside CHud::Draw (Players' hook hides its own), the zone's name and
+// the radio station's, go the way its scripts hide them
+VoidFn g_origHudAfterFade = nullptr;
+void __cdecl HookHudAfterFade() {
+    bool& noZone = game::Ref<bool>(0xBAA3F8);  // CHud::bScriptDontDisplayAreaName
+    bool was = noZone;
+    if (g_interfaceHidden) noZone = true;
+    g_origHudAfterFade();
+    noZone = was;
+}
+
+using RadioNameFn = void(__fastcall*)(void* self, void* edx);
+RadioNameFn g_origRadioName = nullptr;
+void __fastcall HookRadioName(void* self, void* edx) {  // only draws (a name set meanwhile shows when F7 is let go)
+    if (!g_interfaceHidden) g_origRadioName(self, edx);
+}
+
 void __cdecl HookInitialiseWhenRestarting() {
     g_restarting = false;  // the new world's scripts run inside (they create the player for a new game)
     ++g_initDepth;
@@ -221,6 +246,17 @@ void HandleChatSubmit(const std::string& text) {
         }
         if (cmd == "debug") {
             Cfg().debugOverlay = !Cfg().debugOverlay;
+            return;
+        }
+        if (cmd == "anims") {  // the U window, or the animation of that number
+            if (args.empty()) {
+                if (!ui::IsAnimsMenuVisible()) ui::ToggleAnimsMenu();
+                return;
+            }
+            const anims::Emote* e = anims::Find((uint16_t)std::clamp(atoi(args[0].c_str()), 0, 65535));
+            std::string why;
+            if (!e) ui::TheChat().AddError(Format(TR("Анимации с номером %s нет.", "There is no animation number %s."), args[0].c_str()));
+            else if (!anims::Play(*e, why)) ui::TheChat().AddError(why);
             return;
         }
         for (auto* m : Modules())
@@ -317,6 +353,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "friendly_fire = 0\r\n"
         "; Для хоста: поставьте 0, чтобы напарники не могли перемещаться командами /tp и /tphere. Это галочка в окне F9.\r\n"
         "partner_teleport = 1\r\n"
+        "; Для хоста: поставьте 1, чтобы гибель напарника проваливала сюжетную миссию хоста. Это галочка в окне F9.\r\n"
+        "shared_life = 0\r\n"
         "\r\n"
         "[game]\r\n"
         "; Поставьте 1, чтобы играть в окне.\r\n"
@@ -326,6 +364,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "; Меню паузы не останавливает мир, чтобы напарник мог играть дальше.\r\n"
         "no_pause_menu = 1\r\n"
         "skip_intro = 1\r\n"
+        "; Поставьте 0, чтобы радар в машине не рисовал путь до метки и цели миссии (например, с модом на радар).\r\n"
+        "gps = 1\r\n"
         "\r\n"
         "[voice]\r\n"
         "enabled = 1\r\n"
@@ -333,6 +373,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "push_to_talk_key = 66\r\n"
         "; Поставьте 1, чтобы микрофон работал всегда, без клавиши.\r\n"
         "always_on = 0\r\n"
+        "; Поставьте 1, чтобы нажатие клавиши включало микрофон, а следующее выключало.\r\n"
+        "toggle = 0\r\n"
         "; Громкость напарника и усиление микрофона. Значение 1.0 оставляет их без изменений.\r\n"
         "volume = 1.0\r\n"
         "mic_gain = 1.0\r\n"
@@ -340,7 +382,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "proximity = 1\r\n"
         "\r\n"
         "[keys]\r\n"
-        "; Коды клавиш Windows: чат (84 = T), сесть пассажиром (71 = G), список игроков (113 = F2)\r\n"
+        "; Коды клавиш Windows: чат (84 = T), сесть пассажиром (71 = G), список игроков (113 = F2). Их проще\r\n"
+        "; поменять в окне F9, кнопка «Клавиши».\r\n"
         "chat = 84\r\n"
         "enter_as_passenger = 71\r\n"
         "player_list = 113\r\n"
@@ -383,6 +426,7 @@ void RequestScreenshot(const std::string& bmpPath, bool withOverlay, int scale, 
 
 void ShowConnectMenu(bool show) { ui::SetConnectMenuVisible(show); }
 bool ConnectMenuVisible() { return ui::IsConnectMenuVisible(); }
+bool InterfaceHidden() { return g_interfaceHidden; }
 
 // The game's cheat codes with a T after their first letter (the letter codes and the phrases of the same hashes, all
 // checked against CCheat::m_aCheatHashKeys): the chat key T in the middle of one is the code's (issue #69)
@@ -397,12 +441,22 @@ const char* const kCheatsWithT[] = {
     "STATEOFEMERGENCY", "STAYINANDWATCHTV", "STICKLIKEGLUE", "STINGLIKEABEE", "STOPPICKINGONME", "SURROUNDEDBYNUTTERS",
     "TIMEJUSTFLIESBY", "TIMETOKICKASS", "TOODAMNHOT", "TURNDOWNTHEHEAT", "TURNUPTHEHEAT", "VPJTQWV", "WANRLTW",
     "WHERESTHEFUNERAL", "WHOATEALLTHEPIES", "YLTEICZ"};
+// ... and the ones with a U anywhere (the U window): the same check against the hashes, the letter codes and the phrases
+const char* const kCheatsWithU[] = {
+    "AEDUWNV", "AFPHULTL", "AUIFRVQS", "BAGUVIX", "BGLUAWML", "BIFBUZZ", "BLUESUEDESHOES", "BUBBLECARS", "BUFFMEUP",
+    "CELEBRITYSTATUS", "COXEFGU", "CWJXUOC", "DULLDULLDAY", "FLYINGTOSTUNT", "FOURWHEELFUN", "FULLCLIP", "GOODBYECRUELWORLD",
+    "GUSNHDE", "IAMNEVERHUNGRY", "IOJUFZN", "ITSALLBULL", "JCNRUAD", "JUMPJET", "JUSTTRYANDSTOPME", "LETSGOBASEJUMPING",
+    "LOVECONQUERSALL", "MUNASEF", "NATURALTALENT", "NOONECANHURTME", "NOONECANSTOPUS", "NOTFORPUBLICROADS", "NUTTERSTOYS",
+    "OHDUDE", "OUIQDMW", "ROUGHNEIGHBOURHOOD", "RZHSUEW", "SCOTTISHSUMMER", "SPEEDITUP", "STICKLIKEGLUE",
+    "SURROUNDEDBYNUTTERS", "THUGSARMOURY", "TIMEJUSTFLIESBY", "TRUEGRIME", "TURNDOWNTHEHEAT", "TURNUPTHEHEAT", "UBHYZHQ",
+    "URKQSRK", "UZUMYMW", "WHERESTHEFUNERAL", "YSOHNUL"};
 uint64_t g_lastLetterMs = 0;
 
 // The key goes on a code being typed: the game's last keys (CCheat::m_CheatString, newest first) and this one begin one
 // of the codes. Only right after another letter (one letter before it only within 0.4 s: S then T is also walking back
 // and the chat), so a T long after is the chat again.
-bool TypingCheat(int vk) {
+template <size_t N>
+bool TypingCheat(int vk, const char* const (&codes)[N]) {
     if (vk < 'A' || vk > 'Z' || NowMs() - g_lastLetterMs > 1500) return false;
     const char* typed = (const char*)0x969110;
     size_t n = strnlen(typed, 29);
@@ -410,17 +464,27 @@ bool TypingCheat(int vk) {
     for (size_t k = n; k >= 1; --k) {  // the longest run of the last keys first
         for (size_t i = 0; i < k; ++i) tail[i] = (char)toupper((unsigned char)typed[k - 1 - i]);
         tail[k] = (char)vk;
-        for (const char* code : kCheatsWithT)
+        for (const char* code : codes)
             if (!strncmp(code, tail, k + 1)) return k >= 2 || NowMs() - g_lastLetterMs < 400;
     }
     return false;
 }
 
+// a code beginning with U and then this letter (UZUMYMW): the U window it opened a moment ago gives the letter to the game
+bool StartsCodeWithU(int vk) {
+    for (const char* code : kCheatsWithU)
+        if (code[0] == 'U' && code[1] == vk) return true;
+    return false;
+}
+
 bool OnKeyDown(int vk, bool repeat) {
     auto& cfg = Cfg();
-    bool typingCheat = !repeat && TypingCheat(vk);
+    // before this key counts as the last letter (the codes' timing)
+    bool typingU = !repeat && TypingCheat(vk, kCheatsWithU);
+    bool typingCheat = vk == 'U' ? typingU : !repeat && TypingCheat(vk, kCheatsWithT);
     if (!repeat && vk >= 'A' && vk <= 'Z') g_lastLetterMs = NowMs();
     if (ui::IsConnectMenuVisible()) {
+        if (!repeat && ui::ConnectMenuKey(vk)) return true;  // its keys page waits for a key
         if (vk == VK_ESCAPE || vk == VK_F9) {
             if (!repeat) ui::SetConnectMenuVisible(false);
             return true;
@@ -431,10 +495,22 @@ bool OnKeyDown(int vk, bool repeat) {
         if ((vk == VK_ESCAPE || vk == cfg.playerListKey) && !repeat) ui::SetPlayersMenuVisible(false);
         return true;  // its amount box takes the keys while it is open
     }
+    if (ui::IsAnimsMenuVisible()) {
+        // a cheat code typed on after its U (UZUMYMW, or BAGUVIX's U in the same frame as its G): closed, the letter goes on
+        if (!repeat && vk >= 'A' && vk <= 'Z' && NowMs() - ui::AnimsMenuOpenedMs() < 600 &&
+            (StartsCodeWithU(vk) || typingU)) {
+            ui::SetAnimsMenuVisible(false);
+            return false;
+        }
+        if (!repeat && (vk == 'Y' || vk == 'N') && anims::Key(vk == 'Y')) return true;  // the other player's call
+        if ((vk == VK_ESCAPE || vk == 'U') && !repeat) ui::SetAnimsMenuVisible(false);
+        return true;  // its list takes the keys while it is open
+    }
     if (ui::TheChat().IsOpen()) return true;
     if (repeat) return false;
     if (vk == VK_ESCAPE && CutsceneSkipDecline()) return true;  // "watch on", not the pause menu
-    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && (contest::Key(vk) || teleport::Key(vk == 'Y') || SideCallKey(vk == 'Y')))
+    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() &&
+        (contest::Key(vk) || teleport::Key(vk == 'Y') || anims::Key(vk == 'Y') || SideCallKey(vk == 'Y')))
         return true;  // a call, a request
     if (vk == 'U' && !game::MenuActive() && !typingCheat && contest::Key(vk)) return true;  // a contest's challenge
     if (vk == VK_F9) {
@@ -447,6 +523,10 @@ bool OnKeyDown(int vk, bool repeat) {
         return true;
     }
     bool inMenu = game::MenuActive();
+    if (vk == 'U' && !inMenu && IsPlayerReady() && !typingCheat) {
+        ui::ToggleAnimsMenu();
+        return false;  // U reaches the game too: a cheat code beginning with it goes on (the window gives way, above)
+    }
     if (vk == cfg.chatKey && !inMenu && (IsPlayerReady() || Net().Online()) && !typingCheat) {
         ui::TheChat().Open();
         MSG m;  // the key's own letter, queued already by TranslateMessage ("t", or "е" in a Russian layout)
@@ -460,6 +540,11 @@ bool OnKeyDown(int vk, bool repeat) {
     if (vk == cfg.passengerKey && !inMenu && IsPlayerReady()) {
         Players::Instance().TryEnterAsPassenger();
         return false;  // G still reaches the game (gang recruiting)
+    }
+    if (vk == VK_F7 && IsPlayerReady()) {  // last: a key of the F9 window set to F7 is its own
+        g_interfaceHidden = !g_interfaceHidden;
+        LOGI("F7: the interface %s", g_interfaceHidden ? "hidden" : "shown");
+        return true;
     }
     return false;
 }
@@ -642,6 +727,8 @@ void Init(void* hModule) {
     mem::RedirectCallFn(0x53E86C, &HookDebugTextMenu, &g_origDebugTextMenu);  // FrontendIdle -> DebugDisplayTextBuffer
     mem::RedirectCallFn(0x53EBF5, &HookEndUpdateIngame, &g_origEndUpdateIngame);  // Idle -> RwCameraEndUpdate
     mem::RedirectCallFn(0x53E87D, &HookEndUpdateMenu, &g_origEndUpdateMenu);      // FrontendIdle -> RwCameraEndUpdate
+    mem::HookFn(0x58D490, &HookHudAfterFade, &g_origHudAfterFade, "CHud::DrawAfterFade");
+    mem::RedirectCallFn(0x53E4FA, &HookRadioName, &g_origRadioName);  // Render2dStuff -> DisplayRadioStationName
     mem::HookFn(0x6190A0, &HookGenerateGameFilename, &g_origGenerateGameFilename, "C_PcSave::GenerateGameFilename");
     mem::HookFn(0x53C550, &HookShutDownForRestart, &g_origShutDownForRestart, "CGame::ShutDownForRestart");
     mem::HookFn(0x53C680, &HookInitialiseWhenRestarting, &g_origInitWhenRestarting, "CGame::InitialiseWhenRestarting");

@@ -120,7 +120,7 @@ CPed* DriverOf(CEntity* e) { return e && e->IsVehicle() ? ((CVehicle*)e)->Driver
 
 bool IsLocalPlayerEntity(CEntity* e) {
     CPlayerPed* me = FindPlayerPed(0);
-    return e && me && (e == me || DriverOf(e) == me);
+    return e && me && (e == me || DriverOf(e) == me || e == (CEntity*)PlayerInfos()[0].remoteVehicle);  // its toy too
 }
 
 bool IsRemotePlayerEntity(CEntity* e) {
@@ -299,7 +299,7 @@ void __fastcall HookKillPedWithCar(CPed* ped, void* edx, CVehicle* car, float im
                 }
                 LOGI("Rammed ped %04X of player %d (impulse %.0f, %s)", np->netId, np->owner, impulse, byUs ? "our player" : "our car");
                 // ...and it falls here at once, as its owner's does there: it stood like a stone in the car's way, the car
-                // stopped against it, and it fell only when its owner's state came (Duke Nukem, 27.10). The hit is the
+                // stopped against it, and it fell only when its owner's state came (27.10). The hit is the
                 // game's own (its collision proof off for it), its harm stays the owner's: health high for the hit,
                 // then back, no crime of it here (KeepWanted)
                 int h = GetPedRef(ped);
@@ -332,13 +332,28 @@ bool __fastcall HookTestForStealthKill(void* intel, void* edx, CPed* target, boo
 using InflictDamageFn = void(__fastcall*)(CVehicle*, void*, CEntity*, int, float, CVector);
 InflictDamageFn g_origInflictDamage = nullptr;
 
+bool CarriesOtherPlayer(CVehicle* v) {
+    if (v->Driver() && Players::Instance().FindByPed(v->Driver())) return true;
+    for (int i = 0; i < v->MaxPassengers() && i < 8; ++i)
+        if (CPed* p = v->Passengers()[i]; p && Players::Instance().FindByPed(p)) return true;
+    if (NetVehicle* nv = Vehicles::Instance().Find(v))  // or it is the toy the other player drives (RcToys)
+        for (auto& [id, rp] : Players::Instance().All())
+            if (rp.toyNetId && rp.toyNetId == nv->netId) return true;
+    return false;
+}
+
 // CVehicle::InflictDamage(damager, weapon, damage, position): bullets, explosions and fire on vehicles
 void __fastcall HookInflictDamage(CVehicle* v, void* edx, CEntity* damager, int weapon, float damage, CVector pos) {
     if (Net().Online() && v && core::IsPlayerReady()) {
         if (!IsCollision(weapon) && IsRemotePlayerEntity(damager)) return;
         if (cam::WideScreenOn() && FromOtherSide(damager)) return;
         if (NetVehicle* nv = Vehicles::Instance().Find(v); nv && Vehicles::Instance().IsMirror(*nv)) {
-            if (!IsCollision(weapon) && IsLocalPlayerEntity(damager))
+            // Without friendly fire our shots spare a vehicle the other player sits in: in "Just Business" the partner's
+            // misses at the Russians hit Smoke's bike with the host on it, and its bar ran out about twice as fast (30.10)
+            // A toy's gun (the RC Baron's, the RC Goblin's: CWeapon::FireOneInstantHitRound) hits with no damager and the
+            // micro SMG's id: with our toy out, that is ours (RcToys, Zero's missions for two)
+            bool toyRound = !damager && weapon == 28 && PlayerInfos()[0].remoteVehicle;
+            if (!IsCollision(weapon) && (IsLocalPlayerEntity(damager) || toyRound) && (Net().FriendlyFire() || !CarriesOtherPlayer(v)))
                 SendDamage(TARGET_VEHICLE, nv->owner, nv->netId, weapon, damage, 0, 0, pos);
             return;
         }
@@ -442,6 +457,8 @@ void HandleDamage(uint8_t from, Reader& r) {
     } else if (kind == TARGET_VEHICLE) {
         NetVehicle* nv = Vehicles::Instance().Find(netId);
         if (nv && !Vehicles::Instance().IsMirror(*nv) && IsVehicleValid(nv->veh)) {
+            LOGD("Our vehicle %04X hit by player %d (weapon %d, %.0f damage, health %.0f)", nv->netId, from, weapon, damage,
+                 nv->veh->Health());
             KeepWanted keep;
             AsPlayersHit player(nv->veh);
             g_origInflictDamage(nv->veh, nullptr, attacker, weapon, damage, CVector{p.x, p.y, p.z});
@@ -469,10 +486,67 @@ void HandleDamage(uint8_t from, Reader& r) {
 // when my partner runs people over"). Its own game charges it; here those reports go nowhere.
 bool ByCopy(CEntity* e) { return Net().Online() && IsRemotePlayerEntity(e); }
 
+bool OtherPlayerIn(CVehicle* v) {
+    if (v->Driver() && Players::Instance().FindByPed(v->Driver())) return true;
+    for (int i = 0; i < 8; ++i)
+        if (v->Passengers()[i] && Players::Instance().FindByPed(v->Passengers()[i])) return true;
+    return false;
+}
+
 using ReportCrimeFn = void(__cdecl*)(int, CEntity*, CPed*);
 ReportCrimeFn g_origReportCrime = nullptr;
 void __cdecl HookReportCrime(int type, CEntity* victim, CPed* by) {  // CCrime::ReportCrime
-    if (!ByCopy(by)) g_origReportCrime(type, victim, by);
+    if (ByCopy(by)) return;
+    // A car's theft is reported on FindPlayerPed(-1) whoever got in (CTaskSimpleCarSetPedInAsDriver and AsPassenger, 0x64BBBA,
+    // 0x64B697, m_pVehicle set before it): the partner's copy taking a car under a cop's nose gave the host the star, its
+    // own game charges it (#92). And getting in with the other player is no theft.
+    if (type == 6 /* CRIME_CAR_STEAL */ && Net().Online() && victim) {
+        CPlayerPed* me = FindPlayerPed(0);
+        if (!me || me->Vehicle() != victim || OtherPlayerIn((CVehicle*)victim)) return;
+    }
+    // Our own crime before the other game's police: their copies here are civilians (no police tasks run on them), and
+    // CWanted::WorkOutPolicePresence saw no police: a car stolen under a cop's nose gave our player no star (#92, 30.10).
+    // For the report they are cops.
+    std::vector<std::pair<CPed*, int32_t>> cops;  // and the type each copy had
+    if (CPoolHeader* pool = Net().Online() && by && by == FindPlayerPed(0) ? PedPool() : nullptr)
+        for (int i = 0; i < pool->size; ++i) {
+            auto* p = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
+            if (pool->byteMap[i] < 0 || p->PedType() == PED_TYPE_COP) continue;
+            if (NetPed* np = Peds::Instance().Find(p); np && np->owner != Net().MyId() && np->pedType == PED_TYPE_COP)
+                cops.push_back({p, p->PedType()}), p->PedType() = PED_TYPE_COP;
+        }
+    g_origReportCrime(type, victim, by);
+    for (auto& [p, was] : cops) p->PedType() = was;
+}
+
+// Ramming a police car or bike gives a star in CBike and CAutomobile::VehicleDamage (0x6B9011, 0x6A79C7), past their test
+// for collision proof: the other game's police are copies here, they have it, and the biker our car knocked off cost nothing
+// (found 04.11). The same test, for a copy with its police driver. A mission that gives no stars gives none here.
+void RammedPoliceCopy(CVehicle* v) {
+    if (Field<float>(v, 0xD8) <= 25.0f) return;  // m_fDamageIntensity
+    NetVehicle* nv = Vehicles::Instance().Find(v);
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!nv || !Vehicles::Instance().IsMirror(*nv) || !me || !me->InVehicle() || v->Status() == 5 /* STATUS_WRECKED */) return;
+    CVehicle* mine = me->Vehicle();
+    NetPed* driver = v->Driver() ? Peds::Instance().Find(v->Driver()) : nullptr;
+    if (!mine || mine->Driver() != me || !driver || driver->pedType != PED_TYPE_COP || Field<CEntity*>(v, 0xDC) != mine) return;  // m_pDamageEntity
+    float speed = mine->MoveSpeed().Length();
+    void* wanted = Call<0x56E230, void*>(-1);  // FindPlayerWanted
+    if (speed < v->MoveSpeed().Length() || speed <= 0.1f || !wanted || Field<float>(wanted, 0x14) <= 0.0f) return;  // m_Multiplier
+    if (!CallMethod<0x6D2370, bool>(v)) return;  // CVehicle::IsLawEnforcementVehicle: a copy has no bIsLawEnforcer of its own
+    CallMethod<0x609F30>(me, 1);  // CPlayerPed::SetWantedLevelNoDrop
+    LOGI("Rammed the other game's police vehicle (model %d): a star", (int)v->ModelIndex());
+}
+
+using VehicleDamageFn = void(__fastcall*)(CVehicle*, void*, float, int, CEntity*, CVector*, CVector*, int);
+VehicleDamageFn g_origBikeDamage = nullptr, g_origCarDamage = nullptr;
+void __fastcall HookBikeDamage(CVehicle* v, void* edx, float force, int part, CEntity* by, CVector* at, CVector* dir, int weapon) {
+    if (force == 0.0f && Net().Online()) RammedPoliceCopy(v);  // 0: the collision's own values
+    g_origBikeDamage(v, edx, force, part, by, at, dir, weapon);
+}
+void __fastcall HookCarDamage(CVehicle* v, void* edx, float force, int part, CEntity* by, CVector* at, CVector* dir, int weapon) {
+    if (force == 0.0f && Net().Online()) RammedPoliceCopy(v);
+    g_origCarDamage(v, edx, force, part, by, at, dir, weapon);
 }
 
 using ReportEventFn = void(__fastcall*)(void*, void*, CPed*);
@@ -509,6 +583,8 @@ public:
         mem::HookFn(0x601E00, &HookTestForStealthKill, &g_origStealthTest, "CPedIntelligence::TestForStealthKill");
         mem::HookFn(0x4B9340, &HookRegisterKill, &g_origRegisterKill, "CEventHandler::RegisterKill");
         mem::HookFn(0x532010, &HookReportCrime, &g_origReportCrime, "CCrime::ReportCrime");
+        mem::HookFn(0x6B8EC0, &HookBikeDamage, &g_origBikeDamage, "CBike::VehicleDamage");
+        mem::HookFn(0x6A7650, &HookCarDamage, &g_origCarDamage, "CAutomobile::VehicleDamage");
         mem::HookFn(0x4B27D0, &HookHitAndRunReport, &g_origHitAndRunReport, "CEventVehicleHitAndRun::ReportCriminalEvent");
         mem::HookFn(0x4B3440, &HookDamageReport, &g_origDamageReport, "CEventDamage::ReportCriminalEvent");
         mem::HookFn(0x4B50B0, &HookVehDamageReport, &g_origVehDamageReport, "CEventVehicleDamage::ReportCriminalEvent");

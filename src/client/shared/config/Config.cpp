@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
+
+#include "common/api/protocol/Protocol.h"
 #include "common/config/version/Version.h"
 #include "common/lib/ini/Ini.h"
 #include "common/lib/util/Util.h"
@@ -45,6 +48,8 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     loadSlot = ini.GetInt("connect", "load_slot", 0);
     friendlyFire = ini.GetBool("connect", "friendly_fire", friendlyFire);
     partnerTeleport = ini.GetBool("connect", "partner_teleport", partnerTeleport);
+    sharedLife = ini.GetBool("connect", "shared_life", sharedLife);
+    maxPlayers = std::clamp(ini.GetInt("connect", "max_players", maxPlayers), 2, proto::kMaxPlayers);
 
     windowed = ini.GetBool("game", "windowed", windowed);
     windowedStrict = ini.GetBool("game", "windowed_strict", windowedStrict);
@@ -69,6 +74,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     voiceEnabled = ini.GetBool("voice", "enabled", voiceEnabled);
     voiceKey = ini.GetInt("voice", "push_to_talk_key", voiceKey);
     voiceAlwaysOn = ini.GetBool("voice", "always_on", voiceAlwaysOn);
+    voiceToggle = ini.GetBool("voice", "toggle", voiceToggle);
     voiceVolume = ini.GetFloat("voice", "volume", voiceVolume);
     micGain = ini.GetFloat("voice", "mic_gain", micGain);
     voiceProximity = ini.GetBool("voice", "proximity", voiceProximity);

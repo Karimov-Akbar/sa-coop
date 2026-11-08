@@ -28,7 +28,7 @@ const std::string& LastError();
 void Host(int slot, uint16_t port, const std::string& password);  // slot 0 = current game (in-game hosting)
 void Join(const std::string& host, uint16_t port, const std::string& password);
 void Leave();
-void SaveConnectSettings();  // the menu's choices (nickname, mode, address, language, friendly fire) to coop.ini
+void SaveConnectSettings();  // the menu's choices (nickname, mode, address, language, the host's options, keys) to coop.ini
 
 std::vector<SaveSlotInfo> ListSaveSlots();
 void Update();             // per frame

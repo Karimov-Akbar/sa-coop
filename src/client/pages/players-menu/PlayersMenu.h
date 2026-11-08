@@ -4,8 +4,8 @@
 
 namespace coop::ui {
 
-// The F2 window: the players with their role, money and ping; another player's row gives that player money of ours (the
-// game's $ sign). It takes the mouse and the keys while open, as F9 does.
+// The F2 window: the players with their role, money and ping; another player's row gives that player a weapon of ours (the
+// pistol) or money (the game's $ sign). It takes the mouse and the keys while open, as F9 does.
 void SetPlayersMenuVisible(bool visible);
 bool IsPlayersMenuVisible();
 void TogglePlayersMenu();  // F2: opened online and in the game only

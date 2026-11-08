@@ -163,6 +163,8 @@ bool StartServerProcess(const std::wstring& worldPath, bool newGame) {
     if (newGame) cmd += L" --new-game";
     cmd += cfg.friendlyFire ? L" --friendly-fire 1" : L" --friendly-fire 0";  // the checkbox wins over server.ini
     cmd += cfg.partnerTeleport ? L" --partner-teleport 1" : L" --partner-teleport 0";
+    cmd += cfg.sharedLife ? L" --shared-life 1" : L" --shared-life 0";
+    cmd += L" --max " + std::to_wstring(cfg.maxPlayers);
 
     if (!g_serverJob) {
         g_serverJob = CreateJobObjectW(nullptr, nullptr);
@@ -265,6 +267,18 @@ void SaveConnectSettings() {
     ini.Set("connect", "password", cfg.password);
     ini.SetInt("connect", "friendly_fire", cfg.friendlyFire);
     ini.SetInt("connect", "partner_teleport", cfg.partnerTeleport);
+    ini.SetInt("connect", "shared_life", cfg.sharedLife);
+    ini.SetInt("connect", "max_players", cfg.maxPlayers);
+    ini.SetInt("keys", "chat", cfg.chatKey);  // the keys page
+    ini.SetInt("keys", "enter_as_passenger", cfg.passengerKey);
+    ini.SetInt("keys", "player_list", cfg.playerListKey);
+    ini.SetInt("voice", "push_to_talk_key", cfg.voiceKey);
+    ini.SetInt("voice", "enabled", cfg.voiceEnabled);
+    ini.SetInt("voice", "always_on", cfg.voiceAlwaysOn);
+    ini.SetInt("voice", "toggle", cfg.voiceToggle);
+    // the radar's route switch for those whose coop.ini was made before it had one (a player looked for it, 07.11); only
+    // when missing: the file's value is read at the start, an edit made since would be undone
+    if (ini.Get("game", "gps").empty()) ini.SetInt("game", "gps", cfg.gps);
     ini.Save(cfg.iniPath);
 }
 
@@ -471,6 +485,10 @@ int WantedLevel() {
 
 // Casino tables, the barber's chair, a meal, the gym's machines, basketball and the dance raise no mission flag: the
 // world reloaded under them. The player's own control and its plain on-foot task (type 0) say it does nothing of that.
+// Between basketball's throws its task is that plain one, and the world loaded in the middle of a contest: the ball and
+// the challenge were gone (01.11). A contest's activity, or a contest asked or on, holds it too. So does a game of pool
+// for two: between the shots the second player's control can be back, and after ten minutes of waiting the world loaded
+// under it (05.11). And the other player's side job we help in: no mission flag here either.
 // What keeps the host's world from loading now, or null. Stars wait (the host's world wipes the stars of a chase) unless
 // anyStars: the forbidden territories of an old world give 4 that never fade.
 const char* ReloadBlocker(bool anyStars) {
@@ -481,6 +499,8 @@ const char* ReloadBlocker(bool anyStars) {
     if (game::Ref<uint8_t>(0xB5F851)) return "a cutscene";
     if (core::IsOnMission()) return "a mission here";
     if (HostMissionRecent(5000)) return "the host's mission";
+    if (ContestActivity()) return "a contest";
+    if (SideLeader() != 0xFF) return "the other player's side job";
     if (game::GetPad(0)->DisablePlayerControls != 0) return "no control";
     if (ActivePrimaryTaskType(me) != 0) return "busy";
     if (!anyStars && WantedLevel() != 0) return "wanted";

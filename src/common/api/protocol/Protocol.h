@@ -13,10 +13,7 @@
 
 namespace coop::proto {
 
-constexpr int kMaxPlayers = 4;  // hard protocol limit (the game client supports 2 at the moment)
-// what the game client supports: the other player's character takes the game's second player slot (CWorld::Players[1]),
-// and a third player's could not be made (fires, props and trains are keyed by the sender's own ids too)
-constexpr int kGamePlayers = 2;
+constexpr int kMaxPlayers = 4;  // the host chooses 2 to 4 creating the game (the copies take turns in CWorld::Players[1])
 constexpr uint8_t kServerId = 255;
 constexpr size_t kMaxChatLen = 160;
 constexpr size_t kWorldChunk = 16 * 1024;
@@ -33,7 +30,7 @@ enum MsgId : uint8_t {
     // ---- client -> server ----
     C_HELLO = 1,
     C_CHAT = 2,              // str text (may be a /command)
-    C_PROFILE_SAVE = 3,      // bytes profile (opaque for the server)
+    C_PROFILE_SAVE = 3,      // bytes profile (opaque for the server), u32 game (from the S_PROFILE it started from)
     C_WORLD_BEGIN = 4,       // host uploads its save: u32 size, u32 crc, str label
     C_WORLD_CHUNK = 5,       // u32 offset, bytes
     C_WORLD_END = 6,
@@ -42,6 +39,7 @@ enum MsgId : uint8_t {
     C_WORLD_KEEP = 9,        // host: a fresh snapshot is impossible now (mission), send the stored world
     C_WORLD_NEWGAME = 10,    // host: it plays a new game's prologue (no save of it can exist yet)
     C_WORLD_FOLLOW = 11,     // host: the prologue is over but cannot be saved yet: partners follow in a new game
+    C_GAME_ID = 12,          // host: u32 game it plays (0 = unknown save): the partners' profiles are per game
 
     // ---- server -> client ----
     S_WELCOME = 20,          // see Welcome
@@ -49,7 +47,7 @@ enum MsgId : uint8_t {
     S_PLAYER_JOIN = 22,      // u8 id, str name, u8 isHost
     S_PLAYER_LEAVE = 23,     // u8 id, u8 reason
     S_CHAT = 24,             // u8 fromId (255 = server), u32 rgba, str text, str textEn (the server's own texts)
-    S_PROFILE = 25,          // bytes profile (empty when the player is new)
+    S_PROFILE = 25,          // bytes profile (empty when the player is new), u32 game it belongs to
     S_WORLD_BEGIN = 26,      // u32 size, u32 crc, str label
     S_WORLD_CHUNK = 27,      // u32 offset, bytes
     S_WORLD_END = 28,
@@ -67,7 +65,7 @@ enum MsgId : uint8_t {
     G_PLAYER_ONFOOT = 64,     // unreliable
     G_PLAYER_DRIVER = 65,     // unreliable
     G_PLAYER_PASSENGER = 66,  // unreliable
-    G_PLAYER_AIM = 67,        // unreliable
+    G_PLAYER_AIM = 67,        // reliable, partner -> host: u16 the person its player aims at (0 none), for the story mission
     G_PLAYER_SPAWN = 68,      // reliable: (re)spawn, model, interior
     G_PLAYER_DEATH = 69,      // reliable: i16 the default group's animation the sender's player fell with (its copies die so)
     G_PLAYER_LOOK = 70,       // reliable: clothes, fat, muscle, u16 model, the special character's name (290-299),
@@ -82,10 +80,11 @@ enum MsgId : uint8_t {
     G_PROJECTILE = 76,        // reliable: a grenade, a rocket... was thrown (creator, weapon, position, speed, target)
     G_PLAYER_ENTER_CAR = 77,
     G_PLAYER_EXIT_CAR = 78,
-    G_PLAYER_ANIM = 79,       // reliable: one-shot animations (eating, drinking, gestures)
+    G_PLAYER_ANIM = 79,       // reliable: one-shot animations (eating, drinking, gestures); op 5: an activity of a player's
+                              // own animation file, by the block's name (Anims.cpp)
 
     G_VEH_CREATE = 80,
-    G_VEH_REMOVE = 81,
+    G_VEH_REMOVE = 81,        // reliable: u16 netId, u8 1: the copy of another player's car cleared it off its spot (kept by none)
     G_VEH_SYNC = 82,          // unreliable
     G_VEH_OWNER = 83,         // ownership change request/announce
     G_VEH_STATUS = 84,        // reliable: damage, colours, mods, locks, siren
@@ -124,17 +123,28 @@ enum MsgId : uint8_t {
     G_MISSION_REWARD = 129,
     G_TELEPORT = 130,         // teleport request/command
     G_GAME_EVENT = 131,       // misc one-shot events (audio, widescreen, camera shake)
-    G_MISSION_WAIT = 132,     // the host stands in a mission marker and waits for the partner
+    G_MISSION_WAIT = 132,     // the host stands in a mission marker and waits for the partner: u8 on, 5 x f32 its area when
+                              // on, u8 1 at a marker of its mission (not at a mission's start)
     G_WAYPOINT = 133,         // reliable: the player's map waypoint (set or cleared)
     G_PROPERTY = 134,         // reliable: the player bought a property (its index in main.scm)
     G_HOST_SAVED = 135,       // reliable: the host saved its game, the partners save their profiles
+    G_EXPORT = 186,           // reliable: the docks' export list (Exports.cpp): i8 the car of the list just delivered (-1: the host
+                              // says the list), i32 what it paid, bytes the list: stage, all done, 10 x delivered, 42 x imports
+    G_MISSION_FX = 185,       // reliable, host -> partner: an effect of the story mission's script: u8 op (1 make, 2 play, 3 stop, 4 play
+                              // and kill, 5 kill), i32 its handle there; make: u16 command, str name, u8 kind, u16 id of what it
+                              // sits on (1 car, 2 ped, 3 the host, 4 mission object), 6 x f32 place and direction, u8 flag
+    G_MISSION_ENV = 184,      // reliable, host -> partner: what the story mission changed in its game: u8 kind (1 Area 69's SAM
+                              // sites, 2 the carrier's, 3 darkness, 4 its player's fire damage), i32, i32 the command's values
+    G_HOST_LOADED = 183,      // reliable, again every 15 s: u32 this load of the host's game (a new number each load): the
+                              // partners take back the weapons they had at its save (Progress.cpp)
     G_MISSION_WEAPON = 136,   // reliable: u8 op (1 give, 2 take), u8 weapon, i32 ammo (CJ's count after the change):
                               // the host's mission armed its CJ
     G_CHECKPOINTS = 137,      // reliable: the host's script checkpoints and spheres (u8 n, records)
     G_WORLD_OBJ = 138,        // a map object broke or moved (u16 model, origin, stage, flags, weapon[, pose, speeds]);
                               // reliable for changes, unreliable while it moves
     G_GARAGE = 139,           // reliable: u8 op, u8 garage: the partner's cars into the host's safe house store
-                              // (u8 n, u16 net ids), the host has them (same), bring the stored ones out
+                              // (u8 n, u16 net ids), the host has them (same, then u8 full, u8 to), bring the stored ones
+                              // out, they come out (u8 to, u8 n, the records)
     G_VEH_CLEAR = 140,        // reliable: u8 n, u16 net ids: the host's mission cleared an area (CLEAR_AREA), the
                               // owners delete these empty cars of theirs there
     G_WATER_CANNON = 141,     // unreliable: u16 vehicle, the jet's offset from it and speed (a fire truck shoots water)
@@ -152,7 +162,7 @@ enum MsgId : uint8_t {
                               // delay, volume, forced); a vehicle's: a police helicopter's or boat's loudspeaker
     G_MISSION_POLICY = 147,   // reliable, host -> partner: the mission's police rules (u8 max wanted, u8 back-off bits,
                               // f32 wanted multiplier), u8 city level (STAT_CITY_UNLOCKED), u8 1: its stars were cleared,
-                              // f32 density of people, f32 density of cars
+                              // f32 density of people, f32 density of cars, u8 stars the mission set for CJ, bit 7 for no drop (0xFF: none now)
     G_VEH_SCRIPT = 148,       // reliable, host -> the driver's game: the host's mission moved, turned or froze a car that
                               // the other player drives (u16 car, u8 its owner, u16 command, its three parameters)
     G_INTERIOR_POP = 149,     // reliable, host -> partner: i8 area, vec3 at: its game made that interior's people
@@ -170,7 +180,8 @@ enum MsgId : uint8_t {
                               // every 3 s while it is), u8 flags (host: 1 wars on, 2 the story holds them, 4 on a mission,
                               // 8 a defence), u16 the district fought for (0xFFFF none)
     G_SIDE = 156,             // reliable: u8 op (1 offer, 2 accept, 3 decline, 4 end, 5 leave, 6 pay, 7 drop, 8 resync, 9
-                              // loot, 10 taken, 11 alarm), u8 to (a player, 255 all), str name (the side activity's mission
+                              // loot, 10 taken, 11 alarm, 12 the host's marks and texts now are of a joint activity: money 1,
+                              // or no more: 0), u8 to (a player, 255 all), str name (the side activity's mission
                               // script), i32 money (pay: a fare as it came, both ways while who joined a taxi job drives its
                               // own; end: the rest it paid; taken: the thing's model); drop: vec3 the leader's courier ring
                               // its package went into; resync: who joined is back from its own taxi job, the leader sends all
@@ -213,11 +224,14 @@ enum MsgId : uint8_t {
                               // state (0 not started, 1 playing, 2 done), u8 ok, i32 value, i32 place; u8 why (decline, cancel)
     G_POOL = 175,             // pool for two (POOL2's two-player mode across games, Pool.cpp): u8 op, u8 to; 1 start, 2 end,
                               // 3 fail u8 (0 the owner's game started alone, 1 it left the table), 7 result u8 (0 owner won,
-                              // 1 the second player): reliable, each with its u8. 4 view (owner: camera vec3 src, vec3 front,
+                              // 1 the second player): reliable, each with its u8. 9 stake i32 (owner: its bet; second
+                              // player: less, all it has), reliable: the loser gives it to the winner. 4 view (owner:
+                              // camera vec3 src, vec3 front,
                               // f32 fov; the opponent's place vec3, f32 heading, i16 block, i16 anim, f32 time, f32 speed, u16
                               // flags; u8 turn, i8 area; the opponent's cue's own animation: i16 block, i16 anim, f32 time,
                               // u16 flags), 5 objects (u8 n, n x u8 slot, u16 model, vec3, quat, u8 look: 1 shown, 2 the
-                              // opponent's cue, in the second player's hand), 6 input (second player: its pad's 20 values i16, u8
+                              // opponent's cue, in the second player's hand, bits 2-7 its scale in 32nds, 0 for 1.0
+                              // from older games), 6 input (second player: its pad's 20 values i16, u8
                               // joypad, f32 mouse x, y), 8 table (to 255: any game with a POOL2 of its own, u16 model, vec3,
                               // quat: the others' table stands so): unreliable
     G_TP_ASK = 176,           // reliable: /tp and /tphere as requests (Teleport.cpp): u8 op (1 may I come over, 2 come over to
@@ -225,6 +239,22 @@ enum MsgId : uint8_t {
     G_MONEY = 177,            // reliable: the players' money (F2, Money.cpp): u8 op; 1 what the sender has now, i32; 2 a gift,
                               // u8 to, i32; 3 the gift came, u8 to (its giver), i32; 4 host -> partner: its share of what
                               // Big Smoke's courier paid the host (Courier.cpp), u8 to, i32
+    G_WEAPON_GIFT = 178,      // reliable: a weapon as a gift (F2, WeaponGift.cpp): u8 op (1 give, 2 it came, 3 back: its slot
+                              // holds another weapon there), u8 to, u8 weapon, i32 rounds
+    G_RADIO = 181,            // reliable, from a driver with players in its car (Radio.cpp): u16 vehicle, i8 station, u8 n,
+                              // n x {i32 track, i8 type, i8 index} queued, u8 track flags, i32 ms into the first, i32 its
+                              // length (no tracks: the radio off or the User Track Player)
+    G_EMOTE = 182,            // reliable: an emote for two (features/anims/Emotes.cpp): u8 op (1 shall we, 2 no, 3 go: the
+                              // sender stands in front of the other one and starts, 4 stop), u8 to, u16 the emote's number
+    G_RC = 180,               // reliable, Zero's missions for two (RcToys.cpp): u8 op; 1 host -> partners: u8 on, u16 the toy's
+                              // model (362, the minigun's: a turret), vec3 where, f32 heading, i8 area (its turret or toy is
+                              // on: the partner gets one); 2 any: u16 the net id of the sender's own toy (0: none), spared
+                              // without friendly fire and seen from (RemoteViewDistance)
+    G_RACE = 179,             // a race for two (Race.cpp), its owner -> the one who joined: u8 op, u8 to; 1 state (unreliable,
+                              // 4 a second): u8 place, u8 racers, u8 the owner's place, u8 lap, u8 laps, vec3 its next
+                              // checkpoint, vec3 the one after, u8 checkpoint type, f32 size; 2 done (reliable): u8 place,
+                              // u8 racers, u8 finished (0: the race ended first); 3 watch (to 255, unreliable, twice a
+                              // second): u8 the racer's place, u8 racers, for one riding with it or near it
     G_MISSION_LOOK = 164,     // reliable, host -> partner: what the story mission put on its player, worn over the
                               // partner's own look: u8 n, n x (u8 key index 0..27 of CPedClothesDesc, u32 key); 0: off
     G_OBJ_HOLD = 163,         // reliable: the partner holds the copy of a host's mission object: u8 op (1 hold, 2 release,
@@ -286,6 +316,7 @@ struct Welcome {
     bool worldAvailable = false;
     bool friendlyFire = false;  // the players can hurt each other (the host chose it creating the game)
     bool partnerTeleport = true;  // the partners may use /tp and /tphere (the host's choice too)
+    bool sharedLife = false;      // a partner's death fails the host's story mission (the host's choice too)
     std::vector<PlayerEntry> players;  // already connected players (excluding you)
 
     void Write(Writer& w) const {
@@ -303,6 +334,7 @@ struct Welcome {
         w.Str(motdEn, 512);
         w.Bool(friendlyFire);
         w.Bool(partnerTeleport);
+        w.Bool(sharedLife);
     }
     bool Read(Reader& r) {
         yourId = r.U8();
@@ -322,6 +354,7 @@ struct Welcome {
         motdEn = r.Str(512);
         friendlyFire = r.Bool();
         partnerTeleport = r.Bool();
+        sharedLife = r.Bool();
         return r.Ok();
     }
 };

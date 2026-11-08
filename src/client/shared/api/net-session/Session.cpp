@@ -149,6 +149,7 @@ void Session::HandleService(uint8_t id, Reader& r) {
             m_serverName = w.serverName;
             m_friendlyFire = w.friendlyFire;
             m_partnerTeleport = w.partnerTeleport;
+            m_sharedLife = w.sharedLife;
             m_peers.clear();
             for (auto& p : w.players) m_peers[p.id] = PeerInfo{p.id, p.name, p.isHost, 0};
             m_state = State::Online;
@@ -162,6 +163,9 @@ void Session::HandleService(uint8_t id, Reader& r) {
                                   "Friendly fire is on: you can hurt and kill each other."));
             if (!m_partnerTeleport && !IsHost())
                 chat.AddSystem(TR("Хост запретил напарникам команды /tp и /tphere.", "The host turned /tp and /tphere off for partners."));
+            if (m_sharedLife)
+                chat.AddSystem(TR("Общая жизнь включена: если напарник погибнет, миссия хоста провалится.",
+                                  "Shared life is on: if a partner dies, the host's mission fails."));
             if (onOnline) onOnline();
             break;
         }
@@ -226,7 +230,8 @@ void Session::HandleService(uint8_t id, Reader& r) {
         }
         case S_PROFILE: {
             auto blob = r.Bytes(64 * 1024);
-            if (r.Ok() && onProfile) onProfile(blob);
+            uint32_t game = r.U32();
+            if (r.Ok() && onProfile) onProfile(blob, game);
             break;
         }
         case S_WORLD_BEGIN: {

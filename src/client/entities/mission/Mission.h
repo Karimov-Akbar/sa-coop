@@ -2,11 +2,15 @@
 // The host's mission as the rest of the game sees it. The story feature (features/story/missions) runs the missions
 // and answers these.
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace coop {
 
 // partner: the host's mission runs, or ended less than graceMs ago
 bool HostMissionRecent(uint64_t graceMs);
+// partner: the script name of the host's story mission that runs ("zero2"), empty for none
+std::string HostMissionName();
 
 // a person of this game this game put on a car (ATTACH_CHAR_TO_CAR, at offset): its copy in the other games goes on the
 // copy of that car the same way (false: the person or the car is not shared yet)
@@ -21,12 +25,16 @@ bool SideLeading();
 // the player whose side activity this game takes part in (0xFF: none)
 uint8_t SideLeader();
 
-// the player who takes part in this game's joint side activity (0xFF: none)
-uint8_t SideHelper();
+// the players who take part in this game's joint side activity
+std::vector<uint8_t> SideHelpers();
 
 // partner: on foot in a story mission's start point, no mission here or at the host's (the host's world after its
 // progress loads there, and the host's start waits for it)
 bool AtMissionMarker();
+
+// this player plays a side activity a contest can be of (basketball's challenge, a dance, a casino table, a race), a
+// contest of its is asked or on (features/story/contest), or a game of pool for two runs with it in it
+bool ContestActivity();
 
 // host: its mission (or the mission's trigger) runs and a partner is there to see it
 bool HostReplicating();
@@ -42,6 +50,10 @@ bool MissionThread(void* script);
 
 // the mission script that runs in this game (m_bIsMission), or null: on the partner always its own side activity
 void* RunningMission();
+
+// this game's player is at a school (driving, bikes, boats, flying): the other game's school has the same cars on the
+// same spots
+bool OwnSchool();
 
 // partner: clothes the host's mission put on over this player's own look (the balaclava) are not its own to keep: its
 // own keys go into clothes (a CPedClothesDesc), false when no mission clothes are on
@@ -61,6 +73,11 @@ bool PoolTableCopy(void* object);
 // host: the net id of this object of the host's mission (0: not one); partner: the handle of its copy (-1: none here)
 uint16_t MissionObjectNetId(void* object);
 int MissionObjectCopyHandle(uint16_t netId);
+// host: a story mission is about to move one of main.scm's own objects (a garage door, a shutter): announced now
+void AnnounceScmObject(int handle);
+// host: a story mission keeps its new object past its end (DONT_REMOVE_OBJECT): it leaves the list the partners' copies
+// are made from, announced now
+void AnnounceKeptObject(int handle);
 
 // host: Big Smoke's courier (BCESAR2 by day, BCESAR3 by night: features/story/courier) runs in this game; that script is
 // one of its two; the handles of its objects for the partners to see (its cash bags once off its car), up to max

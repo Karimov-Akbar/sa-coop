@@ -77,49 +77,24 @@ void Label(float x, float y, const std::string& utf8, uint32_t argb, bool small)
     Gfx().Text(small ? FONT_SMALL : FONT_NORMAL, x, y, utf8, argb, TEXT_SHADOW);
 }
 
-// A menu item: text centred in (x, y, w, h). As in the game, the selected item is light blue with the pointer
-// next to it; hovering selects buttons, tabs keep the pointer on the active one.
-static bool MenuItem(float x, float y, float w, float h, FontId font, const std::string& label, bool enabled,
-                     bool selected, bool pointerOnHover) {
+// A menu item: text centred in (x, y, w, h), light blue when selected or under the mouse. The game's star beside it came
+// over the next word on the tight tabs of the U window (the user's word, 04.11).
+static bool MenuItem(float x, float y, float w, float h, FontId font, const std::string& label, bool enabled, bool selected) {
     auto& g = Gfx();
     bool hover = enabled && Hover(x, y, w, h);
     bool lit = enabled && (selected || hover);
-    float tw = g.TextWidth(font, label), lh = g.LineHeight(font);
-    float tx = x + (w - tw) * 0.5f, ty = y + (h - lh) * 0.5f;
-    if (enabled && (selected || (hover && pointerOnHover))) Pointer(tx - lh * 0.95f, y + h * 0.5f, lh * 1.7f, kSaBlue);
+    float tx = x + (w - g.TextWidth(font, label)) * 0.5f, ty = y + (h - g.LineHeight(font)) * 0.5f;
     g.Text(font, tx, ty, label, !enabled ? 0xFF353F4A : lit ? kSaBlue : kSaSlate, TEXT_SHADOW);
     return hover && In().State().lmbPressed;
 }
 
 bool Button(const char* id, float x, float y, float w, float h, const std::string& label, bool enabled, bool lit,
             bool big) {
-    return MenuItem(x, y, w, h, big ? FONT_BIG : FONT_MENU, label, enabled, lit, true);
+    return MenuItem(x, y, w, h, big ? FONT_BIG : FONT_MENU, label, enabled, lit);
 }
 
 bool Tab(const char* id, float x, float y, float w, float h, const std::string& label, bool active, bool small) {
-    return MenuItem(x, y, w, h, small ? FONT_MENU_SMALL : FONT_MENU, label, true, active, false) && !active;
-}
-
-void Pointer(float cx, float cy, float size, uint32_t argb) {
-    auto& g = Gfx();
-    float u = std::max(1.0f, std::floor(size / 28.0f));  // one row/column of the shape
-    float base = size * 0.085f;                            // half width of a blade at the centre
-    auto blade = [&](float len, int dx, int dy) {
-        for (float d = 0; d < len; d += u) {
-            float half = std::max(u * 0.5f, base * (1.0f - d / len));
-            if (dy) g.Rect(cx - half, dy > 0 ? cy + d : cy - d - u, 2 * half, u, argb);
-            else g.Rect(dx > 0 ? cx + d : cx - d - u, cy - half, u, 2 * half, argb);
-        }
-    };
-    blade(size * 0.28f, 0, -1);
-    blade(size * 0.62f, 0, 1);  // the long lower blade
-    blade(size * 0.32f, -1, 0);
-    blade(size * 0.32f, 1, 0);
-    float r = base * 1.7f;  // the round guard in the middle
-    for (float d = -r; d < r; d += u) {
-        float half = std::sqrt(std::max(0.0f, r * r - d * d));
-        g.Rect(cx - half, cy + d, 2 * half, u, argb);
-    }
+    return MenuItem(x, y, w, h, small ? FONT_MENU_SMALL : FONT_MENU, label, true, active) && !active;
 }
 
 std::wstring ClipboardText() {

@@ -23,10 +23,15 @@ struct PedSyncState {
     game::CVector aim;  // F_AIMING: gun target relative to pos
     uint8_t aimKind = 0;  // F_AIMING: 0 the point above, 1 player aimId, 2 ped netId aimId
     uint16_t aimId = 0;
-    // action animation (anything but locomotion): IFP block + index inside it, 0xFFFF = none
-    uint16_t animBlock = 0xFFFF, animIdx = 0, animFlags = 0;
+    // action animation (anything but locomotion): this game's IFP block, 0xFFFF = none, and its name's key (anim::NameKey)
+    uint16_t animBlock = 0xFFFF, animFlags = 0;
+    uint32_t animKey = 0;
     float animTime = 0;
     uint8_t walkGroup = 0xFF;  // CPed::m_nAnimGroup: its walk set (a script's SET_ANIM_GROUP_FOR_CHAR: drunk, old, ...)
+    uint8_t extra = 0;         // X_*
+    enum : uint8_t {
+        X_WAVE = 1,  // a gang war's attacker (CPed::bPartOfAttackWave): on the radar
+    };
 
     enum : uint8_t {
         F_DEAD = 1,
@@ -62,6 +67,10 @@ struct NetPed {
     game::CVector lastTaskTarget;
     uint8_t lastTaskMove = 0;
     bool deadApplied = false;
+    bool apart = false;         // hidden in a car that is not here for our player's school (Vehicles::Apart)
+    uint64_t unshownSince = 0;  // alive in its owner's game and not made here since then (0: shown)
+    int blip = 0;               // X_WAVE's radar blip here
+    bool unshownTold = false;
     uint64_t corpseMs = 0;   // its body last moved to where its owner's lies
     uint64_t lastHitMs = 0;  // our player hit it (sent to the owner): its loot falls here if it dies of it
     uint64_t askedMs = 0;    // we asked its owner for it (a Grove member to recruit, a hooker by our car)
@@ -78,8 +87,8 @@ struct NetPed {
     uint64_t jackWaitMs = 0;  // out of its car in its game while a player gets in here: since then the jack here pulls it out
     uint64_t duckMs = 0;  // its crouch last set as the owner's
     bool hanging = false;  // its owner is in the air there (a rope, a fall): the copy is held where it is
-    uint16_t animBlock = 0xFFFF, animIdx = 0;  // action animation replayed on the mirror
-    uint16_t baseBlock = 0xFFFF, baseIdx = 0;  // the full-body one under it (a fight stance under punches)
+    uint16_t animBlock = 0xFFFF, baseBlock = 0xFFFF;  // action animation replayed on the mirror, the full-body one under it
+    uint32_t animKey = 0, baseKey = 0;                // (a fight stance under punches), by block and name
     float animTime = 0;                         // owner's time of it in the latest state (restarts go back)
     bool animFull = false;                      // it is not partial: locomotion tasks must wait
 };
@@ -121,7 +130,7 @@ public:
     static bool CanGiveAwayType(const NetPed& np, uint8_t to);  // a cop to the game of a wanted player, too
     // a script that runs in each game for its own player made this ped (a shop's seller, the range's shooters, a
     // casino's dealers, an airport's guard): it stays this game's own (sideJob: a side job's, kept local only indoors)
-    void MarkLocal(game::CPed* ped, bool sideJob);
+    void MarkLocal(game::CPed* ped, bool sideJob, bool inCarToo = false);
     // a ped fired a gun (CWeapon::Fire): ours shows as firing (F_FIRING), a copy's shot counts in the stats line
     void ShotFired(game::CPed* ped);
     // a copy of the other game's ped sits on this seat of the car in its owner's game, or goes for it (seat -1: the
@@ -154,6 +163,7 @@ private:
     std::set<int> m_ourSpecials;  // special slots SpecialModelFor asked for (no script or cutscene holds them)
     std::map<game::CPed*, uint8_t> m_giveAway;  // to hand over after the population code (ped -> player)
     std::map<int, bool> m_local;                // MarkLocal: script handle -> made by a side job
+    std::set<int> m_localInCar;                 // of m_local: not shown in a car either (a girlfriend)
     std::set<int> m_hiddenTwins;                // of m_local: hidden while a copy of the host's mission person stands there
     uint64_t m_lastScan = 0, m_lastStatsMs = 0;
     bool m_wasReady = false;

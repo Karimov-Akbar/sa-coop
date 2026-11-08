@@ -1,5 +1,10 @@
 #include "features/story/cutscene-partner/ScenePartner.h"
 
+#include <windows.h>
+#undef near  // windows.h's macros, and names here
+#undef far
+#undef STRICT
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -13,7 +18,6 @@
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "features/story/cutscene-clips/SceneMocap.h"
-#include "shared/config/Config.h"
 #include "shared/game/Anim.h"
 #include "shared/game/Script.h"
 
@@ -77,7 +81,8 @@ const Act* Pick(const Act (&list)[N], uint8_t i) {
 const Act* ActOf(const Spot& s) {
     switch (s.pose) {
         case POSE_STAND: return s.act % std::size(kStand) != 3 && MocapCount() > 1 ? &kClips : Pick(kStand, s.act);
-        case POSE_WALK: return MocapCount() > 1 ? &kClips : Pick(kStand, 1);  // what he does when CJ stops
+        case POSE_WALK:
+        case POSE_WAY: return MocapCount() > 1 ? &kClips : Pick(kStand, 1);  // what he does when CJ stops
         case POSE_LEAN: return Pick(kLean, s.act);
         case POSE_SIT: return Pick(kSit, s.act);
         case POSE_STEP: return Pick(kStep, s.act);
@@ -392,6 +397,47 @@ bool GridSeen(const CVector& from, const CVector& to) {
     return true;
 }
 
+// The floor one walks to from CJ: a flood fill of the obstacle map, kept 20 cm off what is drawn (no squeezing through
+// a gap a person does not fit). The last try took a place behind Zero's counter, by the till (31.10). The last chance
+// squeezes through gaps of 30 cm (margin 1).
+uint8_t g_reach[kCells * kCells];
+void BuildReach(const CVector& from, int margin = 2) {
+    static uint8_t wall[kCells * kCells];
+    memset(wall, 0, sizeof wall);
+    memset(g_reach, 0, sizeof g_reach);
+    for (int y = 0; y < kCells; ++y)
+        for (int x = 0; x < kCells; ++x)
+            if (g_grid.top[y * kCells + x])
+                for (int yy = std::max(0, y - margin); yy <= std::min(kCells - 1, y + margin); ++yy)
+                    memset(wall + yy * kCells + std::max(0, x - margin), 1, (size_t)(std::min(kCells - 1, x + margin) - std::max(0, x - margin) + 1));
+    int start = -1;  // CJ's cell, or the nearest open one: he may stand right at a counter
+    for (float r = 0; r <= 1.5f && start < 0; r += kCell)
+        for (int k = 0; k < 16 && start < 0; ++k) {
+            int i;
+            if (g_grid.Index(from.x + std::cos(k * 0.3927f) * r, from.y + std::sin(k * 0.3927f) * r, i) && !wall[i]) start = i;
+        }
+    // CJ hemmed in by furniture (on a sofa, at the table of a talk): no walk to judge by, rather than every place of the
+    // last try refused
+    if (start < 0) {
+        memset(g_reach, 1, sizeof g_reach);
+        return;
+    }
+    std::vector<int> open{start};
+    g_reach[start] = 1;
+    for (size_t q = 0; q < open.size(); ++q) {
+        int i = open[q], x = i % kCells, y = i / kCells;
+        for (int n : {x > 0 ? i - 1 : -1, x < kCells - 1 ? i + 1 : -1, y > 0 ? i - kCells : -1, y < kCells - 1 ? i + kCells : -1})
+            if (n >= 0 && !g_reach[n] && !wall[n]) {
+                g_reach[n] = 1;
+                open.push_back(n);
+            }
+    }
+}
+bool Reachable(const CVector& p) {
+    int i;
+    return g_grid.Index(p.x, p.y, i) && g_reach[i];
+}
+
 // ---- one shot of the cutscene
 struct Body {  // a person on the screen
     float x, top, bottom, half, depth;
@@ -617,11 +663,46 @@ CVector FeetLater(const Track& tr, const CVector& feet, float dt) {
     CVector d = RootAt(tr.seq, tr.time + dt) - RootAt(tr.seq, tr.time);
     return feet + CVector{d.x, d.y, 0};
 }
+// The way a person of the cutscene faces at t (s). CCutsceneObject::ProcessControl only moves its matrix, which faces north
+// from first to last, and the root of the animation turns the body. By that matrix "at CJ's side" was 1.5 m along the map's x
+// wherever he looked: 37 s in his face in a talk of INTRO1A, 64 of 343 s in front of him in five scenes (05.11). The root's
+// rotation takes x to where he faces: over 883 stretches of all the cutscenes it goes the way he walks (0.9 on average).
+CVector FacingAt(const uint8_t* seq, float t) {
+    int frames = Field<uint16_t>(seq, 0x06);
+    auto* f = Field<const uint8_t*>(seq, 0x08);
+    bool packed = (Field<uint16_t>(seq, 0x04) & 4) != 0;
+    float x = 0, y = 0, z = 0, w = 1, at = 0;
+    for (int i = 0; f && i < frames; ++i) {
+        if (packed) {  // KeyFrameTransCompressed: rotation (1/4096), step (1/60 s)
+            auto* k = (const int16_t*)(f + i * 16);
+            x = k[0] / 4096.0f, y = k[1] / 4096.0f, z = k[2] / 4096.0f, w = k[3] / 4096.0f;
+            at += k[4] / 60.0f;
+        } else {  // KeyFrameTrans
+            auto* k = (const float*)(f + i * 32);
+            x = k[0], y = k[1], z = k[2], w = k[3];
+            at += k[4];
+        }
+        if (at >= t) break;
+    }
+    return Flat({1.0f - 2.0f * (y * y + z * z), 2.0f * (x * y + w * z), 0.0f});
+}
+CVector CjFacing() {
+    Track tr;
+    return TrackOf(CutsceneCj(), tr) ? FacingAt(tr.seq, tr.time) : CVector{0, 1, 0};
+}
+// In front of CJ: within 50 degrees of his facing, this near. He talks that way, and nobody stands there.
+constexpr float kFrontCos = 0.64f, kFrontNear = 4.0f;
+bool InFrontOf(const CVector& who, const CVector& facing, const CVector& feet) {
+    CVector d = feet - who;
+    float len = d.Length2D();
+    return len < kFrontNear && d.x * facing.x + d.y * facing.y > kFrontCos * len;
+}
 
 struct Sample {  // a moment later in the shot
     float dt;    // seconds after the frame analysed
     View view;
     CVector cj;
+    CVector cjFwd{};              // the way he faces (the plan's moments only)
     std::vector<CVector> actors;  // as Scene::actors
     std::vector<CVector> cars;    // as Scene::cars
 };
@@ -656,6 +737,7 @@ struct Car {  // a vehicle of the cutscene (a prop: no collision, it may drive t
 
 struct Scene {
     CVector cam, cj;
+    CEntity* who = nullptr;  // at cj: CJ, or the person of the scene a shot without CJ is about (Elsewhere)
     CVector camFwd;
     float fov = 70;
     float floor = 0;  // under CJ
@@ -693,29 +775,39 @@ bool OnScreen(const Scene& sc, const Body& b) {  // any part of it in the pictur
 // someone the picture shows, the middle of the body in it: not an arm at the edge of a shot over the shoulder
 bool Shown(const Scene& sc, const Body& b) { return OnScreen(sc, b) && b.x > 0 && b.x < sc.w; }
 
+// the camera being drawn on its spline: false if the spline does not give it, its clock or its keys are not what they seem
+bool CameraNow(const Scene& sc, CameraPath& path, float& now, float& fovNow, View& cur) {
+    if (cam::Mode() != kModeFlyBy || !path.Load()) return false;
+    now = Ref<float>(cam::Active() + 0x90);  // CCam::m_fTimeElapsedFloat: the spline's clock (ms)
+    path.At(now, cur, fovNow);
+    if ((cur.pos - sc.cam).Length() > 0.5f || cur.fwd.Dot(sc.camFwd) < 0.99f || !Calibrate(cur)) {
+        LOGD("Cutscene camera off its spline (%.2f m, %.3f): the shot is judged by its first frame", (cur.pos - sc.cam).Length(),
+             cur.fwd.Dot(sc.camFwd));
+        return false;
+    }
+    return true;
+}
+// the shot from t on: it ends at `end`, the next one starts at `next`
+void ShotEnd(const CameraPath& path, float t, float& end, float& next) {
+    end = next = path.pos.Time(path.pos.n - 1);
+    for (const Spline* s : {&path.pos, &path.target, &path.fov}) {
+        float from, to;
+        if (s->NextCut(t, s == &path.fov ? 1.0f : 0.3f, from, to) && from < end) end = from, next = to;
+    }
+}
+
 // The camera and the people over the rest of the shot, about every quarter of a second up to the cut.
 void BuildAhead(const Scene& sc) {
     g_ahead.clear();
     CameraPath path;
-    if (cam::Mode() != kModeFlyBy || !path.Load()) return;
-    float now = Ref<float>(cam::Active() + 0x90), fovNow = 0;  // CCam::m_fTimeElapsedFloat: the spline's clock (ms)
+    float now = 0, fovNow = 0, end = 0, next = 0;
     View cur;
-    path.At(now, cur, fovNow);
-    // the spline must give the camera being drawn, otherwise its clock or its keys are not what they seem
-    if ((cur.pos - sc.cam).Length() > 0.5f || cur.fwd.Dot(sc.camFwd) < 0.99f || !Calibrate(cur)) {
-        LOGD("Cutscene camera off its spline (%.2f m, %.3f): the shot is judged by its first frame", (cur.pos - sc.cam).Length(),
-             cur.fwd.Dot(sc.camFwd));
-        return;
-    }
-    float end = path.pos.Time(path.pos.n - 1), next = end;
-    for (const Spline* s : {&path.pos, &path.target, &path.fov}) {
-        float from, to;
-        if (s->NextCut(now, s == &path.fov ? 1.0f : 0.3f, from, to) && from < end) end = from, next = to;
-    }
+    if (!CameraNow(sc, path, now, fovNow, cur)) return;
+    ShotEnd(path, now, end, next);
     g_shotFrom = end;
     g_shotTo = next;
     Track cjTrack;
-    TrackOf(CutsceneCj(), cjTrack);
+    TrackOf(sc.who, cjTrack);
     std::vector<Track> tracks(sc.actors.size());
     for (size_t i = 0; i < sc.actors.size(); ++i) TrackOf(sc.actors[i].e, tracks[i]);
     CVector cjFeet{sc.cj.x, sc.cj.y, sc.floor};
@@ -753,9 +845,13 @@ bool PersonAt(const View& v, const CVector& feet, Body& b) {  // someone of the 
 }
 
 enum Reject { R_DISTANCE, R_CROWD, R_FRAME, R_COVERS_CJ, R_COVERS_ACTOR, R_SOLID, R_HIDDEN, R_FLOOR, R_FRONT, R_LATER, R_COUNT };
+// How a place is judged (Rate): STRICT in the picture as a whole and out of everybody's way, LOOSE cut by the frame's
+// edge or half behind people, SEEN the last try before he is out of the picture.
+enum Rules { STRICT, LOOSE, SEEN };
 
 struct Later {  // the spot over the rest of the shot
     int in = 0, edge = 0, out = 0;
+    int way = 0;  // moments in somebody's way: SEEN counts them against the place instead of refusing it
     bool bad = false;
 };
 // The camera in him or about to be (a camera following CJ goes where the partner walks behind him): the body
@@ -789,7 +885,7 @@ bool InWayAt(const Scene& sc, const Sample& m, const Body& b, bool behindOk) {
 }
 
 // nobody walks into it, it covers nobody, and the camera keeps it in the picture or away from it
-Later RateLater(const Scene& sc, const Spot& s, const CVector& body, bool behindOk = false) {
+Later RateLater(const Scene& sc, const Spot& s, const CVector& body, Rules rules = STRICT) {
     Later r;
     float height = PoseHeight(s.pose), room = s.pose == POSE_SIT || s.pose == POSE_STEP ? 0.55f : 0.75f;
     for (const Sample& m : g_ahead) {
@@ -802,8 +898,14 @@ Later RateLater(const Scene& sc, const Spot& s, const CVector& body, bool behind
             ++r.out;
             continue;
         }
-        r.bad = InWayAt(sc, m, b, behindOk);
-        if (r.bad) return r;
+        if (InWayAt(sc, m, b, rules != STRICT)) {
+            if (rules != SEEN) {
+                r.bad = true;
+                return r;
+            }
+            ++r.way;
+            continue;
+        }
         if (!GridSeen(m.view.pos, body + CVector{0, 0, height * 0.6f})) ++r.out;  // behind a wall for a moment
         else if (InFrame(sc, b)) ++r.in;
         else ++r.edge;
@@ -815,17 +917,21 @@ Later RateLater(const Scene& sc, const Spot& s, const CVector& body, bool behind
 // is in the picture), and not between two of them nearer to the camera than they are, where the talk goes on.
 // (onScreen means only that the skeleton projects: CJ next to the camera, out of the picture but for an elbow, would
 // let the partner fill the screen.)
-bool InTheWay(const Scene& sc, const Body& b) {
+// The last try (seen) lets him be half as big again as the tallest of them, and stand between two of them when he is
+// not nearer to the camera than both.
+bool InTheWay(const Scene& sc, const Body& b, bool seen = false) {
     std::vector<const Body*> people;
     if (sc.cjOnScreen && Shown(sc, sc.cjBody)) people.push_back(&sc.cjBody);
     for (const Actor& a : sc.actors)
         if (a.onScreen && Shown(sc, a.body)) people.push_back(&a.body);
     float tallest = 0;
     for (const Body* p : people) tallest = std::max(tallest, p->bottom - p->top);
-    if (b.bottom - b.top > std::max(tallest * 1.15f, sc.h * 0.3f)) return true;
+    if (b.bottom - b.top > std::max(tallest * (seen ? 1.5f : 1.15f), sc.h * (seen ? 0.4f : 0.3f))) return true;
     for (const Body* p : people)
         for (const Body* q : people)
-            if (p->x < b.x && b.x < q->x && b.depth < std::max(p->depth, q->depth) - 0.3f) return true;
+            if (p->x < b.x && b.x < q->x &&
+                b.depth < (seen ? std::min(p->depth, q->depth) : std::max(p->depth, q->depth)) - 0.3f)
+                return true;
     return false;
 }
 int g_rejects[R_COUNT];
@@ -870,21 +976,22 @@ float Covered(const Body& a, const Body& b) {
 
 // In the picture: covering nobody of the scene and out of its way. -1 when so. Behind (a metre farther from the camera
 // than whom he overlaps) he may stand at the back of the group, if most of him still shows: kept off every person of
-// the shot, he was out of the picture through most medium shots of a group.
-int InPeoplesWay(const Scene& sc, const Body& b, bool behindOk = false) {
+// the shot, he was out of the picture through most medium shots of a group. The last try (SEEN) lets him overlap the
+// side of somebody else than CJ by up to a third and stand three quarters behind people.
+int InPeoplesWay(const Scene& sc, const Body& b, Rules rules = STRICT) {
     Body cj = sc.cjBody;  // in a close-up CJ bends and waves about more than his root track tells: keep off
     if (cj.depth < 2.0f) cj.half *= 1.5f;
-    float hidden = 0;
+    float hidden = 0, side = rules == SEEN ? 0.33f : 0.1f, most = rules == SEEN ? 0.75f : 0.6f;
     auto blocks = [&](const Body& p, float share) {
         if (!Overlap(b, p, share)) return false;
-        if (!behindOk || b.depth < p.depth + 1.0f) return true;
+        if (rules == STRICT || b.depth < p.depth + 1.0f) return true;
         hidden += Covered(b, p);
-        return hidden > 0.6f;
+        return hidden > most;
     };
     if (sc.cjOnScreen && blocks(cj, 0.0f)) return R_COVERS_CJ;
     for (const Actor& a : sc.actors)  // nobody of the scene behind or in front of the partner
-        if (a.onScreen && blocks(a.body, 0.1f)) return R_COVERS_ACTOR;
-    return InTheWay(sc, b) ? R_FRONT : -1;
+        if (a.onScreen && blocks(a.body, side)) return R_COVERS_ACTOR;
+    return InTheWay(sc, b, rules == SEEN) ? R_FRONT : -1;
 }
 // Room for the body: a wall to lean on with nothing between, free floor at CJ's level (its height goes into the
 // spot), nothing where the hips and the head are. -1 when so.
@@ -919,39 +1026,59 @@ float SeenShare(const Scene& sc, const Spot& s) {
     return (float)seen / (float)(1 + g_ahead.size());
 }
 
+// Where he stood before this shot, if that is in this scene. A new place costs a point a metre from there, so he goes
+// to the nearest one that fits rather than across the room (31.10: he moved almost every shot; the players
+// chose "seen in every shot, in short steps").
+bool g_fromOk = false;
+CVector g_from;
+// The shot before showed him (SeenShare as decided), and the last try of this one may squeeze through narrower gaps
+// and be seen in less of the shot (Choose: after all else failed, when he was out of the picture before too).
+bool g_seenBefore = false, g_lastChance = false;
+
 // How good the spot is for this shot; kRejected when it does not fit at all. Cheap checks first. Loose: he need not
 // be in the picture as a whole, nor seen (cut by its edge, half behind something), only out of the people's way.
-float Rate(const Scene& sc, Spot& s, bool loose = false) {
+// SEEN, the last try: up to 10 m from CJ, at somebody's side or mostly behind people, in somebody's way for a moment,
+// as long as the shot shows him for a fifth of it; the more it shows him the better.
+float Rate(const Scene& sc, Spot& s, Rules rules = STRICT) {
+    bool loose = rules != STRICT;
     g_lastReject = -1;
     float clear;
     // the loose places go farther: in a crowd around CJ (CESAR1A, GROVE1B) the room the camera shows is behind it
-    if (int r = Crowded(sc, s, clear, loose ? 8.0f : 6.0f); r >= 0) return Rejected((Reject)r);
+    if (int r = Crowded(sc, s, clear, rules == SEEN ? 10.0f : loose ? 8.0f : 6.0f); r >= 0) return Rejected((Reject)r);
+    if (rules == SEEN && !Reachable(s.ground)) return Rejected(R_SOLID);  // where the feet go: BuildReach first
     CVector body = BodyOf(s);
     float d = (body - sc.cj).Length2D();
     Body b;
     float height = PoseHeight(s.pose);
     bool projected = Project(body, height, b), shown = projected && OnScreen(sc, b);
     if (loose ? shown && b.depth < 1.5f : !projected || !InFrame(sc, b)) return Rejected(R_FRAME);
-    if (int r = shown ? InPeoplesWay(sc, b, loose) : -1; r >= 0) return Rejected((Reject)r);
+    if (int r = shown ? InPeoplesWay(sc, b, rules) : -1; r >= 0) return Rejected((Reject)r);
     if (int r = NoRoom(sc, s); r >= 0) return Rejected((Reject)r);
     body.z = s.ground.z;
     CVector head = body + CVector{0, 0, height - 0.15f}, chest = body + CVector{0, 0, height * 0.6f};
     if (!loose && (!GridSeen(sc.cam, head) || !GridSeen(sc.cam, chest) || !Seen(sc.cam, head) || !Seen(sc.cam, chest)))
         return Rejected(R_HIDDEN);
     // the rest of the shot: in the picture most of the time, seldom cut by its edge
-    Later later = RateLater(sc, s, body, loose);
-    int n = 1 + later.in + later.edge + later.out;
-    if (later.bad || (!loose && ((1 + later.in) * 10 < n * 6 || later.edge * 4 > n))) return Rejected(R_LATER);
+    Later later = RateLater(sc, s, body, rules);
+    int n = 1 + later.in + later.edge + later.out + later.way;
+    if (later.bad || later.way * 2 > n || (!loose && ((1 + later.in) * 10 < n * 6 || later.edge * 4 > n)))
+        return Rejected(R_LATER);
     // a loose place still in sight for a good part of the shot: one behind a wall or out at the frame's edge was taken
     // as well, and he stood unseen while the camera had room for him
     float seen = loose ? SeenShare(sc, s) : 1.0f;
-    if (seen < 0.3f) return Rejected(R_HIDDEN);
-    // to one side, as an extra: a third of the way in from an edge
-    float score = PoseBonus(s.pose) - std::fabs(d - 2.2f) * 0.5f + std::min(clear, 2.5f) * 0.3f -
+    if (seen < (rules == SEEN ? (g_lastChance ? 0.05f : 0.2f) : 0.3f)) return Rejected(R_HIDDEN);
+    // to one side, as an extra: a third of the way in from an edge. With the people: a place more than 2 m from the
+    // nearest of them (CJ too) costs 0.7 a metre more, and room around him counts up to 1.5 m only; he stood aside, far
+    // from everybody, as if he were not in the scene (01.11, the players' word after the sixth test build)
+    float nearest = std::min(clear, d);
+    float score = PoseBonus(s.pose) - std::fabs(d - 2.2f) * 0.5f + std::min(clear, 1.5f) * 0.3f -
+                  std::max(0.0f, nearest - 2.0f) * 0.7f -
                   (shown ? std::fabs(std::fabs(b.x / sc.w - 0.5f) - 0.25f) * 0.8f : 0.4f) + 0.5f * (float)(1 + later.in) / (float)n;
     if (shown && b.bottom - b.top < sc.h * 0.12f) score -= 1.0f;  // too small to notice
     if (g_haveSpot && g_spot.pose == s.pose && (g_spot.ground - s.ground).Length2D() < 0.3f) score += 2.5f;  // stays put
+    if (g_fromOk) score -= (s.ground - g_from).Length2D();
     if (loose) score += seen;  // the more of the shot he is seen, the better
+    if (rules == SEEN) score += seen * 2.0f - 2.0f * (float)later.way / (float)n;
     return score;
 }
 
@@ -965,9 +1092,9 @@ std::vector<Tried> g_tried;
 struct Best {
     Spot spot;
     float score = kRejected;
-    bool loose = false;  // Rate's loose rules
+    Rules rules = STRICT;
     void Offer(const Scene& sc, Spot s) {
-        float r = Rate(sc, s, loose);
+        float r = Rate(sc, s, rules);
         g_tried.push_back({s, r, g_lastReject});
         if (r > score) spot = s, score = r;
     }
@@ -1062,16 +1189,18 @@ void OfferFloor(const Scene& sc, Best& best) {
             places.push_back(sc.cj + CVector{std::cos(ang) * r, std::sin(ang) * r, 0.0f});
         }
     CVector view = Flat(sc.camFwd);
+    float far = best.rules == SEEN ? 10.0f : best.rules == LOOSE ? 8.0f : 6.0f;  // from CJ, as Rate takes them
     for (int k = -12; k <= 12; ++k)
-        for (float d = 1.5f; d <= 12.0f; d += 0.5f) places.push_back(sc.cam + Turn(view, k * 0.0873f) * d);
+        for (float d = 1.5f; d <= (best.rules == SEEN ? 18.0f : 12.0f); d += 0.5f) places.push_back(sc.cam + Turn(view, k * 0.0873f) * d);
     for (CVector p : places) {
         float d = (p - sc.cj).Length2D();
-        if (d < 1.3f || d > (best.loose ? 8.0f : 6.0f)) continue;
+        if (d < 1.3f || d > far) continue;
         p.z = sc.floor;
         // faces CJ, turned a little to the camera like an extra on a film set
         CVector face = Flat(Flat(sc.cj - p) + Flat(sc.cam - p) * 0.6f);
         best.Offer(sc, Spot{p, HeadingOf(face), POSE_STAND, (uint8_t)(g_seed % 4)});
-        OfferLean(sc, p, face, best);
+        // no wall to lean on in the last try: far from CJ, by a door, he stood there like a guard (31.10)
+        if (best.rules != SEEN) OfferLean(sc, p, face, best);
     }
 }
 
@@ -1092,7 +1221,28 @@ bool Shows(const Scene& sc, const Spot& s, bool walls = true) {
     return false;
 }
 
-// Places chosen by hand for a cutscene (coop\cutscenes.txt): "NAME x y z heading pose [act]" (heading in degrees,
+// A text of coop.rc. Each game reads a way by its own clock and nothing of it goes over the network, so they must all hold the
+// same one: in coop.asi it can't be lost or left over from another version, and the protocol keeps versions apart (08.11).
+std::string_view Embedded(const wchar_t* name) {
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)&Embedded, &self);
+    HRSRC res = self ? FindResourceW(self, name, (LPCWSTR)RT_RCDATA) : nullptr;
+    HGLOBAL data = res ? LoadResource(self, res) : nullptr;
+    return data ? std::string_view((const char*)LockResource(data), SizeofResource(self, res)) : std::string_view();
+}
+
+// The next line of an embedded text, cut to fit and ended with a zero (the resource has none for sscanf); false at the end.
+bool NextLine(std::string_view& text, char* line, size_t size) {
+    if (text.empty()) return false;
+    size_t end = std::min(text.find('\n'), text.size());
+    size_t n = std::min(end, size - 1);
+    memcpy(line, text.data(), n);
+    line[n] = 0;
+    text.remove_prefix(std::min(end + 1, text.size()));
+    return true;
+}
+
+// Places chosen by hand for a cutscene (cutscenes.txt, in coop.asi): "NAME x y z heading pose [act]" (heading in degrees,
 // pose stand, lean, sit or steps) or "NAME hidden" (the partner keeps out of the whole cutscene). A cutscene with
 // places of its own uses only them, still checked shot by shot.
 struct Places {
@@ -1104,9 +1254,9 @@ const Places* PlacesOf(const char* cutscene) {
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
-        FILE* f = _wfopen((Cfg().coopDir + L"cutscenes.txt").c_str(), L"r");
+        std::string_view text = Embedded(L"CUTSCENE_PLACES");
         char line[256], name[16], pose[16];
-        for (int act = 0; f && fgets(line, sizeof line, f);) {
+        for (int act = 0; NextLine(text, line, sizeof line);) {
             Spot sp;
             float deg = 0;
             int n = sscanf(line, "%15s %f %f %f %f %15s %d", name, &sp.ground.x, &sp.ground.y, &sp.ground.z, &deg, pose, &act);
@@ -1127,7 +1277,6 @@ const Places* PlacesOf(const char* cutscene) {
             sp.heading = deg * 0.0174533f;
             pl.spots.push_back(sp);
         }
-        if (f) fclose(f);
         LOGI("Cutscene places by hand: %zu cutscenes", table.size());
     }
     auto it = table.find(cutscene);
@@ -1152,9 +1301,10 @@ bool Stays(const Scene& sc, const Spot& s) {
         if (c.Covers(body, c.pos, 0.6f)) return g_staysNo = "a car on his spot", false;
     if (AtCamera(sc.cam, body, PoseHeight(s.pose))) return g_staysNo = "the camera at him", false;
     Body b;
-    if (Project(body, PoseHeight(s.pose), b) && OnScreen(sc, b) && (b.depth < 1.5f || InPeoplesWay(sc, b, true) >= 0))
+    if (Project(body, PoseHeight(s.pose), b) && OnScreen(sc, b) && (b.depth < 1.5f || InPeoplesWay(sc, b, LOOSE) >= 0))
         return g_staysNo = "in front of the people", false;
-    if (RateLater(sc, s, body, true).bad) return g_staysNo = "somebody walks into him later", false;
+    if (RateLater(sc, s, body, LOOSE).bad) return g_staysNo = "somebody walks into him later", false;
+    if (!seated && InFrontOf(sc.cj, CjFacing(), body)) return g_staysNo = "in front of CJ", false;
     return true;
 }
 
@@ -1179,9 +1329,10 @@ bool OutOfPicture(const Scene& sc, Spot& out) {
 // The last place before none: next to CJ on his floor, where nobody of the scene stands and not at the camera, with room
 // for him if the floor is known, in the picture if it can be. The first seconds of an interior had no floor yet (its
 // buildings still streaming in): every place was refused, and he was hidden (SWEET3A, SWEET6A, INTRO1A).
+// Half a metre farther than at first: 1.8 m was in CJ's face in Zero's shop ("чуть подальше надо", 31.10).
 bool Beside(const Scene& sc, Spot& out) {
     float best = kRejected, clear;
-    for (float r : {1.6f, 2.2f, 1.3f, 2.8f})
+    for (float r : {2.3f, 2.8f, 1.8f, 3.3f})
         for (int a = 0; a < 16; ++a) {
             float ang = (float)a * (6.2831853f / 16.0f);
             Spot s{sc.cj + CVector{std::cos(ang) * r, std::sin(ang) * r, 0.0f}, 0, POSE_STAND, (uint8_t)(g_seed % 4)};
@@ -1190,10 +1341,79 @@ bool Beside(const Scene& sc, Spot& out) {
             if (Crowded(sc, s, clear) >= 0) continue;
             Spot t = s;
             bool room = NoRoom(sc, t) < 0;
-            float score = -std::fabs(r - 1.8f) + (room ? 2.0f : 0.0f) + (Shows(sc, room ? t : s) ? 1.0f : 0.0f);
+            float score = -std::fabs(r - 2.3f) + (room ? 2.0f : 0.0f) + (Shows(sc, room ? t : s) ? 1.0f : 0.0f);
             if (score > best) best = score, out = room ? t : s;
         }
     return best > kRejected;
+}
+
+// ---- at CJ's side (the players' choice, 03.11: "рядом с хостом", no places drawn at random): abreast of him, a metre
+// or a metre and a half to one side, the same side the whole scene, facing as he does; a little behind him where that
+// is taken, the other side only where both are. Chosen by the picture, he stood by Sweet and Big Smoke in "Tagging Up
+// Turf", 2-5 m off CJ, and in ZERO_2 he walked from place to place.
+int g_side = 0;  // the scene's side of CJ: 1 his right, -1 his left; 0 not chosen yet
+
+// strict: out of the people's way in the picture and over the rest of the shot too; else only room for the body, nobody
+// there and not at the camera (a cramped room, Zero's shop: at CJ's side half in front of someone rather than across it)
+bool BesideFits(const Scene& sc, Spot& s, bool strict) {
+    float clear;
+    if (Crowded(sc, s, clear) >= 0 || NoRoom(sc, s) >= 0) return false;
+    CVector body = BodyOf(s);
+    if (AtCamera(sc.cam, body, PoseHeight(s.pose))) return false;
+    if (!strict) return true;
+    Body b;
+    if (Project(body, PoseHeight(s.pose), b) && OnScreen(sc, b) && (b.depth < 1.5f || InPeoplesWay(sc, b, LOOSE) >= 0)) return false;
+    return !RateLater(sc, s, body, LOOSE).bad;
+}
+
+// The share of the shot that shows CJ
+float CjShare(const Scene& sc) {
+    int shown = sc.cjOnScreen && Shown(sc, sc.cjBody) ? 1 : 0;
+    Body p;
+    for (const Sample& m : g_ahead)
+        if (PersonAt(m.view, m.cj, p) && Shown(sc, p)) ++shown;
+    return (float)shown / (float)(1 + g_ahead.size());
+}
+
+// A place by CJ's side or back, never in front of him: abreast of him at a metre and a half first, the scene's side and
+// near where he stood (from) rather than across. A shot that shows CJ takes a place it shows too (seen), when there
+// is one. Three fixed places were all taken in the garage at the start of "Deconstruction" (04.11), and the rules of the picture took him
+// 8 m about the room from shot to shot; those places knew nothing of the shot, and 14 of 26 shots did not show him.
+bool BesideCj(const Scene& sc, const Spot* from, bool seen, Spot& out) {
+    CEntity* cj = CutsceneCj();
+    if (!cj || !cj->Matrix()) return false;
+    CVector fwd = CjFacing(), right{fwd.y, -fwd.x, 0.0f}, feet{sc.cj.x, sc.cj.y, sc.floor};
+    auto at = [&](int side, float r, float deg) {  // deg from his front round to his back
+        float a = deg * 0.0174533f;
+        return Spot{feet + right * ((float)side * r * std::sin(a)) + fwd * (r * std::cos(a)), HeadingOf(fwd), POSE_STAND, (uint8_t)(g_seed % 4)};
+    };
+    int first = g_side;
+    if (!first) {  // the side away from the scene's people: not between CJ and whom he talks to
+        auto room = [&](int side) {
+            float d = 99.0f;
+            for (const Actor& a : sc.actors) d = std::min(d, (a.feet - at(side, 1.5f, 90.0f).ground).Length2D());
+            return d;
+        };
+        first = room(-1) > room(1) + 0.3f ? -1 : 1;
+    }
+    float best = kRejected;
+    int bestSide = 0;
+    for (bool strict : {true, false}) {
+        for (int side : {first, -first})
+            for (float r : {1.5f, 2.0f, 2.6f})
+                for (float deg : {90.0f, 120.0f, 150.0f, 180.0f}) {
+                    Spot s = at(side, r, deg);
+                    float score = -(r - 1.5f) * 0.5f - (deg - 90.0f) / 90.0f * 0.6f - (side != first ? 0.7f : 0.0f);
+                    if (from) score -= (s.ground - from->ground).Length2D() * 0.3f;
+                    if (score + 4.0f <= best || !BesideFits(sc, s, strict)) continue;
+                    if (float share = seen && strict ? SeenShare(sc, s) : 0.0f; share >= 0.3f) score += 3.0f + share;
+                    if (score > best) best = score, out = s, bestSide = side;
+                }
+        if (best > kRejected) break;
+    }
+    if (best <= kRejected) return false;
+    if (!g_side) g_side = bestSide;
+    return true;
 }
 
 // A bone's world position from the entity's skin (cutscene people and peds alike): BONE_PELVIS 2
@@ -1205,6 +1425,14 @@ bool BoneAt(CEntity* e, int bone, CVector& out) {
     if (i < 0) return false;
     out = *(CVector*)(m + (size_t)i * 0x40 + 0x30);
     return true;
+}
+
+// Somebody with a body: a person's skeleton has 30 bones and more, a skinned prop up to 15. The sack of BCRAS1 sat in the car as a
+// fourth passenger, no seat was left, and he came into the scene 5 s after CJ ("спустя 4 секунды появляется", 06.11)
+bool HasBody(CEntity* e) {
+    auto* rw = (uint8_t*)e->RwObject();
+    void* hier = rw && rw[0] == 2 ? Call<0x734A40, void*>(rw) : nullptr;  // GetAnimHierarchyFromSkinClump
+    return hier && Field<int32_t>(hier, 4) >= 20;                         // RpHAnimHierarchy::numNodes
 }
 
 // One of the scene's people's hips, else its root. The skeleton is updated only while it is drawn: one not drawn since
@@ -1265,8 +1493,10 @@ struct Cabin {
         return {d.Dot(m->right), d.Dot(m->forward), d.Dot(m->up)};
     }
     CVector World(const CVector& l) const { return m->pos + m->right * l.x + m->forward * l.y + m->up * l.z; }
+    // no seat is a metre off the car's middle, and an open door widens what is drawn: CJ held against the bonnet rode, the
+    // partner sat in the air by the other wing (PROLOG3, 07.11)
     bool Holds(const CVector& p) const {
-        return p.x > lo.x + 0.3f && p.x < hi.x - 0.3f && p.y > lo.y + 0.6f && p.y < hi.y - 0.6f && p.z > lo.z && p.z < hi.z;
+        return std::fabs(p.x) < 1.0f && p.x > lo.x + 0.3f && p.x < hi.x - 0.3f && p.y > lo.y + 0.6f && p.y < hi.y - 0.6f && p.z > lo.z && p.z < hi.z;
     }
 };
 void ExtendCabin(const CVector& a, const CVector& b, const CVector& c, void* user) {
@@ -1316,7 +1546,7 @@ bool InCar(const Scene& sc, Spot& out, Ride& ride) {
         for (const Sample& s : g_ahead) ride.drives = ride.drives || (s.cars[k] - c.pos).Length2D() > 2.0f;
         std::vector<CVector> people{cj};
         for (const Actor& a : sc.actors)
-            if (CVector p = cab.Local(HipsOf(a.e)); cab.Holds(p) && std::fabs(p.z - cj.z) < 1.0f) people.push_back(p);
+            if (CVector p = cab.Local(HipsOf(a.e)); HasBody(a.e) && cab.Holds(p) && std::fabs(p.z - cj.z) < 1.0f) people.push_back(p);
         LOGD("Cutscene car %d: %d seats, %d people in it", vehicle, seats, (int)people.size());
         if ((int)people.size() >= seats) return false;
         auto taken = [&](const CVector& s) {
@@ -1366,10 +1596,6 @@ bool InCar(const Scene& sc, Spot& out, Ride& ride) {
         if (BoneAt(cjEntity, 31, lc) && BoneAt(cjEntity, 21, rc) && (lc - root).Length() < 1.5f && (rc - root).Length() < 1.5f)
             if (float f = e->Matrix()->up.Cross(rc - lc).Dot(e->Matrix()->forward); std::fabs(f) > 0.1f)
                 front = f < 0.0f ? 3.14159265f : 0.0f;
-        // the seat he has in this car keeps for the scene (the next shot's CJ sits a little otherwise), until someone
-        // of the scene sits there
-        bool kept = g_haveSeat && g_seat.act == c.index && cab.Holds(g_seat.ground) && !taken(g_seat.ground);
-        if (kept && !bad(g_seat.ground)) return out = g_seat, true;
         // the other seat of CJ's row, then (four seats and more) the other row. Both rows are under the roof, so the
         // other one is towards the roof's middle from CJ, whichever way the model faces (cutscene cars face either way,
         // and a bonnet is longer than a boot: a "row" taken a metre off the wrong way was on the bonnet)
@@ -1377,12 +1603,23 @@ bool InCar(const Scene& sc, Spot& out, Ride& ride) {
         std::vector<CVector> tries{{-cj.x, cj.y, cj.z}};
         if (seats > 2)
             for (float x : {-side, side}) tries.push_back({x, cj.y + dy, cj.z});
+        // what is left of them goes to the next partners
+        auto withOthers = [&](Spot sp) {
+            sp.seats = 0;
+            for (const CVector& s : tries)
+                if (sp.seats < 2 && (s - sp.ground).Length() > 0.5f && cab.Holds(s) && !taken(s) && !bad(s)) sp.seat[sp.seats++] = s;
+            return sp;
+        };
+        // the seat he has in this car keeps for the scene (the next shot's CJ sits a little otherwise), until someone
+        // of the scene sits there
+        bool kept = g_haveSeat && g_seat.act == c.index && cab.Holds(g_seat.ground) && !taken(g_seat.ground);
+        if (kept && !bad(g_seat.ground)) return out = withOthers(g_seat), true;
         // the seat he has keeps (one of a new shot's camera would not do: out of that shot rather than to another seat)
         bool free = kept;
         for (const CVector& s : tries) {
             if (kept || !cab.Holds(s) || taken(s)) continue;
             free = true;
-            if (!bad(s)) return g_haveSeat = true, out = g_seat = Spot{s, front, POSE_CAR, (uint8_t)c.index}, true;
+            if (!bad(s)) return g_haveSeat = true, g_seat = Spot{s, front, POSE_CAR, (uint8_t)c.index}, out = withOthers(g_seat), true;
         }
         // a free seat only where the camera is or looks through: out of this shot rather than in its way (no seat at all:
         // no ride)
@@ -1390,6 +1627,22 @@ bool InCar(const Scene& sc, Spot& out, Ride& ride) {
         return false;
     }
     return false;
+}
+
+// CJ left the car he rides in: his hips out of its room for half a second (he leans about in his seat)
+bool CjGotOut(const Spot& ride) {
+    static uint64_t checked = 0, outSince = 0;
+    uint64_t now = NowMs();
+    if (now - checked < 100) return outSince && now - outSince > 500;
+    checked = now;
+    CEntity* e = ride.act < NumCutsceneObjects() ? CutsceneObject(ride.act) : nullptr;
+    CEntity* cj = CutsceneCj();
+    if (!e || !e->Matrix() || !cj) return false;
+    Cabin cab{e->Matrix()};
+    ForEachTriangle(e, &ExtendCabin, &cab);
+    if (cab.Holds(cab.Local(HipsOf(cj)))) outSince = 0;
+    else if (!outSince) outSince = now;
+    return outSince && now - outSince > 500;
 }
 
 // ---- walking with CJ. A shot where CJ walks takes the partner along, a couple of metres behind him and to one
@@ -1450,6 +1703,20 @@ CVector CjFeet(CEntity* cj) {  // as BuildScene finds the floor under CJ
     return p;
 }
 
+// The way CJ walks off from his track's time s: along his first half metre, his forward if he never goes that far. What
+// he has come so far is no way yet: a few centimetres of shifting his weight point anywhere, and turning on the spot swings
+// his forward. Behind him by either, the partner went round him at 5 m/s (RYDER2A, 04.11).
+CVector WalkOff(const std::vector<CVector>& path, float now, const CVector& feetNow, const CVector& cjFwd, float s) {
+    CVector from = CjAt(path, now, feetNow, s), last = from;
+    for (float u = s + kPathStep, end = (float)(path.size() - 1) * kPathStep; u <= end; u += kPathStep) {
+        CVector q = CjAt(path, now, feetNow, u);
+        if ((q - last).Length2D() > kPathJump) break;
+        if ((q - from).Length2D() >= 0.5f) return Flat(q - from);
+        last = q;
+    }
+    return Flat(cjFwd);
+}
+
 // The partner walking with CJ at the animation's time t: kWalkGap back along CJ's path from where CJ is then
 // (behind where CJ started, if CJ has not come that far), kWalkSide to one side (-1 left, 1 right, 0 right behind).
 CVector WalkPoint(const std::vector<CVector>& path, float now, const CVector& feetNow, const CVector& cjFwd, float t, int side) {
@@ -1463,14 +1730,14 @@ CVector WalkPoint(const std::vector<CVector>& path, float now, const CVector& fe
         if (d >= left) p = p + (q - p) * (left / d), left = 0;
         else p = q, left -= d;
     }
-    CVector way = cj - p;  // the way CJ went from here
-    way = way.Length2D() > 0.05f ? Flat(way) : Flat(cjFwd);
+    CVector way = left > 0.0f || (cj - p).Length2D() < 0.05f ? WalkOff(path, now, feetNow, cjFwd, s) : Flat(cj - p);
     p = p - way * left;
     return p + CVector{way.y, -way.x, 0} * ((float)side * kWalkSide);
 }
 struct Walker {
     CVector feet;
     float heading = 0, speed = 0;  // m/s of the animation's time
+    int turning = 0;               // on the spot: 1 to the left, -1 to the right
 };
 Walker WalkerAt(const std::vector<CVector>& path, float now, const CVector& feetNow, const CVector& cjFwd, float t, int side) {
     Walker w;
@@ -1480,6 +1747,57 @@ Walker WalkerAt(const std::vector<CVector>& path, float now, const CVector& feet
     w.speed = way.Length2D() / 0.15f;
     w.heading = HeadingOf(w.speed > 0.3f ? Flat(way) : Flat(CjAt(path, now, feetNow, t) - a));  // standing: to CJ
     return w;
+}
+
+// The way of a whole scene, worked out ahead. Chosen at each cut from what is drawn around CJ just then, the partner knew no
+// map and no more than the shot: he walked 8 m in a 2 s shot, stood 10 m off for three shots, and his first place of
+// INTRO1A hung 0.4 m over the floor ("в воздухе оказался", 05.11). The game's own files hold it all: the place (what the IPLs
+// put there), CJ's and everybody's tracks, the camera. tests: cspath.py works out from them where he stands, when he goes
+// and which way round the furniture, starting and stopping gently at an easy pace, and writes it to cutscene_ways.txt (in coop.asi).
+// All the games read the same text by their own CJ's clock, so nothing of it goes over the network.
+struct WayKey {
+    float t;  // the time of CJ's animation
+    CVector at;
+    float heading;
+    int mark;  // 1: he is put here, not walked; 2: no way known from here on
+};
+using Way = std::vector<WayKey>;
+const Way* WayOf(const char* cutscene, int rank = 0) {
+    static std::map<std::string, Way> table;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        std::string_view text = Embedded(L"CUTSCENE_WAYS");
+        char line[128], name[16];
+        Way* way = nullptr;
+        while (NextLine(text, line, sizeof line)) {
+            WayKey k;
+            if (isalpha((uint8_t)line[0]) && sscanf(line, "%15s", name) == 1) way = &table[name];
+            else if (way && sscanf(line, "%f %f %f %f %f %d", &k.t, &k.at.x, &k.at.y, &k.at.z, &k.heading, &k.mark) == 6) way->push_back(k);
+        }
+        LOGI("Cutscene ways: %zu cutscenes", table.size());
+    }
+    std::string key(cutscene, strnlen(cutscene, 8));
+    for (char& c : key) c = (char)toupper((uint8_t)c);
+    if (rank) key += Format("#%d", rank);  // the next partners' ways, worked out around the first one's
+    auto it = table.find(key);
+    return it == table.end() || it->second.size() < 2 ? nullptr : &it->second;
+}
+// where the way has him at the animation's time t; false: it knows nothing of that moment
+bool WayAt(const Way& way, float t, Walker& w) {
+    auto next = std::upper_bound(way.begin(), way.end(), t, [](float v, const WayKey& k) { return v < k.t; });
+    if (next == way.begin()) return false;
+    const WayKey& a = *(next - 1);
+    if (a.mark == 2) return false;
+    w.feet = a.at, w.heading = a.heading, w.speed = 0;
+    if (next == way.end() || next->mark) return true;
+    float span = std::max(next->t - a.t, 0.01f), f = std::clamp((t - a.t) / span, 0.0f, 1.0f);
+    w.feet = a.at + (next->at - a.at) * f;
+    float turn = std::remainder(next->heading - a.heading, 6.2831853f);
+    w.heading = a.heading + turn * f;
+    w.speed = (next->at - a.at).Length2D() / span;
+    if (w.speed < 0.05f && std::fabs(turn) / span > 0.3f) w.turning = turn > 0.0f ? 1 : -1;
+    return true;
 }
 
 // CJ walks in this shot, or has just been walking at the cut
@@ -1494,7 +1812,7 @@ bool CjWalks(const Scene& sc, const Track& tr) {
         walked += (q - p).Length2D(), p = q;
     }
     for (const Sample& m : g_ahead) walked = std::max(walked, (m.cj - feet).Length2D());
-    return walked >= 1.0f;
+    return walked >= 2.0f;  // a step or two is no walk: he stays at CJ's side (BesideCj)
 }
 
 // The walk over the whole shot: room where he goes (the side step off CJ's path too), nobody of the scene or a
@@ -1503,7 +1821,7 @@ bool WalkFits(const Scene& sc, const Track& tr, int side) {
     const auto& path = PathOf(tr);
     CEntity* cj = CutsceneCj();
     if (path.size() < 2 || !cj || !cj->Matrix()) return false;
-    CVector feet{sc.cj.x, sc.cj.y, sc.floor}, fwd = cj->Matrix()->forward;
+    CVector feet{sc.cj.x, sc.cj.y, sc.floor}, fwd = CjFacing();
     auto clear = [&](const Walker& w, const CVector& cjAt, const std::vector<CVector>& actors, const std::vector<CVector>* cars) {
         if (!g_grid.Clear(w.feet, 0.25f) || (w.feet - cjAt).Length2D() < 0.9f) return false;
         for (const CVector& a : actors)
@@ -1527,13 +1845,267 @@ bool WalkFits(const Scene& sc, const Track& tr, int side) {
 }
 
 const char* g_how = "";  // how the shot's spot came about (logs)
+// He is at CJ's side up to here. A place is left only when it no longer fits, or when a shot that shows CJ does not show
+// him: that move is a jump at the cut (g_forView), and a walk only follows CJ, the players' word of 03.11. Walked after
+// each turn of CJ's he went about in the middle of a talk (RYDER2A, 04.11: 1.3, 0.9, 3 and 0.8 m in four shots). At most
+// one such move in kViewMoveMs, or a talk cutting from one side to the other would take him along at every cut.
+constexpr float kBesideFar = 3.5f, kViewMoveMs = 6000.0f;
+bool g_forView = false;
+float g_clock = 0.0f, g_viewMoved = -1e9f;  // the camera's clock at this cut and at the last such move
 // The spot is out of the picture, no place in the scene (OutOfPicture, or kept from such): the next shot looks for one
 // in the picture before it keeps him there. Chosen so at the first shot of "Cleaning the Hood" (SWEET1B), he stood out
 // of the picture for all ten shots after it, seen 0% of them (28.10).
 bool g_spotOut = false;
 
+// A short way from the last spot to this one is walked, not jumped (the players' word after the eighth test build,
+// 02.11: he jumped from spot to spot): both on foot (standing or leaning), on one floor, no farther than kGoMax, the line
+// clear of anything drawn to bump into, with floor under it, and of the scene's people, CJ too.
+constexpr float kGoMax = 8.0f, kGoPace = 1.3f;  // m, m/s
+bool LegClear(const CVector& a, const CVector& b, const Scene& sc) {
+    CVector d = b - a;
+    float len = d.Length2D();
+    for (float s = 0.35f; s < len - 0.35f; s += kCell) {
+        CVector p = a + d * (s / len);
+        if (!g_grid.Clear(p, 0.25f) || !g_grid.Ground(p.x, p.y)) return false;
+    }
+    if (SegDist2(sc.cj.x, sc.cj.y, a, b) < 0.45f * 0.45f) return false;
+    for (const Actor& act : sc.actors)
+        if (SegDist2(act.feet.x, act.feet.y, a, b) < 0.45f * 0.45f) return false;
+    return true;
+}
+// A straight line blocked (a table, a sofa, someone of the scene) goes round it with one turn aside of the line, the
+// shortest that is clear (the players' word, 03.11: walking in every cutscene, rooms too). None: a jump at the cut.
+bool WalkWay(const Spot& from, Spot& to, const Scene& sc) {
+    to.viaSet = false;
+    auto onFoot = [](Pose p) { return p == POSE_STAND || p == POSE_LEAN; };
+    CVector a = from.ground, d = to.ground - a;
+    float len = d.Length2D();
+    if (!onFoot(from.pose) || !onFoot(to.pose) || len < 0.3f || len > kGoMax || std::fabs(d.z) > 0.4f) return false;
+    if (LegClear(a, to.ground, sc)) return true;
+    CVector aside{d.y / len, -d.x / len, 0.0f};
+    float best = kGoMax * 1.5f;
+    for (float off : {0.8f, -0.8f, 1.4f, -1.4f, 2.0f, -2.0f})
+        for (float along : {0.5f, 0.3f, 0.7f}) {
+            CVector v = a + d * along + aside * off;
+            float way = (v - a).Length2D() + (to.ground - v).Length2D();
+            if (way >= best || !g_grid.Clear(v, 0.25f) || !g_grid.Ground(v.x, v.y) || !LegClear(a, v, sc) || !LegClear(v, to.ground, sc))
+                continue;
+            best = way, to.via = v, to.viaSet = true;
+        }
+    return to.viaSet;
+}
+
+// ---- the plan of a stop. Chosen shot by shot he knew nothing of the shots to come, and a place good for one was out of the
+// next: 14 of 26 shots did not show him, and he moved in the middle of a talk (04.11). The cutscene's files hold it all
+// ahead: the camera's spline and everybody's root track run to its end. So while CJ stays about one place (a stop) the
+// places are chosen for all its shots at once, the most of it seen with the fewest moves: a move costs less across a cut that
+// does not show him on one side of it, and much where he is seen before and after. The places lie at CJ's side and a
+// little behind him (the players' word of 03.11), and a moment in front of him counts as one in the way. All round him, with
+// a move at 0.5 s, he went from one side of CJ to the other at every other cut, 9 places in 100 s of INTRO1A (05.11).
+constexpr float kStopReach = 3.0f;    // CJ this far from where the stop began: another stop
+constexpr float kMoveHidden = 4.0f;   // what a move costs, in seconds of him seen
+constexpr float kMoveSeen = 8.0f;     // and seen on both sides of its cut, plus a second a metre
+constexpr float kStayBonus = 4.0f;    // no first move
+constexpr float kFar = 0.02f;         // the share of a shot a metre from CJ's side costs
+constexpr float kOffAbreast = 0.03f;  // and the share a quarter turn off abreast of him costs
+constexpr float kOtherSide = 0.05f;   // and the other side of him than the scene's
+constexpr size_t kPlanShots = 64;
+struct PlanShot {
+    float from = 0, to = 0;
+    std::vector<Sample> samples;
+};
+struct PlanStep {
+    float from, to;
+    Spot spot;
+};
+std::vector<PlanStep> g_plan;
+size_t g_planMoves = 0;
+
+// A place over a shot: no good (somebody at it, the camera in it, in the way of the people for over a quarter of the shot),
+// else how many moments the shot shows him, less those he is in somebody's way
+bool RateShot(const Scene& all, const CVector& feet, const PlanShot& shot, int& seen) {
+    int way = 0;
+    seen = 0;
+    for (const Sample& m : shot.samples) {
+        if ((m.cj - feet).Length2D() < 1.0f || AtCamera(m.view.pos, feet, 1.8f)) return false;
+        for (const CVector& a : m.actors)
+            if ((a - feet).Length2D() < 0.75f) return false;
+        for (size_t k = 0; k < all.cars.size(); ++k)
+            if (all.cars[k].Covers(feet, m.cars[k], 0.6f)) return false;
+        if (InFrontOf(m.cj, m.cjFwd, feet)) {
+            ++way;
+            continue;
+        }
+        Body b;
+        if (!ProjectAt(m.view, feet, 1.8f, b) || !OnScreen(all, b)) continue;
+        if (InWayAt(all, m, b, true)) ++way;
+        else if (Shown(all, b) && GridSeen(m.view.pos, feet + CVector{0, 0, 1.1f})) ++seen;
+    }
+    seen -= way;
+    return way * 4 <= (int)shot.samples.size();
+}
+
+void BuildPlan(const Scene& sc, const Spot* from) {
+    g_plan.clear();
+    CEntity* cj = CutsceneCj();
+    CameraPath path;
+    float now = 0, fovNow = 0;
+    View cur;
+    Track cjTrack;
+    if (!cj || !CameraNow(sc, path, now, fovNow, cur) || !TrackOf(cj, cjTrack)) return;
+    // everybody of the scene, those who come in later too
+    Scene all = sc;
+    all.actors.clear();
+    all.cars.clear();
+    for (int i = 0; i < NumCutsceneObjects(); ++i) {
+        CEntity* o = CutsceneObject(i);
+        if (!o || o == cj) continue;
+        Car c{};
+        if (IsPerson(o)) {
+            CVector p = o->GetPosition();
+            all.actors.push_back({o, {p.x, p.y, sc.floor}, Body{}, false});
+        } else if (IsCar(o, c.b)) {
+            c.index = i, c.pos = o->GetPosition();
+            TrackOf(o, c.track);
+            all.cars.push_back(c);
+        }
+    }
+    std::vector<Track> tracks(all.actors.size());
+    for (size_t i = 0; i < all.actors.size(); ++i) TrackOf(all.actors[i].e, tracks[i]);
+    // the shots of the stop: up to one where CJ walks off or is out of reach
+    CVector start{sc.cj.x, sc.cj.y, sc.floor}, centre{}, facing{};
+    std::vector<PlanShot> shots;
+    int moments = 0;
+    for (float t = now; shots.size() < kPlanShots;) {
+        float end = 0, next = 0;
+        ShotEnd(path, t, end, next);
+        PlanShot shot;
+        shot.from = t, shot.to = next;
+        int steps = std::clamp((int)((end - t) / 500.0f), 1, 16);
+        bool leaves = false;
+        for (int i = 0; i <= steps && !leaves; ++i) {
+            float at = t + (end - 30.0f - t) * (float)i / (float)steps;
+            Sample m;
+            m.dt = (std::max(at, t) - now) / 1000.0f;
+            float f = fovNow;
+            path.At(now + m.dt * 1000.0f, m.view, f);
+            float zoom = std::tan(fovNow * 0.00872665f) / std::tan(std::clamp(f, 5.0f, 170.0f) * 0.00872665f);  // tan(fov/2)
+            m.view.kx = cur.kx * zoom, m.view.ky = cur.ky * zoom, m.view.cx = cur.cx, m.view.cy = cur.cy;
+            m.cj = FeetLater(cjTrack, start, m.dt);
+            m.cjFwd = FacingAt(cjTrack.seq, cjTrack.time + m.dt);
+            for (size_t k = 0; k < all.actors.size(); ++k) m.actors.push_back(FeetLater(tracks[k], all.actors[k].feet, m.dt));
+            for (const Car& c : all.cars) m.cars.push_back(FeetLater(c.track, c.pos, m.dt));
+            leaves = (m.cj - start).Length2D() > kStopReach ||
+                     (!shot.samples.empty() && (m.cj - shot.samples.front().cj).Length2D() >= 2.0f);
+            shot.samples.push_back(std::move(m));
+        }
+        if (leaves) break;
+        for (const Sample& m : shot.samples) centre = centre + m.cj, facing = facing + m.cjFwd, ++moments;
+        shots.push_back(std::move(shot));
+        if (next <= t || next >= path.pos.Time(path.pos.n - 1)) break;
+        t = next;
+    }
+    if (shots.empty() || !moments) return;
+    centre = centre * (1.0f / (float)moments);
+    centre.z = sc.floor;
+    // CJ turning right round in the stop has no way he faces on the whole: his first
+    facing = facing.Length2D() < 0.2f * (float)moments ? shots.front().samples.front().cjFwd : Flat(facing);
+    CVector right{facing.y, -facing.x, 0.0f};
+    // the people he stands with, to face them
+    CVector group = centre;
+    int with = 1;
+    for (const CVector& a : shots.front().samples.front().actors)
+        if ((a - start).Length2D() < 4.0f) group = group + a, ++with;
+    group = with > 1 ? group * (1.0f / (float)with) : centre + facing * 3.0f;  // nobody: the way CJ looks
+    // the places: at the side of where CJ stays and a little behind (deg from his front), and the one he stands at
+    BuildReach(sc.cj);
+    std::vector<Spot> places;
+    std::vector<float> cost;  // of a second there
+    std::vector<int> sides;
+    for (float r : {1.5f, 2.0f, 2.6f})
+        for (float deg : {90.0f, 75.0f, 110.0f, 60.0f, 130.0f, 150.0f})
+            for (int side : {1, -1}) {
+                float a = deg * 0.0174533f;
+                Spot s{centre + right * ((float)side * r * std::sin(a)) + facing * (r * std::cos(a)), 0, POSE_STAND, (uint8_t)(g_seed % 4)};
+                s.ground.z = sc.floor;
+                if (NoRoom(sc, s) >= 0 || !Reachable(s.ground)) continue;
+                s.heading = HeadingOf(Flat(group - s.ground));
+                places.push_back(s), sides.push_back(side);
+                cost.push_back(kFar * r + kOffAbreast * std::fabs(deg - 90.0f) / 90.0f + (g_side && side != g_side ? kOtherSide : 0.0f));
+            }
+    // Where he stands, if that is by this stop: taken from anywhere and with its bonus, he stayed under the floor for 28 s of
+    // SWEET3A after CJ had gone up (CJ waits there for his part), and 7 m across the room in INTRO1A (05.11).
+    bool stay = from && from->pose == POSE_STAND && std::fabs(from->ground.z - sc.floor) <= 1.0f &&
+                (from->ground - centre).Length2D() <= kBesideFar;
+    if (stay) places.push_back(*from), cost.push_back(0.0f), sides.push_back(0);
+    size_t n = places.size(), k = shots.size();
+    if (!n) return;
+    // over all the shots: the best way through, a place a shot refuses being no way
+    constexpr float kNo = -1e9f;
+    std::vector<float> value(n * k), best(n), step(n);
+    std::vector<uint8_t> shows(n * k);
+    std::vector<int16_t> came(n * k, -1);
+    for (size_t s = 0; s < k; ++s) {
+        float seconds = (shots[s].to - shots[s].from) / 1000.0f, share = seconds / (float)shots[s].samples.size();
+        for (size_t c = 0; c < n; ++c) {
+            int seen = 0;
+            bool fits = RateShot(all, places[c].ground, shots[s], seen);
+            value[s * n + c] = fits ? share * (float)seen - seconds * cost[c] : kNo;
+            shows[s * n + c] = seen > 0;
+        }
+    }
+    for (size_t c = 0; c < n; ++c) best[c] = value[c];
+    if (stay && best[n - 1] > kNo) best[n - 1] += kStayBonus;
+    for (size_t s = 1; s < k; ++s) {
+        for (size_t c = 0; c < n; ++c) {
+            step[c] = kNo;
+            if (value[s * n + c] <= kNo) continue;
+            float top = best[c];
+            int16_t was = (int16_t)c;
+            for (size_t p = 0; p < n; ++p) {
+                if (p == c || best[p] <= kNo) continue;
+                float cost = kMoveHidden;
+                if (shows[(s - 1) * n + p] && shows[s * n + c]) cost += kMoveSeen + (places[p].ground - places[c].ground).Length2D();
+                if (best[p] - cost > top) top = best[p] - cost, was = (int16_t)p;
+            }
+            if (top > kNo) step[c] = top + value[s * n + c], came[s * n + c] = was;
+        }
+        best = step;
+    }
+    size_t at = (size_t)(std::max_element(best.begin(), best.end()) - best.begin());
+    if (best[at] <= kNo) return;  // no way through all of it: shot by shot, as without a plan
+    g_plan.resize(k);
+    g_planMoves = 0;
+    for (size_t s = k; s-- > 0;) {
+        g_plan[s] = {shots[s].from, shots[s].to, places[at]};
+        if (s) {
+            if ((size_t)came[s * n + at] != at) ++g_planMoves;
+            at = (size_t)came[s * n + at];
+        }
+    }
+    if (!g_side) g_side = sides[at];
+    LOGI("Cutscene %s: plan of %zu shots, %zu places tried, %zu moves", g_cutscene, k, n, g_planMoves);
+}
+
+// This shot's place of the plan, a new plan once the last has run out
+bool PlanSpot(const Scene& sc, const Spot* from, Spot& out) {
+    auto step = [] {
+        for (const PlanStep& s : g_plan)
+            if (g_clock >= s.from - 50.0f && g_clock < s.to - 50.0f) return &s;
+        return (const PlanStep*)nullptr;
+    };
+    const PlanStep* s = step();
+    bool same = s != nullptr;
+    if (!s) BuildPlan(sc, from), s = step();
+    if (!s) return false;
+    out = s->spot;
+    g_forView = same && from && (out.ground - from->ground).Length2D() > 0.3f;  // a move of the plan: at the cut
+    return true;
+}
+
 Spot Choose(const Scene& sc) {
     g_staysNo = "";
+    g_forView = false;
     const Places* own = PlacesOf(g_cutscene);
     Ride ride;
     if (!(own && own->hidden)) {  // CJ rides: in his car with him
@@ -1544,11 +2116,20 @@ Spot Choose(const Scene& sc) {
     // no seat for him in CJ's car: he stands by it, or, if it drives off, where he was or out of the picture (a new
     // place by the kerb every shot along the road would show him there again and again). A seat of before is no place.
     bool stand = !(own && own->hidden), may = stand && !ride.drives;
+    // the scene's way, where there is one (not at places chosen by hand)
+    if (stand && !(own && !own->spots.empty()) && MocapWalkCount() && MocapCount() > 1) {
+        Track now;
+        Walker w;
+        const Way* way = WayOf(g_cutscene);
+        if (way && TrackOf(CutsceneCj(), now) && WayAt(*way, now.time, w)) {
+            g_how = " (beside, way)";
+            return Spot{w.feet, w.heading, POSE_WAY, 0};
+        }
+    }
     bool before = stand && g_haveSpot && g_spot.pose != POSE_HIDDEN && g_spot.pose != POSE_CAR;
     Track tr;
     bool track = TrackOf(CutsceneCj(), tr) && PathOf(tr).size() > 1;
-    CEntity* cj = CutsceneCj();
-    CVector cjFwd = cj && cj->Matrix() ? cj->Matrix()->forward : CVector{0, 1, 0};
+    CVector cjFwd = CjFacing();
     // where he is now: a walk has got on, it stands there if this shot is no walk
     Spot prev = g_spot;
     if (before && prev.pose == POSE_WALK && track) {
@@ -1558,7 +2139,7 @@ Spot Choose(const Scene& sc) {
     // CJ walks: the partner goes along, on his side of CJ if he was walking already, unless that is a jump the
     // shot shows
     if (may && !(own && !own->spots.empty()) && track && MocapWalkCount() && MocapCount() > 1 && CjWalks(sc, tr)) {
-        int first = before && g_spot.pose == POSE_WALK ? (int)g_spot.act - 1 : 1;
+        int first = before && g_spot.pose == POSE_WALK ? (int)g_spot.act - 1 : g_side ? g_side : 1;
         for (int side : {first, first ? -first : 1, first ? 0 : -1}) {
             if (!WalkFits(sc, tr, side)) continue;
             Walker w = WalkerAt(PathOf(tr), tr.time, CVector{sc.cj.x, sc.cj.y, sc.floor}, cjFwd, tr.time, side);
@@ -1567,14 +2148,44 @@ Spot Choose(const Scene& sc) {
             return Spot{w.feet, w.heading, POSE_WALK, (uint8_t)(side + 1)};
         }
     }
+    // at CJ's side: by the plan of this stop, else shot by shot (BesideCj)
+    if (may && !(own && !own->spots.empty())) {
+        Spot planned;
+        g_how = " (beside, plan)";
+        if (PlanSpot(sc, before ? &prev : nullptr, planned)) return planned;
+        bool keep = before && (BodyOf(prev) - sc.cj).Length2D() <= kBesideFar && Stays(sc, prev);
+        bool seen = CjShare(sc) >= 0.3f;
+        bool view = keep && seen && g_clock - g_viewMoved >= kViewMoveMs && SeenShare(sc, prev) < 0.2f;
+        g_how = " (beside, stays)";
+        if (keep && !view) return prev;
+        Spot side;
+        if (BesideCj(sc, before ? &prev : nullptr, seen, side)) {
+            if (view && SeenShare(sc, side) < 0.3f) return prev;  // no place the shot shows
+            g_how = " (beside)";
+            if (view) g_forView = true, g_viewMoved = g_clock;
+            return side;
+        }
+        if (keep) return prev;
+    }
     // A shot keeps him where he stood whenever it can, seen in it or not. Kept only where half of the next shot showed
     // him, he went where each shot did: from the wall to Sweet and on to the back of the room at every cut ("второй
     // Сиджей постоянно телепортируется", 28.10; the players chose one place for the whole scene).
     // Only where the shot shows him at all: kept where this shot never does, he was out of the picture for most of a
     // scene (29.10, SWEET1B: 8 of 12 shots unseen at the place he stayed at), and a place in the picture comes first.
     // Moved only then, he does not jump about in front of the camera: where he stood is not in this shot.
+    // Kept where the shot shows him for a moment only, he was gone from the picture for most of it ("пропадает
+    // моментами", 31.10): the place must be in it for a fifth of the shot. Half the shot made him change places almost
+    // every shot, as if he teleported (31.10, the second test).
     g_how = " (stays)";
-    if (before && !g_spotOut && Stays(sc, prev) && SeenShare(sc, prev) > 0.0f) return prev;
+    static char seenThere[40];
+    if (before && !g_spotOut && Stays(sc, prev)) {
+        float seen = SeenShare(sc, prev);
+        if (seen >= 0.2f) return prev;
+        snprintf(seenThere, sizeof seenThere, "seen %.0f%% of the shot there", seen * 100.0f);
+        g_staysNo = seenThere;
+    }
+    g_fromOk = before && (BodyOf(prev) - sc.cj).Length2D() < 25.0f && std::fabs(prev.ground.z - sc.floor) < 1.0f;
+    g_from = prev.ground;
     auto offer = [&](Best& to) {
         if (own && !own->spots.empty()) {
             for (const Spot& sp : own->spots) to.Offer(sc, sp);
@@ -1592,10 +2203,32 @@ Spot Choose(const Scene& sc) {
     // first (cut by its edge, half behind something). Kept where he was or out of the picture before that, he was seen
     // 8% of the time in 13 hard cutscenes of the review (37% with this and the rules above).
     Best loose;
-    loose.loose = true;
+    loose.rules = LOOSE;
     if (may) offer(loose);
     g_how = " (loose)";
     if (loose.score > kRejected && Shows(sc, loose.spot, false)) return loose.spot;
+    // None either: the last try in the picture. Without it he stood out of the picture or where the shot did not show
+    // him through 21 of 47 shots of a test, the most of "Nines and AKs"'s first cutscene (31.10, "вовсе не виден"); the
+    // players chose him seen in every shot.
+    Best last;
+    last.rules = SEEN;
+    BuildReach(sc.cj);
+    if (may) offer(last);
+    g_how = " (last try)";
+    if (last.score > kRejected) return last.spot;
+    // Out of the picture in the shot before as well: once more, through narrower gaps and seen for a moment of the shot
+    // at least. The talk at Sweet's in "Nines and AKs" had every try fail five shots on end, and he stood where the
+    // camera never looked for half a minute ("практически не видно", 31.10, the fourth test).
+    if (may && !g_seenBefore) {
+        Best any;
+        any.rules = SEEN;
+        BuildReach(sc.cj, 1);
+        g_lastChance = true;
+        offer(any);
+        g_lastChance = false;
+        g_how = " (seen at last)";
+        if (any.score > kRejected) return any.spot;
+    }
     // then he stays where he was, out of the picture now, or stands by out of the picture (not at the places chosen by
     // hand: those alone)
     g_how = " (stays)";
@@ -1624,6 +2257,7 @@ bool BuildScene(Scene& sc) {
     CMatrix* cam = Ref<CMatrix*>(kCameraMatrix);
     if (!cj || !cj->Matrix() || !cam) return false;
     sc.cj = cj->GetPosition();
+    sc.who = cj;
     sc.cam = cam->pos;
     sc.camFwd = cam->forward;
     sc.fov = cam::Fov();
@@ -1656,6 +2290,71 @@ bool BuildScene(Scene& sc) {
         sc.cars.push_back(c);
     }
     return true;
+}
+
+// A shot about people away from CJ: CJ not in its picture now or later (or out of sight, under a floor), somebody of
+// the scene in it on another floor or 8 m off. "Nines and AKs" keeps CJ under the floor of Sweet's house for its first
+// 10 s while the camera shows the others upstairs: every place by CJ was refused, and the partner was nowhere to be
+// seen (31.10). The scene is then taken around the one of them nearest the middle of the picture.
+bool Elsewhere(const Scene& sc, Scene& around) {
+    if (sc.cjInCar) return false;
+    bool cj = sc.cjOnScreen && Shown(sc, sc.cjBody) && Seen(sc.cam, CVector{sc.cj.x, sc.cj.y, sc.floor + 1.1f});
+    Body b;
+    for (const Sample& m : g_ahead)
+        cj = cj || (PersonAt(m.view, m.cj, b) && Shown(sc, b) && Seen(m.view.pos, m.cj + CVector{0, 0, 1.1f}));
+    if (cj) return false;
+    const Actor* who = nullptr;
+    float floor = 0;
+    for (const Actor& a : sc.actors) {
+        if (!a.onScreen || !Shown(sc, a.body)) continue;
+        CVector p = a.e->GetPosition();
+        float z, f = Floor(p.x, p.y, p.z + 0.2f, z) && p.z - z < 2.0f ? z : p.z - 1.0f;
+        if (std::fabs(f - sc.floor) < 1.5f && (p - sc.cj).Length2D() < 8.0f) continue;
+        if (!who || std::fabs(a.body.x - sc.w * 0.5f) < std::fabs(who->body.x - sc.w * 0.5f)) who = &a, floor = f;
+    }
+    if (!who) return false;
+    around = sc;
+    around.who = who->e;
+    around.cj = who->e->GetPosition();
+    around.floor = floor;
+    around.cjBody = who->body;
+    around.cjOnScreen = true;
+    around.actors.clear();
+    if (std::fabs(sc.floor - floor) < 1.5f) around.actors.push_back({sc.who, CVector{sc.cj.x, sc.cj.y, floor}, sc.cjBody, sc.cjOnScreen});
+    for (const Actor& a : sc.actors)
+        if (&a != who) around.actors.push_back({a.e, CVector{a.feet.x, a.feet.y, floor}, a.body, a.onScreen});
+    return true;
+}
+
+// A place among the people of such a shot, by the same rules as by CJ (Choose), where he was if the shot shows him there.
+bool ChooseAmong(const Scene& sc, Spot& out) {
+    const Places* own = PlacesOf(g_cutscene);
+    if (own && (own->hidden || !own->spots.empty())) return false;  // the places chosen by hand alone
+    const Spot& prev = g_spot;
+    bool before = g_haveSpot && prev.pose != POSE_HIDDEN && prev.pose != POSE_CAR && prev.pose != POSE_WALK;
+    g_fromOk = before && (BodyOf(prev) - sc.cj).Length2D() < 25.0f && std::fabs(prev.ground.z - sc.floor) < 1.0f;
+    g_from = prev.ground;
+    g_how = " (stays, the shot elsewhere)";
+    if (before && Stays(sc, prev) && SeenShare(sc, prev) >= 0.5f) {
+        out = prev;
+        return true;
+    }
+    g_how = " (the shot elsewhere)";
+    for (int pass = 0; pass < 4 && !(pass == 3 && g_seenBefore); ++pass) {  // the fourth one as in Choose
+        Best best;
+        best.rules = pass == 0 ? STRICT : pass == 1 ? LOOSE : SEEN;
+        if (pass >= 2) BuildReach(sc.cj, pass == 3 ? 1 : 2);
+        g_lastChance = pass == 3;
+        OfferAttractors(sc, best);
+        OfferSeats(sc, best);
+        OfferFloor(sc, best);
+        g_lastChance = false;
+        if (best.score > kRejected && SeenShare(sc, best.spot) > 0.0f) {
+            out = best.spot;
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---- who of the scene talks: the jaw moves against the head (bone 5) while a line is said. Cutscene faces have a
@@ -1712,6 +2411,13 @@ void UpdateTalk() {
 }
 
 // ---- peds held in the scene
+struct SceneAct {
+    const char* scene;
+    float from, to;
+    const char* block;
+    const char* anim;
+    bool loop;
+};
 struct Held {
     int handle = -1;
     Spot spot;
@@ -1728,11 +2434,19 @@ struct Held {
     const Fidget* fidget = nullptr;  // the variation playing
     const char* clip = nullptr;      // the cutscene clip playing, and how many came before it at this spot
     uint32_t clips = 0;
+    const SceneAct* act = nullptr;   // the scene's own act instead of the clips (kSceneActs)
     bool walking = false;            // walking with CJ: the walk plays (else the clips)
+    int turning = 0;                 // turning on the spot: the game's small steps play (Walker::turning)
     const char* walk = nullptr;
-    float walkSpeed = 1, heading = 0;
+    bool going = false;              // on foot to the spot (Spot::walk), by the cutscene's clock
+    float lit = -1;                  // its own CPhysical::m_fContactSurfaceBrightness before the scene
+    CVector goFrom, goTo, goVia;  // goVia: the turn of a way round something (goViaSet)
+    bool goViaSet = false;
+    float goStart = 0, goMs = 0;
+    float walkSpeed = 1, heading = 0, turnRate = 0;  // turnRate: rad/s his heading goes round at now
     uint64_t speedAt = 0;
     uint64_t fidgetSince = 0, lookedAt = 0, talkSeenAt = 0;
+    int weapon = -1;                 // what it held as the scene took it (-1: not looked yet)
     CEntity* looking = nullptr;
     CEntity* lastTalker = nullptr;
     bool lookOn = false, wasTalking = false;
@@ -1742,7 +2456,7 @@ std::map<CPed*, Held> g_held;
 // Whom the partner looks at: who talks in front of it, and a while after the line; otherwise CJ or the nearest one
 // in front. Now and then a glance at someone else.
 CEntity* Attention(Held& h, CPed* ped, uint64_t now, float clock) {
-    CVector me = ped->GetPosition(), face = Forward(h.spot.heading);
+    CVector me = ped->GetPosition(), face = Forward(ped->CurrentRotation());
     std::vector<CEntity*> front;
     for (auto& [e, t] : g_talk) {
         CVector d = t.head - me;
@@ -1788,6 +2502,8 @@ void StartFidget(Held& h, const Fidget& f, uint64_t now) {
     LOGD("Cutscene partner: %s/%s", f.block, f.anim);
 }
 
+// The clips start and end in poses of their own: a quarter of a second between them was a jerk every 5 s (06.11)
+constexpr float kClipBlend = 0.8f;  // s
 // the clips act: the next one drawn from the spot (the same in both games), never the one that ends
 void NextClip(Held& h, float blend) {
     size_t n = MocapCount();
@@ -1817,9 +2533,9 @@ void Live(CPed* ped, Held& h, const Act* a) {
                 break;
             }
     h.wasTalking = talking;
-    if (!a->anim) {  // the next clip blends in over the last quarter second of this one
-        void* as = h.stage == 2 && h.clip && !h.walking ? Call<0x4D6870, void*>(ped->RwObject(), h.clip) : nullptr;  // RpAnimBlendClumpGetAssociation
-        if (as && anim::CurrentTime(as) >= anim::TotalTime(anim::Hierarchy(as)) - 0.25f) NextClip(h, 4.0f);
+    if (!a->anim) {  // the next clip blends in over the end of this one
+        void* as = h.stage == 2 && h.clip && !h.walking && !h.turning && !h.act ? Call<0x4D6870, void*>(ped->RwObject(), h.clip) : nullptr;  // RpAnimBlendClumpGetAssociation
+        if (as && anim::CurrentTime(as) >= anim::TotalTime(anim::Hierarchy(as)) - kClipBlend) NextClip(h, 1.0f / kClipBlend);
     } else if (h.stage == 3) {  // back to the loop just before the variation ends
         void* as = Call<0x4D6870, void*>(ped->RwObject(), h.fidget->anim);  // RpAnimBlendClumpGetAssociation
         if (as ? anim::CurrentTime(as) >= anim::TotalTime(anim::Hierarchy(as)) - 0.3f : now - h.fidgetSince > 500) {
@@ -1869,7 +2585,19 @@ void Live(CPed* ped, Held& h, const Act* a) {
 }
 }  // namespace
 
-void Prepare() {
+// The map's animated objects need their IFP, and the game streams no IFP while a cutscene runs (CStreaming::RequestModelStream). Played
+// far from where the game has been, a scene shows such a building's LOD all through: the Burger Shot of STRAP1A in /cs on both screens,
+// in one of 147 scenes, as the request goes through right after it (06.11). The same for a partner far from the host in the real mission.
+const struct {
+    const char* scene;
+    const char* block;
+} kMapBlocks[] = {
+    {"STRAP1A", "LAW"}, {"STRAP4A", "LAW"}, {"SYND_3A", "SFSE"}, {"TRUTH_2", "COUNXREF"}, {"CRASV2A", "COUNXREF"}, {"CRASV2B", "COUNXREF"},
+};
+
+void Prepare(const char* cutscene) {
+    for (const auto& b : kMapBlocks)
+        if (!_stricmp(cutscene, b.scene)) BlockReady(b.block);
     for (const auto& list : {std::vector<Act>(std::begin(kStand), std::end(kStand)), std::vector<Act>(std::begin(kLean), std::end(kLean)),
                              std::vector<Act>(std::begin(kSit), std::end(kSit)), std::vector<Act>(std::begin(kStep), std::end(kStep))})
         for (const Act& a : list) {
@@ -1904,8 +2632,17 @@ void Analyse() {
         strncpy(g_cutscene, name, 8);
         g_seed = 2166136261u;
         for (const char* c = g_cutscene; *c; ++c) g_seed = (g_seed ^ (uint8_t)*c) * 16777619u;
-        g_haveSpot = g_haveSeat = false;
+        g_haveSpot = g_haveSeat = g_seenBefore = false;
+        g_side = 0;
+        g_viewMoved = -1e9f;
+        g_plan.clear();
     }
+    // The first keys of CJ's track fly him in from far off in 12 of the 148 scenes (INTRO1A: 17 m in four frames). A place
+    // chosen meanwhile was by the stairs, 6 m over the room he landed in (05.11): the first one waits till he is down.
+    Track cjTrack;
+    if (!g_haveSpot && TrackOf(CutsceneCj(), cjTrack) && cjTrack.time < 0.2f &&
+        (RootAt(cjTrack.seq, cjTrack.time + 0.2f) - RootAt(cjTrack.seq, cjTrack.time)).Length() > 1.0f)
+        return;
     float clock = Ref<float>(cam::Active() + 0x90);
     if (g_check.armed && clock >= g_check.at) {
         g_check.armed = false;
@@ -1915,8 +2652,9 @@ void Analyse() {
     // a new shot: the spline's next cut is passed (some cuts barely move the camera), or the camera or CJ jumped
     bool onSpline = cam::Mode() == kModeFlyBy && !g_ahead.empty();
     if (onSpline && clock >= g_shotFrom && clock < g_shotTo) return;  // the frames between two keys of a cut
+    // CJ gets out in the middle of a shot: he gets out with him. Left for the next cut he sat on in the empty car (BCRAS2, 05.11)
     bool cut = !g_haveSpot || (sc.cam - g_lastCam).Length() > 2.0f || (sc.cj - g_lastCj).Length() > 2.0f ||
-               (onSpline && clock >= g_shotTo);
+               (onSpline && clock >= g_shotTo) || (g_spot.pose == POSE_CAR && CjGotOut(g_spot));
     g_lastCam = sc.cam;
     g_lastCj = sc.cj;
     if (!cut) return;
@@ -1928,10 +2666,29 @@ void Analyse() {
     std::fill(std::begin(g_attractors), std::end(g_attractors), 0);
     g_tried.clear();
     bool keptOut = g_spotOut;
-    g_spot = Choose(sc);
+    g_clock = clock;
+    Spot spot = Choose(sc);
+    // unseen by CJ in a shot about people elsewhere: among them (at CJ's side he stays by CJ, seen or not: the players'
+    // choice of 03.11)
+    Scene around;
+    const Scene* scene = &sc;
+    if (spot.pose != POSE_CAR && strncmp(g_how, " (beside", 8) && SeenShare(sc, spot) <= 0.0f && Elsewhere(sc, around)) {
+        const char* how = g_how;
+        BuildGrid(around.cj, around.floor);
+        BuildAhead(around);
+        if (ChooseAmong(around, spot)) {
+            scene = &around;
+        } else {
+            g_how = how;
+            BuildGrid(sc.cj, sc.floor);
+            BuildAhead(sc);
+        }
+    }
+    spot.walk = g_haveSpot && !g_forView && WalkWay(g_spot, spot, *scene);
+    g_spot = spot;
     g_spotOut = !strcmp(g_how, " (out of the picture)") || (keptOut && !strcmp(g_how, " (stays)"));
     g_decided = true, g_decidedAt = start;
-    g_lastScene = sc;
+    g_lastScene = *scene;
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::string kinds;
     for (int t = 0; t < 16; ++t)
@@ -1939,14 +2696,16 @@ void Analyse() {
     if (!kinds.empty()) LOGD("  ped attractors around (type:count):%s", kinds.c_str());
     g_haveSpot = true;
     ++g_shot;
-    LOGD("Cutscene %s shot %d (%.1f s ahead%s): %s%s%s%s in %.1f ms, seen %.0f%% (rejected: distance %d, crowd %d, frame %d, "
+    float seen = SeenShare(*scene, g_spot);
+    g_seenBefore = seen > 0.0f;
+    LOGI("Cutscene %s shot %d (%.1f s ahead%s): %s%s%s%s in %.1f ms, seen %.0f%% (rejected: distance %d, crowd %d, frame %d, "
          "covers CJ %d, covers actor %d, solid %d, floor %d, not seen %d, in the way %d, later in the shot %d)",
          g_cutscene, g_shot, g_ahead.empty() ? 0.0f : g_ahead.back().dt, sc.cjInCar ? ", CJ in a car" : "",
-         Describe(g_spot), g_how, *g_staysNo ? ", not staying: " : "", g_staysNo, ms, SeenShare(sc, g_spot) * 100.0f, g_rejects[R_DISTANCE],
+         Describe(g_spot), g_how, *g_staysNo ? ", not staying: " : "", g_staysNo, ms, seen * 100.0f, g_rejects[R_DISTANCE],
          g_rejects[R_CROWD], g_rejects[R_FRAME], g_rejects[R_COVERS_CJ], g_rejects[R_COVERS_ACTOR], g_rejects[R_SOLID],
          g_rejects[R_FLOOR], g_rejects[R_HIDDEN], g_rejects[R_FRONT], g_rejects[R_LATER]);
     // the people's root tracks are read from the engine's own data: CJ's is checked against where CJ gets to
-    if (!g_ahead.empty()) {
+    if (!g_ahead.empty() && scene == &sc) {
         const Sample& mid = g_ahead[g_ahead.size() / 2];
         g_check = {mid.cj, clock + mid.dt * 1000.0f, true};
     }
@@ -1974,8 +2733,22 @@ void Follow() {
     LOGD("Cutscene shot %d from the host: %s", g_shot, Describe(g_spot));
 }
 
+// Before the first drawn frame (Analyse needs one) and the host's word (the partner's game): where the scene's way has him,
+// from the frame the scene starts. He came in a moment after the picture, in plain view (06.11).
+bool EarlySpot(Spot& out) {
+    const char* name = (const char*)kCutsceneName;
+    const Places* own = PlacesOf(name);
+    if ((own && (own->hidden || !own->spots.empty())) || !MocapWalkCount() || MocapCount() < 2) return false;
+    const Way* way = WayOf(name);
+    Track tr;
+    Walker w;
+    if (!way || !TrackOf(CutsceneCj(), tr) || !WayAt(*way, tr.time, w)) return false;
+    out = Spot{w.feet, w.heading, POSE_WAY, 0};
+    return true;
+}
+
 bool CurrentSpot(Spot& out) {
-    if (!g_live || !g_haveSpot) return false;
+    if (!g_live || !g_haveSpot) return EarlySpot(out);
     out = g_spot;
     return true;
 }
@@ -1989,33 +2762,67 @@ float ShotLeftMs() {
 
 const char* Describe(const Spot& s) {
     static char buf[96];
-    static const char* names[] = {"stand", "lean", "sit", "steps", "hidden", "walk", "rides"};
+    static const char* names[] = {"stand", "lean", "sit", "steps", "hidden", "walk", "rides", "way"};
     const Act* a = ActOf(s);
     snprintf(buf, sizeof(buf), "%s %s/%s at %.1f,%.1f,%.1f", names[s.pose], a ? a->block : "-", a && a->anim ? a->anim : "-",
              s.ground.x, s.ground.y, s.ground.z);
     return buf;
 }
 
+// One gait for him: a clip drawn at each walk changed it within a scene, and the three brisk ones crept at the way's pace
+// (05.11). This one goes at 1.06 m/s by itself, the pace of the ways.
+constexpr size_t kGait = 2;
+
+// What he does at a moment of a scene, the players' word of 06.11: instead of the clips, while he stands (animation's time, s)
+const SceneAct kSceneActs[] = {
+    {"CAT_3", 11.8f, 14.2f, "PED", "handscower", false},          // Catalina at the door: he flinches with CJ
+    {"W2_ALT", 0.0f, 1e6f, "COP_AMBIENT", "Coplook_loop", true},  // CJ and Woozie at the game: he watches, his arms crossed
+};
+const SceneAct* SceneActAt(float t) {
+    const char* name = (const char*)kCutsceneName;
+    for (const SceneAct& a : kSceneActs)
+        if (!strncmp(name, a.scene, 8) && t >= a.from && t < a.to) return &a;
+    return nullptr;
+}
+
+// How he goes round. A heading following the way's keys started and stopped each turn at once, up to 5 rad/s ("резкие", 06.11):
+// it eases in and out now, within `ease` seconds of the way (a critically damped spring), and no faster than a person turns.
+constexpr float kMostTurn = 2.5f;   // rad/s
+constexpr float kEaseWalk = 0.15f;  // s: on the go he must keep to where he walks
+constexpr float kEaseStand = 0.3f;
+void EaseHeading(Held& h, float want, float ease) {
+    float dt = TimeStep() / 50.0f;
+    if (dt <= 0.0f) return;
+    float omega = 2.0f / ease, x = omega * dt, decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+    float full = std::remainder(want - h.heading, 6.2831853f), off = std::clamp(full, -kMostTurn * ease, kMostTurn * ease);
+    float temp = (h.turnRate - omega * off) * dt;
+    h.turnRate = (h.turnRate - omega * temp) * decay;
+    h.heading += off + (temp - off) * decay;
+}
+
+// In and out of the walk and the turn: a quarter of a second was a jerk at every start and stop (06.11)
+constexpr float kStepBlend = 2.5f;  // 1 / s
+const char* TurnClip(int side) { return side > 0 ? "Turn_L" : "Turn_R"; }
+
 // Walking along with CJ (both games: the path comes from their own CJ): put on it every frame, stepping on the spot
-// with CJ's walk from the cutscenes as fast as the path goes, the clips when CJ stops.
-void HoldWalk(CPed* ped, Held& h, const Spot& s, bool start) {
-    CEntity* cj = CutsceneCj();
-    Track tr;
-    if (!cj || !cj->Matrix() || !TrackOf(cj, tr) || PathOf(tr).size() < 2) return;  // stays where it was
-    uint64_t now = NowMs();
-    Walker w = WalkerAt(PathOf(tr), tr.time, CjFeet(cj), cj->Matrix()->forward, tr.time, (int)s.act - 1);
+// with CJ's walk from the cutscenes as fast as the path goes, the clips when CJ stops. Turning on the spot he takes the small
+// steps the game's own people take (PED/Turn_L, Turn_R: they keep the root as it is, his heading comes from here). The walk played
+// on the spot for it looked like treading (06.11).
+void HoldMoving(CPed* ped, Held& h, const Spot& s, bool start, CEntity* cj, const Walker& w, float stepsFrom, float stepsTo, const SceneAct* act = nullptr) {
     if (start) {
-        if (h.placed) Cmd(0x0792).I(h.handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: the previous act stops
         if (ped->InVehicle()) Cmd(0x0362).I(h.handle).F(w.feet.x).F(w.feet.y).F(w.feet.z + 1.0f).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
+        Cmd(0x0792).I(h.handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: the previous act stops, and what he did before the scene
         Cmd(0x04D7).I(h.handle).I(1).Run();  // FREEZE_CHAR_POSITION: moved by hand, not by physics (sets lack collision)
         if (h.prop >= 0) Cmd(0x0108).I(h.prop).Run(), h.prop = -1;  // DELETE_OBJECT
         h.seed = Mix(Mix((uint32_t)std::lround(s.ground.x * 100.0f), (uint32_t)std::lround(s.ground.y * 100.0f)), POSE_WALK * 8u + s.act);
-        h.stage = 0, h.walking = false, h.clip = nullptr, h.clips = 0, h.fidget = nullptr, h.slot = ~0u, h.loopClock = -1;
-        h.heading = w.heading;
+        h.stage = 0, h.walking = false, h.turning = 0, h.clip = nullptr, h.clips = 0, h.fidget = nullptr, h.slot = ~0u, h.loopClock = -1, h.act = nullptr;
+        h.heading = w.heading, h.turnRate = 0;
     }
     h.spot = s, h.placed = true;
-    float turn = std::remainder(w.heading - h.heading, 6.2831853f), most = 5.0f * TimeStep() / 50.0f;  // as fast as a person turns
-    h.heading += std::clamp(turn, -most, most);
+    bool moving = w.speed > (h.walking ? stepsTo : stepsFrom);
+    // put somewhere else (a jump of the way, on a cut): he stands there facing as he should, he does not spin round in the shot
+    if ((w.feet - ped->GetPosition()).Length2D() > 0.7f) h.heading = w.heading, h.turnRate = 0;
+    EaseHeading(h, w.heading, moving ? kEaseWalk : kEaseStand);
     if (CMatrix* m = ped->Matrix()) {
         float c = std::cos(h.heading), sn = std::sin(h.heading);
         m->right = {c, sn, 0}, m->forward = {-sn, c, 0}, m->up = {0, 0, 1};
@@ -2025,28 +2832,68 @@ void HoldWalk(CPed* ped, Held& h, const Spot& s, bool start) {
     ped->PedFlags() = (ped->PedFlags() | 0x3u) & ~0x200u;  // bIsStanding, bWasStanding, not bIsInTheAir
     ped->Flags() |= 0x80;
     Field<float>(ped, 0x12C) = Field<float>(cj, 0x12C);  // lit like CJ
-    bool moving = w.speed > (h.walking ? 0.25f : 0.6f);
-    if (h.stage < 2 || moving != h.walking) {
-        h.walking = moving, h.stage = 2;
+    // the small steps until the eased heading has got there
+    int turning = moving ? 0 : w.turning ? w.turning : std::fabs(std::remainder(w.heading - h.heading, 6.2831853f)) > 0.1f ? h.turning : 0;
+    if (moving || turning || (act && !BlockReady(act->block))) act = nullptr;
+    if (h.stage == 0) {
+        // The task given in the frame he is first put here did not take in any of the 67 scenes of 05.11: the clip was gone at
+        // the first check, and another started half a second in. Hold gives it a frame later and it takes (why is not known).
+        h.stage = 1;
+    } else if (h.stage == 1 || moving != h.walking || turning != h.turning || act != h.act) {
+        bool stepped = h.walking || h.turning;
+        h.walking = moving, h.turning = turning, h.stage = 2, h.act = act;
         if (moving) {
-            size_t i = Mix(h.seed, ++h.clips) % MocapWalkCount();
-            h.walk = MocapWalk(i), h.walkSpeed = MocapWalkSpeed(i), h.speedAt = 0;
-            Cmd(0x0605).I(h.handle).S(h.walk).S(kMocapBlock).F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
-            h.checkedAt = now;
+            h.walk = MocapWalk(kGait), h.walkSpeed = MocapWalkSpeed(kGait), h.speedAt = 0;
+            Cmd(0x0605).I(h.handle).S(h.walk).S(kMocapBlock).F(kStepBlend).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
+            h.checkedAt = NowMs();
             LOGD("Cutscene partner walks: %s (%.2f m/s)", h.walk, w.speed);
+        } else if (turning) {
+            Cmd(0x0605).I(h.handle).S(TurnClip(turning)).S("PED").F(kStepBlend).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
+            h.checkedAt = NowMs();
+            LOGD("Cutscene partner turns: %s", TurnClip(turning));
+        } else if (act) {
+            Cmd(0x0605).I(h.handle).S(act->anim).S(act->block).F(4.0f).I(act->loop).I(0).I(0).I(!act->loop).I(-1).Run();  // TASK_PLAY_ANIM
+            h.clip = act->anim, h.checkedAt = NowMs();
+            LOGD("Cutscene partner: %s/%s by the scene", act->block, act->anim);
         } else {
-            NextClip(h, 4.0f);
+            NextClip(h, stepped ? kStepBlend : 1.0f / kClipBlend);  // out of a walk soon, or he treads on the spot
         }
     }
+    uint64_t now = NowMs();
     if (h.walking && now - h.speedAt > 100) {  // the steps as fast as the path goes
         h.speedAt = now;
-        Cmd(0x0393).I(h.handle).S(h.walk).F(std::clamp(w.speed / h.walkSpeed, 0.6f, 1.8f)).Run();  // SET_CHAR_ANIM_SPEED
+        Cmd(0x0393).I(h.handle).S(h.walk).F(std::clamp(w.speed / h.walkSpeed, 0.2f, 1.8f)).Run();  // SET_CHAR_ANIM_SPEED
     }
     Live(ped, h, &kClips);
-    if (now - h.checkedAt > 500) {  // anything may end the animation: it starts again
-        h.checkedAt = now;
-        if (!Cmd(0x0611).I(h.handle).S(h.walking ? h.walk : AnimNow(h, &kClips)).Run()) h.stage = 0;  // IS_CHAR_PLAYING_ANIM
+    // Anything may end the animation: it starts again. The time is read after Live: its next clip set checkedAt past an older
+    // `now`, the difference came out huge, and the clip just given was found not playing and swapped a frame later (05.11).
+    if (uint64_t at = NowMs(); h.stage == 2 && at - h.checkedAt > (h.clips > 1 ? 500u : 150u)) {
+        h.checkedAt = at;
+        if (!Cmd(0x0611).I(h.handle).S(h.walking ? h.walk : h.turning ? TurnClip(h.turning) : AnimNow(h, &kClips)).Run()) h.stage = 0;  // IS_CHAR_PLAYING_ANIM
     }
+}
+
+void HoldWalk(CPed* ped, Held& h, const Spot& s, bool start) {
+    CEntity* cj = CutsceneCj();
+    Track tr;
+    if (!cj || !cj->Matrix() || !TrackOf(cj, tr) || PathOf(tr).size() < 2) return;  // stays where it was
+    HoldMoving(ped, h, s, start, cj, WalkerAt(PathOf(tr), tr.time, CjFeet(cj), CjFacing(), tr.time, (int)s.act - 1), 0.6f, 0.25f);
+}
+// Along the scene's way: the steps from the first slow ones on, or he would slide off standing as the way starts gently
+void HoldWay(CPed* ped, Held& h, const Spot& s, bool start) {
+    CEntity* cj = CutsceneCj();
+    Track tr;
+    const Way* way = WayOf((const char*)kCutsceneName, s.rank);
+    CVector aside{};
+    if (!way && s.rank) {  // none of its own: the first one's, a step off
+        way = WayOf((const char*)kCutsceneName);
+        if (way) aside = CVector{std::cos(way->front().heading), std::sin(way->front().heading), 0.0f} * (s.rank == 1 ? 0.9f : -0.9f);
+    }
+    Walker w;
+    if (!cj || !TrackOf(cj, tr)) return;  // stays where it was
+    if (!way || !WayAt(*way, tr.time, w)) w.feet = s.ground, w.heading = s.heading, w.speed = 0;  // this game has no such way
+    w.feet = w.feet + aside;
+    HoldMoving(ped, h, s, start, cj, w, 0.15f, 0.08f, SceneActAt(tr.time));
 }
 
 // Riding with CJ: in the car's own frame every frame as it drives, sitting as a passenger does, the head to who talks
@@ -2086,14 +2933,126 @@ void HoldInCar(CPed* ped, Held& h, const Spot& s, bool start) {
     if (h.stage == 2) Live(ped, h, &kRide);
 }
 
+// On foot to the next spot (Spot::walk): the walk of the cutscene clips along the line from where he was, at a walker's
+// pace, timed by the cutscene's clock, so both games show the same steps. There the spot's act starts as after a move.
+float GoingLength(const Held& h) {
+    return h.goViaSet ? (h.goVia - h.goFrom).Length2D() + (h.goTo - h.goVia).Length2D() : (h.goTo - h.goFrom).Length2D();
+}
+CVector GoingAt(const Held& h, float clock) {
+    float f = std::clamp((clock - h.goStart) / h.goMs, 0.0f, 1.0f);
+    if (!h.goViaSet) return h.goFrom + (h.goTo - h.goFrom) * f;
+    float first = (h.goVia - h.goFrom).Length2D(), second = (h.goTo - h.goVia).Length2D(), at = f * (first + second);
+    if (at < first) return h.goFrom + (h.goVia - h.goFrom) * (at / first);
+    return h.goVia + (h.goTo - h.goVia) * (second > 0.0f ? (at - first) / second : 1.0f);
+}
+// the leg it walks now: to the turn, then on to the spot
+CVector GoingWay(const Held& h, float clock) {
+    if (!h.goViaSet) return h.goTo - h.goFrom;
+    float first = (h.goVia - h.goFrom).Length2D(), f = std::clamp((clock - h.goStart) / h.goMs, 0.0f, 1.0f);
+    return f * GoingLength(h) < first ? h.goVia - h.goFrom : h.goTo - h.goVia;
+}
+void StartGoing(CPed* ped, Held& h, const Spot& s, float clock) {
+    CVector from = h.going ? GoingAt(h, clock) : h.spot.ground;
+    if (!h.going) {
+        if (h.stage > 0) Cmd(0x0792).I(h.handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: the act stops
+        h.heading = ped->CurrentRotation(), h.turnRate = 0;
+    }
+    if (h.prop >= 0) Cmd(0x0108).I(h.prop).Run(), h.prop = -1;  // DELETE_OBJECT: no walking off with the cigarette
+    h.walk = MocapWalk(kGait), h.walkSpeed = MocapWalkSpeed(kGait), h.speedAt = 0, h.checkedAt = NowMs();
+    Cmd(0x0605).I(h.handle).S(h.walk).S(kMocapBlock).F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
+    h.going = h.walking = true;
+    h.goFrom = from, h.goTo = s.ground, h.goVia = s.via, h.goViaSet = s.viaSet, h.goStart = clock;
+    h.goMs = std::max(400.0f, GoingLength(h) / kGoPace * 1000.0f);
+    h.spot = s, h.stage = 0;
+    LOGD("Cutscene partner goes on foot %.1f m to %s%s", GoingLength(h), Describe(s), s.viaSet ? " (round something)" : "");
+}
+// false once there
+bool Going(CPed* ped, Held& h, float clock) {
+    if (clock < 0.0f || clock >= h.goStart + h.goMs) {  // there (or the scene's camera gone: there at once)
+        h.going = h.walking = false;
+        return false;
+    }
+    uint64_t now = NowMs();
+    CVector way = GoingWay(h, clock);
+    // along the way, the spot's own heading for the last steps
+    EaseHeading(h, clock > h.goStart + h.goMs - 400.0f ? h.spot.heading : HeadingOf(way), kEaseWalk);
+    if (CMatrix* m = ped->Matrix()) {
+        float c = std::cos(h.heading), sn = std::sin(h.heading);
+        m->right = {c, sn, 0}, m->forward = {-sn, c, 0}, m->up = {0, 0, 1};
+    }
+    SetEntityPosition(ped, GoingAt(h, clock) + CVector{0, 0, CallMethod<0x536BE0, float>(ped)});  // CEntity::GetDistanceFromCentreOfMassToBaseOfModel
+    ped->CurrentRotation() = ped->AimingRotation() = h.heading;
+    ped->PedFlags() = (ped->PedFlags() | 0x3u) & ~0x200u;  // bIsStanding, bWasStanding, not bIsInTheAir
+    ped->Flags() |= 0x80;
+    if (CEntity* cj = CutsceneCj()) Field<float>(ped, 0x12C) = Field<float>(cj, 0x12C);  // lit like CJ
+    if (now - h.speedAt > 100) {  // the steps as fast as he goes
+        h.speedAt = now;
+        Cmd(0x0393).I(h.handle).S(h.walk).F(std::clamp(kGoPace / h.walkSpeed, 0.6f, 1.8f)).Run();  // SET_CHAR_ANIM_SPEED
+    }
+    if (now - h.checkedAt > 500) {  // anything may end the walk: it starts again
+        h.checkedAt = now;
+        if (!Cmd(0x0611).I(h.handle).S(h.walk).Run())  // IS_CHAR_PLAYING_ANIM
+            Cmd(0x0605).I(h.handle).S(h.walk).S(kMocapBlock).F(4.0f).I(1).I(0).I(0).I(0).I(-1).Run();  // TASK_PLAY_ANIM, looped
+    }
+    return true;
+}
+
+Spot ForRank(Spot s, int rank) {
+    s.rank = (uint8_t)std::max(rank, 0);
+    if (!s.rank || s.pose == POSE_HIDDEN || s.pose == POSE_WAY) return s;
+    if (s.pose == POSE_CAR) {
+        if (s.rank <= s.seats) {
+            s.ground = s.seat[s.rank - 1];
+            return s;
+        }
+        CEntity* cj = CutsceneCj();
+        s.pose = POSE_HIDDEN, s.act = 0;  // no seat left
+        s.ground = cj ? cj->GetPosition() : CVector{};
+        return s;
+    }
+    if (s.pose == POSE_WALK) {
+        s.act = (uint8_t)((s.act + s.rank) % 3);  // another side of CJ
+        return s;
+    }
+    // a step along what the first one stands at, the next to its other side
+    CVector along = CVector{std::cos(s.heading), std::sin(s.heading), 0.0f} * (s.rank == 1 ? 0.9f : -0.9f);
+    s.ground = s.ground + along, s.via = s.via + along;
+    if (s.pose == POSE_SIT) s.pose = POSE_STAND, s.act = 0;  // the seat is the first one's
+    return s;
+}
+
 void Hold(CPed* ped, const Spot& s) {
     Held& h = g_held[ped];
     int handle = GetPedRef(ped);
+    if (h.lit < 0) h.lit = Field<float>(ped, 0x12C);  // the scene lights it like CJ: its own comes back at the end
+    // Empty hands in a scene: he stood by CJ with the chainsaw he had out when INTRO1A began (05.11). A player's ped only
+    // picks the slot by the command and takes it in its own control, which a scene holds: set at once too. Each frame: the
+    // copy gets the gun again from its owner's state until the owner's game has started the scene as well. After the scene
+    // that state brings the copy's gun back.
+    if (h.weapon < 0) h.weapon = ped->ActiveWeapon().type;
+    if (ped->ActiveWeapon().type != 0) {
+        Cmd(0x01B9).I(handle).I(0).Run();  // SET_CURRENT_CHAR_WEAPON
+        CallMethod<0x5E6280>(ped, 0);      // CPed::SetCurrentWeapon
+    }
     bool newAct = !h.placed || h.spot.pose != s.pose || h.spot.act != s.act;
     bool moved = !h.placed || (h.spot.ground - s.ground).Length() > 0.05f || std::fabs(h.spot.heading - s.heading) > 0.01f;
     h.handle = handle;
+    if (s.pose == POSE_WALK || s.pose == POSE_CAR || s.pose == POSE_WAY) h.going = false;
     if (s.pose == POSE_WALK) return HoldWalk(ped, h, s, newAct);
+    if (s.pose == POSE_WAY && MocapWalkCount() && MocapCount() > 1) return HoldWay(ped, h, s, newAct);
     if (s.pose == POSE_CAR) return HoldInCar(ped, h, s, newAct || moved);
+    float clock = cam::Mode() == kModeFlyBy ? Ref<float>(cam::Active() + 0x90) : -1.0f;
+    bool fromFoot = h.going || h.spot.pose == POSE_STAND || h.spot.pose == POSE_LEAN;
+    if (moved && s.walk && h.placed && fromFoot && clock >= 0.0f && MocapWalkCount() && !ped->InVehicle())
+        StartGoing(ped, h, s, clock);
+    else if (moved)
+        h.going = false;  // a jump after all: the move below
+    if (h.going) {
+        if (Going(ped, h, clock)) return;
+        moved = newAct = true;  // there: set on the spot, its act starts
+        if (h.walking || h.stage > 0) Cmd(0x0792).I(handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: the walk stops
+        h.stage = 0;
+    }
     if (moved) {
         if (h.placed) Cmd(0x0792).I(handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: no landing from a fall here
         // still seated (its on-foot state has not come yet): moving it would move the vehicle, so out first
@@ -2114,7 +3073,7 @@ void Hold(CPed* ped, const Spot& s) {
     }
     if (moved || newAct) {  // the variations start over, drawn from the new spot
         h.seed = Mix(Mix((uint32_t)std::lround(s.ground.x * 100.0f), (uint32_t)std::lround(s.ground.y * 100.0f)), s.pose * 8u + s.act);
-        h.slot = ~0u, h.fidgetAt = -1, h.loopClock = -1, h.fidget = nullptr, h.clip = nullptr, h.clips = 0, h.walking = false;
+        h.slot = ~0u, h.fidgetAt = -1, h.loopClock = -1, h.fidget = nullptr, h.clip = nullptr, h.clips = 0, h.walking = false, h.turning = 0;
     }
     h.spot = s;
     h.placed = true;
@@ -2169,7 +3128,19 @@ void ReleaseAll() {
             if (h.lookOn) StopLooking(ped);
             if (h.stage > 0) Cmd(0x0792).I(h.handle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY
             Cmd(0x04D7).I(h.handle).I(0).Run();              // FREEZE_CHAR_POSITION off
+            // A ped on foot takes the light of the ground only when it collides with it (CPed::ProcessEntityCollision),
+            // one in a car the car's: standing still after "The Green Sabre" (its night scenes, then the move to Angel
+            // Pine) the partner kept the scene's dark light, as if indoors, till he got into a car (02.11)
+            if (h.lit >= 0) Field<float>(ped, 0x12C) = h.lit;
             ped->Flags() |= 0x80;
+            // his gun back, if the mission left it to him and nothing else came to his hand
+            if (h.weapon > 0 && ped == FindPlayerPed(0) && ped->Health() > 0.0f && !ped->InVehicle() && ped->ActiveWeapon().type == 0)
+                for (int i = 0; i < NUM_WEAPON_SLOTS; ++i)
+                    if (ped->Weapons()[i].type == h.weapon) {
+                        Cmd(0x01B9).I(h.handle).I(h.weapon).Run();  // SET_CURRENT_CHAR_WEAPON
+                        CallMethod<0x5E6280>(ped, h.weapon);        // CPed::SetCurrentWeapon
+                        break;
+                    }
         }
         if (h.prop >= 0) Cmd(0x0108).I(h.prop).Run();  // DELETE_OBJECT
     }

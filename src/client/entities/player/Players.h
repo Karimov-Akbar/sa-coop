@@ -45,6 +45,7 @@ struct RemotePlayer {
     game::CVector streetPos;  // where its owner was last seen in the street (its door into an interior: F8)
     int8_t doorArea = 0;      // the area its door (CPed::m_pEnex) was set for, and on which ped
     game::CPed* doorPed = nullptr;
+    bool faceHeld = false;      // HoldWayfarerFace
     uint64_t jetpackMs = 0;     // when it was last given the jetpack
     std::vector<uint8_t> stats; // owner's CStats block (G_PLAYER_STATS): used while the ped is processed
     uint64_t heardMs = 0;       // its last voice frame was played (set by the voice feature)
@@ -63,6 +64,9 @@ struct RemotePlayer {
     // table when its owner plays there as the second player, Pool.cpp), by handle; -1: none
     int avatar = -1;
     void* avatarAnim = nullptr;  // the animation it plays of that person's
+    uint16_t toyNetId = 0;       // the remote-controlled toy its player drives (RcToys), spared by our guns without
+                                 // friendly fire; 0 none
+    uint8_t canDriveBy = 1;      // its CPlayerInfo::m_bCanDoDriveBy: the copies take turns in the one slot
 };
 
 class Players : public Module {
@@ -152,6 +156,7 @@ private:
     bool m_exitReported = false;
     uint64_t m_followAt = 0;
     int m_bikeFor = -1;  // the host's vehicle (no seat left in it) the partner got one for, by handle: a later car in its slot is another
+    bool m_jetpackGiven = false;  // the partner got a jetpack for the one the host has on (Zero's and Toreno's missions)
     int m_lastCar = -1;
     int8_t m_knockOffSaved = -1;
     uint64_t m_enterHeldSince = 0;  // the enter button (triangle) held on foot since
@@ -180,7 +185,24 @@ int PassengerSeatOf(game::CVehicle* v, game::CPed* ped);
 int SeatOfTargetDoor(int door);
 // a passenger seat this vehicle has, or -1 (any): a seat it does not have gives the game a garbage door and a crash
 int SeatOrAny(game::CVehicle* v, int seat);
+// this game keeps what a player who leaves had in the others' sight, its cars and people: with more games left each would
+// keep its own copy of them, and show the others' on top of it. The host's, or with the host gone the first one's in line.
+bool WeInherit(uint8_t leaving);
+// the partners in an order all games share: 0 the first, 1, 2; the host -1
+int PartnerRank(uint8_t id);
+// from someone facing heading, `apart` away: the first partner at its right hand, the second at its left, the third behind it
+game::CVector PartnerSide(float heading, uint8_t id, float apart);
 // distance to the nearest remote player in the same interior (huge when there is none), and who it is
 float RemoteDistance(const game::CVector& p, int8_t area, uint8_t* who = nullptr);
+// Three or four players: a game shows the others what stands near any of them, also near a third player far from ours. That
+// stays out of this game's pools, as it would with two players, until it comes `within` of our player or its toy
+bool FarFromUs(const game::CVector& at, int8_t area, float within);
+// the same to what a remote player sees from: its CJ or its remote-controlled toy (RcToys)
+float RemoteViewDistance(const game::CVector& p, int8_t area);
+// the copy here of the remote-controlled toy that player drives (RcToys), or null
+game::CVehicle* RemoteToy(const RemotePlayer& rp);
+// our CJ sits in a vehicle a mission froze in place (FREEZE_CAR_POSITION), parked out of the world: ZERO4's RC part
+// keeps it on a BMX in the air of area 10, ZERO2 in a van under Zero's shop. No place for another player to come to.
+bool OwnCarFrozen();
 
 }  // namespace coop

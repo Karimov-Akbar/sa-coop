@@ -18,6 +18,8 @@ struct ClientConfig {
     int loadSlot = 0;         // host: save slot (1..8) to load automatically, -1 a new game, 0 = choose in the menu
     bool friendlyFire = false;  // host: the players can hurt each other
     bool partnerTeleport = true;  // host: the partners may use /tp and /tphere
+    bool sharedLife = false;      // host: a partner's death fails the host's story mission
+    int maxPlayers = 2;           // host: how many play, 2 to 4
 
     // [game]
     bool windowed = false;
@@ -43,6 +45,7 @@ struct ClientConfig {
     bool voiceEnabled = true;
     int voiceKey = 0x42;              // VK_B, push to talk
     bool voiceAlwaysOn = false;
+    bool voiceToggle = false;         // a press of the key turns the microphone on, the next one off
     float voiceVolume = 1.0f;
     float micGain = 1.0f;
     bool voiceProximity = true;       // fade with distance

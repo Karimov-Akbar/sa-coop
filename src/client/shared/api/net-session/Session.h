@@ -39,6 +39,7 @@ public:
     const std::string& ServerName() const { return m_serverName; }
     bool FriendlyFire() const { return Online() && m_friendlyFire; }  // the host let the players hurt each other
     bool PartnerTeleport() const { return m_partnerTeleport; }  // the host let its partners use /tp and /tphere
+    bool SharedLife() const { return Online() && m_sharedLife; }  // a partner's death fails the host's story mission
     const std::map<uint8_t, PeerInfo>& Peers() const { return m_peers; }
     const PeerInfo* Peer(uint8_t id) const;
     std::string PeerName(uint8_t id) const;
@@ -58,7 +59,7 @@ public:
     std::function<void()> onWorldNewGame;                   // the host's prologue is over: start a new game, join it
     std::function<void()> onWorldWait;                      // the host plays a new game's prologue: wait
     std::function<void()> onWorldWanted;                    // host: a partner needs a fresh snapshot
-    std::function<void(const std::vector<uint8_t>&)> onProfile;
+    std::function<void(const std::vector<uint8_t>&, uint32_t)> onProfile;  // the profile, the host's game it is of
     std::function<void(uint8_t id)> onPeerJoin;
     std::function<void(uint8_t id)> onPeerLeave;
     std::function<void(uint8_t newHost)> onHostChanged;
@@ -80,6 +81,7 @@ private:
     std::string m_serverName;
     bool m_friendlyFire = false;
     bool m_partnerTeleport = true;
+    bool m_sharedLife = false;
     std::string m_inviteCode;
     std::map<uint8_t, PeerInfo> m_peers;
     Handler m_handlers[256] = {};

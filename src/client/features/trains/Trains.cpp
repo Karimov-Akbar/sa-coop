@@ -7,7 +7,7 @@
 // A copy's engine is open while no player drives it and no story mission of the host's runs: the player who gets in drives
 // it in its own game (its pad, CTrain::ProcessControl), and the train's own game follows (TRAIN_DRIVE) with the copy of
 // that player at its wheel (TRAIN_ENTER: its walk to the cab, which with no word there followed its owner up the step and
-// dropped back, "landing"). Every copy was locked, and the partner could not get into a train at all (Holder, 29.10).
+// dropped back, "landing"). Every copy was locked, and the partner could not get into a train at all (29.10).
 #include <cmath>
 #include <map>
 
@@ -251,6 +251,7 @@ void HandleTrain(uint8_t from, Reader& r) {
     }
     if (it == g_copies.end()) {
         CVector at{p.x, p.y, p.z};
+        if (FarFromUs(at, 0, kSendWithin)) return;  // near a third player only
         int node = NearestNode(track, at);
         if (node < 0) return;  // no such track here
         // asked and streamed in the background, the copy comes with a later state: six blocking loads at once (the
@@ -286,12 +287,48 @@ void SwitchRandomTrains() {
     g_randomOff = off;
 }
 
+// The squeal of braking is the train's own driver's: CAEVehicleAudioEntity::ProcessVehicle adds ProcessPlayerTrainBrakes
+// (by pad 0's brake, the train's status the player's) only for this game's player at the wheel, and the partner never
+// heard the host brake (30.10). For the engine the other player's copy drives, the game's own formula runs with
+// that player's buttons. Its sounds sit in the player engine slot 40, ours while we drive: then not.
+using DummyTrainEngineFn = void(__fastcall*)(void*, void*, void*);
+DummyTrainEngineFn g_origDummyTrainEngine = nullptr;
+void __fastcall HookDummyTrainEngine(void* audio, void* edx, void* vp) {
+    g_origDummyTrainEngine(audio, edx, vp);
+    auto* train = Field<CVehicle*>(vp, 0x10);  // cVehicleParams::m_pVehicle
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!Net().Online() || !train || !me || train->Driver() == me) return;  // ours: the game does it right after
+    const RemotePlayer* rp = train->Driver() ? Players::Instance().FindByPed(train->Driver()) : nullptr;
+    bool ownEngine = me->InVehicle() && me->Vehicle() && me->Vehicle()->Driver() == me;
+    if (!rp || ownEngine || !(Flags(train) & kFrontCarriage)) {
+        if (Field<int16_t>(audio, 0x156) == 0)  // m_SurfaceSoundType: its squeal still on, it stops with the copy's brake
+            CallMethod<0x4FA630>(audio, (int16_t)-1, 1.0f, -100.0f);  // PlayTrainBrakeSound
+        return;
+    }
+    int16_t bank = Field<int16_t>(audio, 0xDE);  // m_PlayerEngineBank: GENRL_TRAIN_P
+    void* hardware = (void*)0xB5F8B8;            // AEAudioHardware
+    if (!CallMethod<0x4D88C0, bool>(hardware, (uint16_t)bank, (int16_t)40)) {  // IsSoundBankLoaded
+        CallMethod<0x4D88A0>(hardware, (uint16_t)bank, (int16_t)40);           // LoadSoundBank: heard from the next frames
+        return;
+    }
+    CPad* pad = GetPad(0);
+    CPad keep = *pad;
+    pad->NewState = rp->padNew, pad->OldState = rp->padOld, pad->DisablePlayerControls = 0;
+    uint8_t& status = Field<uint8_t>(train, 0x36);  // CEntity::m_nStatus in the high 5 bits: STATUS_PLAYER is 0
+    uint8_t was = status;
+    status &= 7;
+    CallMethod<0x500AB0>(audio, vp);  // ProcessPlayerTrainBrakes
+    status = was;
+    *pad = keep;
+}
+
 class Trains : public Module {
 public:
     const char* Name() const override { return "Trains"; }
 
     void OnInstallHooks() override {
         mem::HookFn(0x6F7550, &HookCreateMissionTrain, &g_origCreateTrain, "CTrain::CreateMissionTrain");
+        mem::HookFn(0x500710, &HookDummyTrainEngine, &g_origDummyTrainEngine, "CAEVehicleAudioEntity::ProcessDummyTrainEngine");
         Net().SetHandler(proto::G_TRAIN, &HandleTrain);
     }
     void OnSessionEnd() override {

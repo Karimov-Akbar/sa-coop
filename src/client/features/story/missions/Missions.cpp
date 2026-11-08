@@ -37,7 +37,9 @@
 #include "features/story/cutscene-partner/ScenePartner.h"
 #include "features/story/jobs/Jobs.h"
 #include "features/story/minigames/Minigames.h"
+#include "features/story/mission-rules/MissionRules.h"
 #include "features/story/pool/Pool.h"
+#include "features/story/race/Race.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Anim.h"
@@ -250,6 +252,9 @@ std::map<uint32_t, Area> g_areas;
 std::vector<uint8_t> g_lastAreasMsg, g_lastOnscreen;
 uint64_t g_lastTick = 0, g_lastFadeMs = 0;
 bool g_hostCutscene = false;
+// host: the cutscene loaded is of no story mission (a date's, DATE6A in a bar): its own. Sent too, it played on the
+// partner's screen where the partner stood, a CJ in the air before a white background, with no girl (#100).
+bool g_cutsceneOwn = false;
 std::string g_missionName;
 int32_t g_moneyAtStart = 0;  // the partner gets what the host earned during the mission
 char g_cutsceneName[32] = {};  // last loaded cutscene, for partners joining during it
@@ -260,6 +265,13 @@ char g_waitBy[9] = {};      // host: the script whose trigger it was
 bool g_waitSent = false;
 bool g_hostWaits = false;   // partner
 Area g_waitArea{};
+// the same at a marker of the mission itself (ObjectiveAnswer): host, the marker it holds and since when; partner
+struct GoalWait {
+    CVector at;
+    uint64_t since = 0, seenMs = 0, heldMs = 0;
+} g_goalWait;
+bool g_goalWaitSent = false;
+bool g_hostWaitsGoal = false;  // partner
 
 // partner
 struct PartnerBlip {
@@ -276,10 +288,13 @@ bool g_weFroze = false;  // our control is taken while the host's mission plays 
 uint64_t g_partnerMissionEndedAt = 0;
 std::string g_hostMission;  // partner: the script name of the host's story mission (G_MISSION_START)
 // "Mike Toreno" (DRIV3) raises $7200: main.scm's APCHECK then opens the SF airport's main gate as its player comes within
-// 65 m, its guard lying dead. Only the host's game ran the mission, and the partner came to a shut gate (MozzisRus, 29.10).
+// 65 m, its guard lying dead. Only the host's game ran the mission, and the partner came to a shut gate (29.10).
 constexpr uint32_t kAirportGateOpen = 7200;
 bool g_gateOpenSet = false;  // partner: we raised it
 int g_csState = 0;  // 0 none, 1 loading, 2 running, 3 ending
+uint64_t g_csStartedMs = 0;  // the host's cutscene started here then
+bool g_csCamTold = false;    // its camera's leaving logged once
+uint64_t g_followMs = 0;     // partner: the host's mission last moved us to it then (CS_FOLLOW)
 int32_t g_csArea = 0;  // interior the host's cutscene plays in
 bool g_csStartRequested = false;
 
@@ -292,7 +307,7 @@ bool Replicating() { return Net().Online() && Net().IsHost() && !Net().Peers().e
 // its end. Its people and cars are each game's own anyway; its levels (the paramedic's endless sprint) stay with who
 // played it. Either player may own one, the host or the partner.
 enum : uint8_t { SIDE_OFFER = 1, SIDE_ACCEPT = 2, SIDE_DECLINE = 3, SIDE_END = 4, SIDE_LEAVE = 5, SIDE_PAY = 6, SIDE_DROP = 7,
-                 SIDE_RESYNC = 8, SIDE_LOOT = 9, SIDE_TAKEN = 10, SIDE_ALARM = 11 };
+                 SIDE_RESYNC = 8, SIDE_LOOT = 9, SIDE_TAKEN = 10, SIDE_ALARM = 11, SIDE_LEADS = 12 };
 bool SideJob(const std::string& name) {
     static const char* const kJobs[] = {"taxiodd", "ambulan", "firetru", "copcar", "pimp",   "freight", "bcour",   "mtbiker",
                                         "stunt",   "cprace",  "burgjb",  "truck",  "tria",   "kicksta", "blood",   "quarry",
@@ -423,8 +438,10 @@ struct Side {
     bool offered = false;     // made, no answer yet
     int32_t moneyAtStart = 0;
     int32_t paid = 0;         // what who joined ours has had of it so far
-    uint8_t with = 0xFF;      // who joined ours
+    std::vector<uint8_t> with;  // who joined ours
     uint8_t owner = 0xFF;     // whose we joined
+    bool hostLeads = false;   // the host's marks and texts are of a joint side activity (partner: not ours unless we joined)
+    bool leadsSent = false;   // host: it said so
     std::string joined;       // and its name
     uint8_t inviteFrom = 0xFF;  // a call to answer
     std::string inviteName;
@@ -436,8 +453,9 @@ struct Side {
     int32_t received = 0;  // what the other's job paid us while our own ran: not ours to pay on
     uint64_t taxiAt = 0;   // joined a taxi job, at the wheel of our own taxi: our own job starts then (StartOwnTaxi)
 } g_side;
-bool SideOwning() { return g_side.with != 0xFF; }
+bool SideOwning() { return !g_side.with.empty(); }
 bool SideJoined() { return g_side.owner != 0xFF; }
+bool SideHelps(uint8_t id) { return std::find(g_side.with.begin(), g_side.with.end(), id) != g_side.with.end(); }
 // our valet shift (valet.scm, a streamed script, no mission) with the other player in it: its texts, marks and answers go
 // as a side activity's
 bool JointValet(void* script) { return Net().Online() && SideOwning() && g_side.name == "valet" && jobs::ValetThread(script); }
@@ -451,7 +469,7 @@ void NoteCorona() {
 }
 // The game whose mission this one shows: the host's story mission, or the side activity it joined
 bool MissionSource(uint8_t from) {
-    return (from == Net().HostId() && !Net().IsHost()) || (SideJoined() && !g_side.parallel && from == g_side.owner) ||
+    return (from == Net().HostId() && !Net().IsHost() && !g_side.hostLeads) || (SideJoined() && !g_side.parallel && from == g_side.owner) ||
            pool::TextsFrom(from);
 }
 void SendSide(uint8_t op, uint8_t to, const std::string& name = "", int32_t money = 0) {
@@ -473,7 +491,7 @@ bool StreamedScriptRuns() {
     return ip < (uint8_t*)addr::ScriptSpace || ip >= (uint8_t*)addr::ScriptSpace + Ref<int32_t>(kMainScriptSize);
 }
 void ScriptFaded(int16_t dir, float seconds);
-enum : uint8_t { WEAPON_GIVE = 1, WEAPON_TAKE = 2 };
+enum : uint8_t { WEAPON_GIVE = 1, WEAPON_TAKE = 2, WEAPON_TAKE_ALL = 3 };
 
 // What the host's mission does to its CJ's weapons (GIVE_WEAPON_TO_CHAR $PLAYER_ACTOR, REMOVE_WEAPON_FROM_CHAR) the
 // partner gets as well: the spray can of "Tagging Up Turf", the guns some missions hand out. Seen as the change of CJ's
@@ -485,6 +503,7 @@ struct WeaponSlots {
     }
 };
 WeaponSlots* g_tickWeapons = nullptr;  // host: CJ's weapons before the mission script's commands of this frame
+CVector g_tickFrom;                     // host: where CJ was before them
 void SendMissionWeapon(uint8_t op, int weapon, int ammo, bool inHand) {
     Writer w(proto::G_MISSION_WEAPON);
     w.U8(op);
@@ -493,6 +512,19 @@ void SendMissionWeapon(uint8_t op, int weapon, int ammo, bool inHand) {
     w.U8(inHand);
     Net().Send(proto::CH_RELIABLE, w);
     LOGI("Mission weapon %d %s (%d)", weapon, op == WEAPON_GIVE ? "given" : "taken", ammo);
+}
+// REMOVE_ALL_CHAR_WEAPONS of CJ: the story takes all he has (Tenpenny before the exile of "The Green Sabre", the river of
+// "The Da Nang Thang"), and the partner by the host loses all too (the players' choice, 02.11). Where CJ was at the
+// frame's start goes along: the exile sets CJ in Angel Pine in the same frame, the partner still by the old place.
+void SendTakeAll(const CVector& at) {
+    Writer w(proto::G_MISSION_WEAPON);
+    w.U8(WEAPON_TAKE_ALL);
+    w.U8(0);
+    w.I32(0);
+    w.U8(0);
+    w.Vec({at.x, at.y, at.z});
+    Net().Send(proto::CH_RELIABLE, w);
+    LOGI("The mission took all of CJ's weapons: the partners by the host lose theirs too");
 }
 // The count goes as it is now, not what was added: missions lower it too (Emmet's pistol 30000 for the practice and 10
 // after it, the spray can given again with 1000 at the end), and the partner kept the big one (no number on the HUD).
@@ -545,8 +577,11 @@ void __fastcall HookScriptProcess(void* script, void* edx) {
     g_tickWeapons = cj ? &weapons : nullptr;
     bool flag = core::IsOnMission();
     CVector before = cj ? cj->GetPosition() : CVector{};
+    if (cj) g_tickFrom = before;
     int8_t areaBefore = cj ? cj->AreaCode() : 0;
     bool onVehicle = cj && cj->AttachedTo();
+    CVehicle* ride = cj && cj->InVehicle() ? cj->Vehicle() : nullptr;
+    CVector rideBefore = ride ? ride->GetPosition() : CVector{};
     g_origScriptProcess(script, edx);
     g_tickWeapons = prevWeapons;
     if (!flag && core::IsOnMission()) memcpy(g_flagBy, Field<char[8]>(script, 0x08), 8);  // who raised it (SideFlag)
@@ -554,7 +589,10 @@ void __fastcall HookScriptProcess(void* script, void* edx) {
     if (cj && FindPlayerPed(0) == cj) SendWeaponChanges(weapons, cj);
     if (cj && FindPlayerPed(0) == cj && !g_movedPending) {
         float moved = (cj->GetPosition() - before).Length();
-        if (moved > kMovedNear || (cj->AreaCode() != areaBefore && moved >= 3.0f)) {
+        // SET_CAR_COORDINATES moves the car alone, CJ's matrix follows it as he is processed: the bike put into the plane's
+        // hold of "Stowaway" (area 9) was no move, and a partner who had got off it stayed on the runway (#106, found 04.11)
+        bool rideMoved = ride && cj->AreaCode() != 0 && cj->Vehicle() == ride && (ride->GetPosition() - rideBefore).Length() > kMovedNear;
+        if (moved > kMovedNear || (cj->AreaCode() != areaBefore && moved >= 3.0f) || rideMoved) {
             g_movedPending = true;
             g_movedOffVehicle = onVehicle;
             g_movedFrom = before;
@@ -610,7 +648,15 @@ void SendCarCommand(uint16_t op, const int32_t* p) {
     w.U16(nv->netId);
     w.U8(nv->owner);
     w.U16(op);
-    for (int i = 1; i < 4; ++i) w.I32(p[i]);
+    if (op == 0x0683) {  // ATTACH_CAR_TO_CAR: the car it goes on by its net id, its place, the angles after them
+        CVehicle* on = GetVehicle(p[1]);
+        NetVehicle* carrier = on ? Vehicles::Instance().Find(on) : nullptr;
+        if (!carrier) return;
+        w.I32(carrier->netId);
+        for (int i = 2; i < 8; ++i) w.I32(p[i]);
+    } else {
+        for (int i = 1; i < 4; ++i) w.I32(p[i]);
+    }
     Net().Send(proto::CH_RELIABLE, w);
     LOGI("The mission's command %04X on car %04X goes to its driver's game (player %d)", op, nv->netId, nv->owner);
 }
@@ -619,14 +665,18 @@ void HandleCarCommand(uint8_t from, Reader& r) {
     uint16_t id = r.U16();
     uint8_t owner = r.U8();
     uint16_t op = r.U16();
-    int32_t p[3];
-    for (int32_t& v : p) v = r.I32();
+    int32_t p[7] = {};
+    for (int i = 0; i < (op == 0x0683 ? 7 : 3); ++i) p[i] = r.I32();
     NetVehicle* nv = Vehicles::Instance().Find(id);
     if (!r.Ok() || from != Net().HostId() || owner != Net().MyId() || !core::IsPlayerReady() || !nv ||
         Vehicles::Instance().IsMirror(*nv) || !Vehicles::Alive(*nv))
         return;
     const auto* f = (const float*)p;
-    if (op == 0x00AB && std::isfinite(f[0]) && std::isfinite(f[1]) && std::isfinite(f[2]))
+    if (op == 0x0683) {
+        NetVehicle* on = Vehicles::Instance().Find((uint16_t)p[0]);
+        if (!on || !Vehicles::Alive(*on) || !std::isfinite(f[1] + f[2] + f[3] + f[4] + f[5] + f[6])) return;
+        Cmd(0x0683).I(nv->handle).I(on->handle).F(f[1]).F(f[2]).F(f[3]).F(f[4]).F(f[5]).F(f[6]).Run();  // ATTACH_CAR_TO_CAR
+    } else if (op == 0x00AB && std::isfinite(f[0]) && std::isfinite(f[1]) && std::isfinite(f[2]))
         Cmd(0x00AB).I(nv->handle).F(f[0]).F(f[1]).F(f[2]).Run();  // SET_CAR_COORDINATES
     else if (op == 0x0175 && std::isfinite(f[0]))
         Cmd(0x0175).I(nv->handle).F(f[0]).Run();  // SET_CAR_HEADING
@@ -637,7 +687,7 @@ void HandleCarCommand(uint8_t from, Reader& r) {
     LOGI("The host's mission ran %04X on our car %04X", op, id);
 }
 
-void HostSendPolicy(bool force, bool clearWanted = false);
+void HostSendPolicy(bool force, bool clearWanted = false, uint8_t stars = 0xFF);
 
 // FrontEndMenuManager.m_bShowSubtitles. Off, PRINT and PRINT_NOW drop a "~z~" line (the mission's dialogue) before
 // CMessages sees it, and the partner got no line of the host's mission at all. They run with it on, the lines go to the
@@ -871,6 +921,7 @@ void ApplyNoCollides() {
 // A person the mission puts on a car (ATTACH_CHAR_TO_CAR: the girl beside CJ in his lowrider at Cesar's meet): the copy
 // stood inside the car's copy and was thrown out and up into the air. It goes on the copy the same way, once both
 // copies are here, and its own position sync leaves it alone while it is on (Peds).
+constexpr uint16_t kOnTrain = 0xFFFF;
 struct PersonOnCar {
     bool on;
     uint8_t kind;
@@ -889,9 +940,9 @@ bool SendPersonOnCar(bool on, const int32_t* p) {
     if (on) {
         CVehicle* v = GetVehicle(p[1]);
         NetVehicle* nv = v ? Vehicles::Instance().EnsureNetworked(v) : nullptr;
-        if (!nv) return false;
+        if (!nv && !(v && v->IsTrain())) return false;
         const auto* f = (const float*)p;
-        a.car = nv->netId;
+        a.car = nv ? nv->netId : kOnTrain;  // a train is no shared vehicle: each game has its own (Trains)
         a.offset = CVector{f[2], f[3], f[4]};
         a.heading = p[5], a.range = f[6], a.weapon = p[7];
     }
@@ -907,6 +958,297 @@ bool SendPersonOnCar(bool on, const int32_t* p) {
     Net().Send(proto::CH_RELIABLE, w);
     return true;
 }
+// host: a mission person put on a car, kept until it is off again. One made and tied on in the same frame far from the
+// partner ("Fender Ketchup": Johnny on the hood) is shared only later, and the partner's copy ran after the car, walked
+// into it or stood on its roof (30.10): it goes once shared. Its fall off with no DETACH_CHAR_FROM_CAR
+// (TASK_DIVE_FROM_ATTACHMENT_AND_GET_UP at that mission's end) goes as one.
+struct OnCar {
+    int32_t p[8];
+    bool sent;
+};
+std::vector<OnCar> g_onCar;
+void TrackPersonOnCar(bool on, const int32_t* p, bool sent) {
+    if (p[0] == GetPedRef(FindPlayerPed(0))) return;  // CJ as a gunner: his own rules (the vehicle's gun)
+    g_onCar.erase(std::remove_if(g_onCar.begin(), g_onCar.end(), [&](const OnCar& c) { return c.p[0] == p[0]; }), g_onCar.end());
+    if (on) {
+        OnCar c{{}, sent};
+        memcpy(c.p, p, sizeof c.p);
+        g_onCar.push_back(c);
+    }
+}
+void HostOnCarUpdate() {
+    for (auto it = g_onCar.begin(); it != g_onCar.end();) {
+        CPed* ped = GetPed(it->p[0]);
+        if (!ped || !ped->AttachedTo()) {
+            if (ped && it->sent) SendPersonOnCar(false, it->p);
+            it = g_onCar.erase(it);
+            continue;
+        }
+        if (!it->sent && (it->sent = SendPersonOnCar(true, it->p))) LOGD("Mission person on a car: sent once shared");
+        ++it;
+    }
+}
+
+// partner: the host made its vehicle's gunner (ATTACH_CHAR_TO_CAR with a gun: the minigun in the door of the helicopter
+// of "The Da Nang Thang", the AK at the back of the car in "Reuniting the Families"), and the partner had nothing to do
+// there. Our CJ goes on the copy of that vehicle too, on its other side with the same gun (sides 1 and 3 swapped, one in
+// the middle goes 0.7 m to the right), and the host's game puts our copy there (G_PED_ATTACH). The enter key takes him
+// off for the rest of that part, back where he stood, as Zero's turret does (RcToys). The attachment gives the vehicle's
+// gun and takes it; our own gun of that slot comes back after.
+void GiveWeaponNow(int h, int type, int count);
+// A vehicle's gun: CPed::AttachPedToEntity gives it with its model in memory or not, and that model brings the gun's animations
+// (default.ide). 25 ms after going on the helicopter of "The Da Nang Thang" the partner's game crashed (05.11): the minigun's
+// group, not loaded, in CAnimManager::BlendAnimation. The attachment waits for the model, as Zero's turret does.
+bool GunModelReady(int weapon) {
+    int model = -1;
+    if (weapon > 0) Cmd(0x0781).I(weapon).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
+    if (model <= 0 || IsModelLoaded(model)) return true;
+    RequestModel(model, 0);  // in the background, a frame or two
+    return false;
+}
+struct Gunner {
+    bool want = false;  // the host is a gunner on that vehicle
+    uint16_t car = 0;
+    CVector offset;
+    int32_t side = 0, weapon = 0;
+    float range = 0.0f;
+    bool on = false;        // our CJ on it
+    bool declined = false;  // taken off by the enter key: not again in this part
+    int slotType = 0, slotAmmo = 0, held = 0;
+    CVector stood;
+    uint64_t triedMs = 0;
+    float power = 0.0f;  // "Catalyst": the throw held so far
+} g_gunner;
+
+void GunnerOff(CPlayerPed* me, bool back) {
+    int h = GetPedRef(me);
+    Cmd(0x02AB).I(h).I(0).I(0).I(0).I(0).I(0).Run();  // SET_CHAR_PROOFS
+    if (!g_gunner.weapon) Cmd(0x09A3).I(0).Run();  // DRAW_CROSSHAIR
+    if (me->AttachedTo()) Cmd(0x0465).I(h).Run();  // DETACH_CHAR_FROM_CAR: the gun he held before back in hand
+    // The vehicle deleted under him clears CPed::m_pAttachedTo alone: with no detach (not while dying, it reads the vehicle)
+    // he stayed with his collision off, so no gravity, and in the gunner's state: he hung in the air and could not walk.
+    else if (me->PedState() != 54 && me->PedState() != 55) CallMethod<0x5E7EC0>(me);  // CPed::DettachPedFromEntity
+    Cmd(0x0555).I(h).I(g_gunner.weapon).Run();     // REMOVE_WEAPON_FROM_CHAR: the vehicle's
+    if (g_gunner.slotType > 0 && g_gunner.slotAmmo > 0) GiveWeaponNow(h, g_gunner.slotType, g_gunner.slotAmmo);
+    if (g_gunner.held) Cmd(0x01B9).I(h).I(g_gunner.held).Run();  // SET_CURRENT_CHAR_WEAPON
+    if (back) Cmd(0x00A1).I(h).F(g_gunner.stood.x).F(g_gunner.stood.y).F(g_gunner.stood.z - 1.0f).Run();  // SET_CHAR_COORDINATES
+    int32_t p[8] = {h};
+    SendPersonOnCar(false, p);
+    g_gunner.on = false;
+    LOGI("Second gunner: off the host's vehicle%s", back ? ", back where we stood" : "");
+}
+
+// the carriage of our copy of the train the host stands on
+int TrainByHost() {
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    CPoolHeader* pool = VehiclePool();
+    CVehicle* best = nullptr;
+    float bestD = 40.0f;
+    for (int i = 0; host && host->ped && pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
+        float d = (v->GetPosition() - host->ped->GetPosition()).Length();
+        if (v->IsTrain() && d < bestD) best = v, bestD = d;
+    }
+    return best ? GetVehicleRef(best) : -1;
+}
+
+void GunnerOn(CPlayerPed* me, int car) {
+    int h = GetPedRef(me);
+    if (me->InVehicle()) {  // out first, on it at the next try (a ped in a vehicle is not attached)
+        CVector p = me->GetPosition();
+        Cmd(0x0362).I(h).F(p.x).F(p.y).F(p.z).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
+        return;
+    }
+    if (!GunModelReady(g_gunner.weapon)) return;
+    CVector o = g_gunner.offset;
+    if (std::fabs(o.x) > 0.3f) o.x = -o.x;
+    else o.x += 0.7f;
+    if (int rank = PartnerRank(Net().MyId()); rank > 0) o.y += rank == 1 ? -0.8f : 0.8f;  // beside the first partner
+    int side = g_gunner.side == 1 || g_gunner.side == 3 ? 4 - g_gunner.side : g_gunner.side;
+    if (!g_gunner.weapon) Cmd(0x09A3).I(1).Run();  // DRAW_CROSSHAIR: the box goes where the camera looks
+    g_gunner.stood = me->GetPosition();
+    g_gunner.held = me->ActiveWeapon().type;
+    void* info = Call<0x743C60, void*>(g_gunner.weapon, (uint8_t)1);  // CWeaponInfo::GetWeaponInfo
+    const CWeapon& had = me->Weapons()[info ? std::clamp(Field<int32_t>(info, 0x14), 0, NUM_WEAPON_SLOTS - 1) : 0];  // m_nSlot
+    g_gunner.slotType = had.type, g_gunner.slotAmmo = had.ammoTotal;  // one like the vehicle's too: its count back after
+    if (me->AreaCode() != 0) Cmd(0x0860).I(h).I(0).Run(), Cmd(0x04BB).I(0).Run();  // SET_CHAR_AREA_VISIBLE, SET_AREA_VISIBLE
+    Cmd(0x0464).I(h).I(car).F(o.x).F(o.y).F(o.z).I(side).F(g_gunner.range).I(g_gunner.weapon).Run();  // ATTACH_CHAR_TO_CAR
+    if (!me->AttachedTo()) return;
+    Cmd(0x01B9).I(h).I(g_gunner.weapon).Run();  // SET_CURRENT_CHAR_WEAPON
+    Cmd(0x02AB).I(h).I(1).I(1).I(1).I(1).I(1).Run();  // SET_CHAR_PROOFS: the missions make their gunner so, or he fell off dead
+    g_gunner.on = true;
+    int32_t p[8] = {h, car};
+    memcpy(&p[2], &o.x, 4), memcpy(&p[3], &o.y, 4), memcpy(&p[4], &o.z, 4), p[5] = side, memcpy(&p[6], &g_gunner.range, 4);
+    p[7] = g_gunner.weapon;
+    SendPersonOnCar(true, p);
+    ui::TheChat().AddSystem(TR("Вы второй стрелок рядом с хостом. Клавиша посадки в машину снимет вас.",
+                               "You are the second gunner next to the host. The enter key takes you off."));
+    LOGI("Second gunner: on the host's vehicle at %.2f,%.2f,%.2f side %d, weapon %d", o.x, o.y, o.z, side, g_gunner.weapon);
+}
+
+void GunnerUpdate() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    if (!me) return;
+    if (g_gunner.on) {
+        const CPad* pad = GetPad(0);
+        bool leave = pad->NewState.ButtonTriangle && !pad->OldState.ButtonTriangle;  // the enter key
+        if (leave) g_gunner.declined = true;
+        if (leave || !me->AttachedTo() || me->Health() <= 0.0f || !g_gunner.want || !HostMissionRecent(0)) return GunnerOff(me, leave);
+        // "Catalyst": the fire button powers the throw up, its release throws, as the mission does for the host (2 a frame)
+        if (!g_gunner.weapon) {
+            if (pad->NewState.ButtonCircle) {
+                g_gunner.power = std::min(g_gunner.power + 2.0f, 100.0f);
+            } else {
+                if (g_gunner.power > 20.0f) rules::Throw(g_gunner.power);
+                g_gunner.power = 0.0f;
+            }
+        }
+        return;
+    }
+    if (!g_gunner.want || g_gunner.declined || !HostMissionRecent(0) || !flow::InHostWorld() || me->Health() <= 0.0f ||
+        CutsceneRunning() || SceneWatched() || NowMs() - g_gunner.triedMs < 1000)
+        return;
+    g_gunner.triedMs = NowMs();
+    if (g_gunner.car == kOnTrain) {
+        if (int train = TrainByHost(); train >= 0) GunnerOn(me, train);
+    } else if (NetVehicle* nv = Vehicles::Instance().Find(g_gunner.car); nv && Vehicles::Alive(*nv)) {
+        GunnerOn(me, nv->handle);
+    }
+}
+
+// "Shared life" (the host's choice creating the game, 0.3.3): a partner's death fails the host's story mission as the
+// host's own would. FAIL_CURRENT_MISSION alone brings the mission back from its main part to its cleanup with no
+// "mission failed"; the death-arrest flag (CRunningScript +0xD4, read by HAS_DEATHARREST_BEEN_EXECUTED) sends it through
+// its failed part first, as a death does.
+std::map<uint8_t, bool> g_deadBefore;
+void SharedLifeUpdate() {
+    for (auto& [id, rp] : Players::Instance().All()) {
+        bool dead = rp.hasState && (rp.state.flags & OnFootState::F_DEAD);
+        bool was = std::exchange(g_deadBefore[id], dead);
+        void* s = dead && !was && Net().SharedLife() && HostOnMission() ? FindMissionScript() : nullptr;
+        if (!s || !StoryMission(s)) continue;
+        Field<uint8_t>(s, 0xD4) = 1;  // m_DoneDeathArrest
+        Cmd(0x045C).Run();            // FAIL_CURRENT_MISSION
+        ui::TheChat().AddSystem(Format(TR("Игрок %s погиб: миссия провалена.", "%s died: mission failed."), Net().PeerName(id).c_str()));
+        LOGI("Shared life: player %d died, %.8s fails", id, Field<char[8]>(s, 0x08));
+    }
+}
+
+// Without "Shared life" the host's death fails its story mission only when no partner is alive in its world (the players'
+// choice, 31.10): otherwise the host gets up beside a partner a moment later and plays on, as a partner already does
+// beside the host (Players: HookRestorePlayer). CGameLogic::Update calls CPlayerInfo::KillPlayer every frame its player
+// lies dead; kept PLAYING (no PLAYERSTATE_HAS_DIED), the mission's death-arrest (CRunningScript::DoDeathArrestCheck) never
+// runs. CGameLogic still marks the game WASTED and brings CJ back at a hospital 3 s after the last of those calls: the
+// revive sets it PLAYING again. Not the game's own resurrection (RestorePlayerStuffDuringResurrection): it clears the
+// people, cars and fires of 4 km around and the wanted level, and its respawn passes 12 hours and takes $100.
+struct Down {
+    bool on = false;
+    uint8_t by = 0xFF;     // the partner to get up beside
+    uint64_t sinceMs = 0;  // dead since
+    uint64_t fadeMs = 0;   // the screen going dark since
+} g_down;
+
+const RemotePlayer* LivingPartner(uint8_t prefer) {
+    const RemotePlayer* any = nullptr;
+    for (auto& [id, rp] : Players::Instance().All()) {
+        if (!rp.ped || !rp.hasState || (rp.state.flags & OnFootState::F_DEAD)) continue;
+        if (id == prefer) return &rp;
+        if (!any) any = &rp;
+    }
+    return any;
+}
+
+using KillPlayerFn = void(__fastcall*)(void*, void*);
+KillPlayerFn g_origKillPlayer = nullptr;
+void __fastcall HookKillPlayer(void* info, void* edx) {
+    void* s = info == &PlayerInfos()[0] && Net().Online() && Net().IsHost() && !Net().SharedLife() ? FindMissionScript() : nullptr;
+    if (const RemotePlayer* rp = s && StoryMission(s) ? LivingPartner(g_down.by) : nullptr) {
+        if (!g_down.on) {
+            g_down = {true, rp->id, NowMs(), 0};
+            ui::TheChat().AddSystem(TR("Вы погибли. Сейчас вы встанете рядом с напарником.", "You died. You will get up next to your partner."));
+            LOGI("Down in the mission (%.8s): getting up beside player %d", Field<char[8]>(s, 0x08), rp->id);
+        }
+        return;
+    }
+    if (g_down.on) LOGI("Down with no partner alive: the mission fails as the game has it");
+    g_down = {};
+    g_origKillPlayer(info, edx);
+}
+
+// alive again beside the partner, as the game's respawn makes CJ (CPlayerPed::SetInitialState and the rest), with what
+// he had: his guns, his stars, the clock
+void Revive(CPlayerPed* me, const RemotePlayer& rp) {
+    CPed* pp = rp.ped;
+    float rot = rp.state.rotation;
+    CVector side = pp->InVehicle() && pp->Vehicle() && pp->Vehicle()->Matrix() ? pp->Vehicle()->Matrix()->right * 2.5f
+                                                                             : CVector{std::cos(rot), std::sin(rot), 0.0f} * 1.5f;
+    CVector from = me->GetPosition(), to = pp->GetPosition() + side;
+    Cmd(0x04BB).I(rp.state.area).Run();         // SET_AREA_VISIBLE: its floor loads with the scene
+    Cmd(0x03CB).F(to.x).F(to.y).F(to.z).Run();  // LOAD_SCENE: the screen is dark
+    bool found = false;
+    float z = Call<0x5696C0, float>(to.x, to.y, to.z + 1.0f, &found, (CEntity**)nullptr);  // CWorld::FindGroundZFor3DCoord
+    if (found) to.z = z + 1.0f;  // on the ground under a partner in the air too
+    // out of the car he died in, as the game's own respawn takes him out (CGameLogic::Update): the dying in a car is no
+    // task a warp ends, and the car would keep a dead driver
+    if (CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr) {
+        if (v->Driver() == (CPed*)me) {
+            CallMethod<0x571A00>((CEntity*)me, (CEntity**)&v->Driver());  // CEntity::CleanUpOldReference
+            v->Driver() = nullptr;
+            if (v->Status() != 5) v->SetStatus(4);  // not STATUS_WRECKED: STATUS_ABANDONED
+        } else {
+            CallMethod<0x6D1610>(v, (CPed*)me);  // CVehicle::RemovePassenger
+        }
+        CallMethod<0x571A00>((CEntity*)v, (CEntity**)&me->Vehicle());
+        me->Vehicle() = nullptr;
+        me->PedFlags() &= ~0x100u;  // bInVehicle
+    }
+    me->Health() = (float)PlayerInfos()[0].maxHealth;
+    Field<int32_t>(me, 0x750) = 0;                   // CPed::m_nDeathTimeMS
+    me->Flags() = (me->Flags() | 0x80u) & ~0x800u;  // bIsVisible, not bRemoveFromWorld
+    if (me->PedFlags() & 0x8000u) {                  // a katana took the head (as HookRestorePlayer)
+        me->PedFlags() &= ~0x8000u;
+        Field<int8_t>(me, 0x754) = -1;
+    }
+    CallMethod<0x60CD20>(me, false);  // CPlayerPed::SetInitialState: the death's tasks and state gone, on foot
+    CallMethod<0x5DED50>(me);         // CPed::RestartNonPartialAnims
+    Players::Instance().GoTo(rp, to, true);
+    Cmd(0x0173).I(GetPedRef(me)).F(rot * 57.29578f).Run();  // SET_CHAR_HEADING
+    Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT
+    Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
+    Call<0x589070>();   // CHud::ResetWastedText
+    Ref<int32_t>(0x96A8B0) = 0;  // CGameLogic::GameState: GAMELOGIC_STATE_PLAYING, no hospital
+    Ref<int32_t>(0x96A8AC) = 0;  // CGameLogic::TimeOfLastEvent
+    LOGI("Up again beside player %d (area %d, %.0f m from where we fell)", rp.id, rp.state.area, (to - from).Length());
+}
+
+// host: the fall plays, the screen goes dark, CJ gets up beside the partner; the partner dead too, or the mission over
+// meanwhile: the game's own death (KillPlayer goes through the next frame)
+void HostDownUpdate() {
+    if (!g_down.on) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || me->Health() > 0.0f) {  // up by other means (a script's health, the game's respawn)
+        g_down = {};
+        return;
+    }
+    const RemotePlayer* rp = LivingPartner(g_down.by);
+    if (!rp || !FindMissionScript()) {
+        g_down = {};
+        return;
+    }
+    uint64_t now = NowMs();
+    if (!g_down.fadeMs) {
+        if (now - g_down.sinceMs < 1500) return;
+        Fade(0.5f, 0);
+        g_down.fadeMs = now;
+        return;
+    }
+    if (now - g_down.fadeMs < 600) return;
+    Revive(me, *rp);
+    Fade(0.5f, 1);
+    g_down = {};
+}
+
 void HandlePersonOnCar(uint8_t from, Reader& r) {
     PersonOnCar a{};
     a.on = r.U8() != 0;
@@ -923,6 +1265,15 @@ void HandlePersonOnCar(uint8_t from, Reader& r) {
         return;
     a.offset = {o.x, o.y, o.z};
     a.until = NowMs() + 10000;
+    if (a.kind == 3 && a.id == Net().HostId() && from == Net().HostId() && !Net().IsHost()) {  // the host's CJ
+        // on the train of "Catalyst" with no gun: the partner throws the boxes too (the players' choice, 04.11)
+        g_gunner.want = a.on && (a.weapon > 0 || !_stricmp(g_hostMission.c_str(), "ryder3"));
+        if (g_gunner.want) g_gunner.car = a.car, g_gunner.offset = a.offset, g_gunner.side = a.heading, g_gunner.range = a.range,
+                           g_gunner.weapon = a.weapon;
+        else g_gunner.declined = false;  // its next turn as a gunner is ours too
+        // off at once: the host's move after it (CS_FOLLOW) finds us off the vehicle
+        if (!g_gunner.want && g_gunner.on && core::IsPlayerReady()) GunnerOff(FindPlayerPed(0), false);
+    }
     // the latest word on that person: a detach must not run before an attach still waiting for the copy
     std::erase_if(g_personOnCar, [&](const PersonOnCar& w) { return w.kind == a.kind && w.id == a.id; });
     g_personOnCar.push_back(a);
@@ -933,7 +1284,7 @@ void ApplyPersonsOnCars() {
         CPed* p = ped >= 0 ? GetPed(ped) : nullptr;
         NetVehicle* nv = it->on ? Vehicles::Instance().Find(it->car) : nullptr;
         // on: out of the seat first (the mission took her out of it in the same frame, the copy follows its state)
-        bool ready = p && p != FindPlayerPed(0) && (!it->on || (nv && Vehicles::Alive(*nv) && !p->InVehicle()));
+        bool ready = p && p != FindPlayerPed(0) && (!it->on || (nv && Vehicles::Alive(*nv) && !p->InVehicle() && GunModelReady(it->weapon)));
         if (ready) {
             // A player's copy goes on as a mission's person does. As a player it took the game's player branch
             // (CPed::AttachPedToEntity), which sets this game's camera to the gunner's (CCamera::SetNewPlayerWeaponMode): the
@@ -1146,7 +1497,7 @@ void SendText(uint8_t kind, const char* text, uint32_t time, uint16_t flag, cons
 
 // main.scm's APGATE slides an airport gate open for its own player alone: within 10 m (with flying skill 180 from outside)
 // or at its inner side (4.5 m), and shuts it once that player is 20 m off. Each game opened the gates for its own player,
-// and the other player's copy drove through a shut one (MozzisRus, 29.10: open for the host, shut for the partner, or the
+// and the other player's copy drove through a shut one (29.10: open for the host, shut for the partner, or the
 // other way round). These checks take the other player too; the outer side's (3 m, the licence help) stays our player's.
 // shortcut: only where APCHECK serves the gate in this game (our player within 65 m of it); counting the other player there
 // too would tie APCHECK to one site while the two are at two airports
@@ -1169,12 +1520,210 @@ int AirportGateAnswer(void* script, uint16_t op) {
     return -1;
 }
 
+// The host waits for the partner at the objective (0.3.3, the players' idea): a marker of the host's story mission that
+// the host reached (LOCATE_..._2D/3D of its player at a point, with the marker drawn) counts only once a partner on its
+// way is there too, so the partner does not arrive after what happened there. 45 s at most, none while the mission's
+// clock is on the screen (the wait could run it out), and none for a partner off doing something else (over 300 m).
+constexpr float kGoalNear = 30.0f, kGoalFar = 300.0f;
+constexpr uint64_t kGoalMaxMs = 45000;
+int ObjectiveAnswer(void* script, uint16_t op) {
+    bool d3 = op >= 0x00FE && op <= 0x0103, d2 = op >= 0x00EC && op <= 0x00F1;
+    if ((!d2 && !d3) || !Net().IsHost() || !Replicating() || !StoryMission(script)) return -1;
+    const auto* p = (const int32_t*)0xA43C78;  // CTheScripts::ScriptParams, as the command read them
+    const auto* f = (const float*)p;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || p[0] != GetPedRef(me) || !p[d3 ? 7 : 5] || Ref<uint32_t>(kOnscreenTimer)) return -1;  // the clock's variable
+    CVector at{f[1], f[2], d3 ? f[3] : 0.0f}, pos = me->InVehicle() ? me->Vehicle()->GetPosition() : me->GetPosition();
+    if (std::fabs(pos.x - at.x) >= f[d3 ? 4 : 3] || std::fabs(pos.y - at.y) >= f[d3 ? 5 : 4] || (d3 && std::fabs(pos.z - at.z) >= f[6]))
+        return -1;  // not there: the game's own answer
+    bool coming = false;
+    for (auto& [id, rp] : Players::Instance().All()) {
+        if (!rp.ped || !rp.hasState || (rp.state.flags & OnFootState::F_DEAD)) continue;
+        CVector d = rp.ped->GetPosition() - at;
+        float dist = std::sqrt(d.x * d.x + d.y * d.y);
+        coming = coming || (dist > kGoalNear && dist < kGoalFar);
+    }
+    uint64_t now = NowMs();
+    if ((g_goalWait.at - at).Length() > 1.0f || now - g_goalWait.seenMs > 3000) g_goalWait = {at, now, now, 0};  // another one
+    g_goalWait.seenMs = now;
+    if (!coming || now - g_goalWait.since > kGoalMaxMs) return -1;
+    if (!g_goalWait.heldMs) LOGI("At the mission's marker %.0f,%.0f: waiting for the partner (%.8s)", at.x, at.y, Field<char[8]>(script, 0x08));
+    g_goalWait.heldMs = now;
+    return 0;  // not there yet
+}
+
+// LOCATE_CHAR_..._2D/3D of a person who is not there: CScriptThread::actorNearPoint reads the person's flags at a null
+// pointer (0x486DDF). A script of a loaded save held such a handle, and the game crashed loading the save to create the
+// game (#97). The command's parameters are taken as it takes them, and the answer is no.
+bool LocateOfNobody(void* script, uint16_t op) {
+    bool d3 = op >= 0x00FE && op <= 0x0103;
+    if (!d3 && !(op >= 0x00EC && op <= 0x00F1)) return false;
+    uint8_t*& ip = Field<uint8_t*>(script, 0x14);  // CRunningScript::m_pCurrentIP: at the parameters
+    uint8_t* at = ip;
+    CallMethod<0x464080>(script, (int16_t)1);  // CRunningScript::CollectParameters: the person's handle
+    int handle = Ref<int32_t>(0xA43C78);       // CTheScripts::ScriptParams
+    ip = at;
+    if (GetPed(handle)) return false;
+    CallMethod<0x464080>(script, (int16_t)(d3 ? 8 : 6));
+    CallMethod<0x4859D0>(script, false);  // CRunningScript::UpdateCompareFlag
+    static int told = 0;
+    if (told++ < 5) LOGW("%.8s: %04X of a person who is not there (handle %d): not there", Field<char[8]>(script, 0x08), op, handle);
+    return true;
+}
+
+// PLAY_OBJECT_ANIM of an object that is not there: the handler reads the clump of none (0x46EA84). A gym's script lost
+// its object from under it and crashed a player's game (02.11), where the same game crashed eight times on a destroyed
+// object left in the pool (Patches). Its parameters taken as it takes them, nothing played.
+bool AnimOfNoObject(void* script, uint16_t op) {
+    if (op != 0x075A) return false;
+    uint8_t*& ip = Field<uint8_t*>(script, 0x14);
+    uint8_t* at = ip;
+    CallMethod<0x464080>(script, (int16_t)1);  // the object's handle
+    int handle = Ref<int32_t>(0xA43C78);
+    if (GetObject(handle)) {
+        ip = at;
+        return false;
+    }
+    char anim[24], block[16];
+    CallMethod<0x463D50>(script, anim, (uint8_t)sizeof anim);  // CRunningScript::ReadTextLabelFromScript
+    CallMethod<0x463D50>(script, block, (uint8_t)sizeof block);
+    CallMethod<0x464080>(script, (int16_t)3);
+    static int told = 0;
+    if (told++ < 5) LOGW("%.8s: %04X of an object that is not there (handle %d): not played", Field<char[8]>(script, 0x08), op, handle);
+    return true;
+}
+
+// GET_CHAR_IN_CAR_PASSENGER_SEAT of a seat nobody sits in: the handler (0x489EBC) takes the handle of the person there
+// unchecked, and CPool<CPed>::GetRef of none read far below the pool. Two players riding in one car crashed seven times
+// (#99): a script of their build asked who sat in a seat nobody sat in. The answer is -1, as
+// GET_DRIVER_OF_CAR's for a car with nobody at the wheel.
+bool PassengerOfEmptySeat(void* script, uint16_t op) {
+    if (op != 0x0432) return false;
+    uint8_t*& ip = Field<uint8_t*>(script, 0x14);
+    uint8_t* at = ip;
+    CallMethod<0x464080>(script, (int16_t)2);  // the car's handle and the seat
+    int car = Ref<int32_t>(0xA43C78), seat = Ref<int32_t>(0xA43C7C);
+    CVehicle* v = GetVehicle(car);
+    if (v && seat >= 0 && seat < 8 && v->Passengers()[seat]) {
+        ip = at;
+        return false;
+    }
+    Ref<int32_t>(0xA43C78) = -1;
+    CallMethod<0x464370>(script, (int16_t)1);  // CRunningScript::StoreParameters: into the answer's variable
+    static int told = 0;
+    if (told++ < 5) LOGW("%.8s: %04X of seat %d of car %d with nobody in it: -1", Field<char[8]>(script, 0x08), op, seat, car);
+    return true;
+}
+
+// A vehicle job by its button (2, or square on a pad) started in the game of a player who only rode in the car: main.scm's
+// R3 thread asks IS_CHAR_IN_ANY_CAR, the car's model and the button, all true beside the driver too. AMBULAN at its start
+// throws the people beside its player out of the car and lets them go, and the player was one of them: CJ got out and
+// walked off on his own, his controls gone (a player's comment, 02.11). In the single game the player never rides beside
+// anyone and a job starts at the wheel: riding beside the other player, R3 sees this one out of any car.
+bool PassengerJobButton(void* script, uint16_t op) {
+    if (op != 0x00DF || !Net().Online() || _strnicmp(Field<char[8]>(script, 0x08), "r3", 8)) return false;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || !me->InVehicle() || !me->Vehicle() || me->Vehicle()->Driver() == me) return false;
+    uint8_t*& ip = Field<uint8_t*>(script, 0x14);
+    uint8_t* at = ip;
+    CallMethod<0x464080>(script, (int16_t)1);  // the person's handle
+    if (Ref<int32_t>(0xA43C78) != GetPedRef(me)) {
+        ip = at;
+        return false;
+    }
+    CallMethod<0x4859D0>(script, false);  // CRunningScript::UpdateCompareFlag
+    static CVehicle* told = nullptr;
+    if (told != me->Vehicle()) told = me->Vehicle(), LOGI("Riding beside the driver: the vehicle jobs' button does nothing here");
+    return true;
+}
+
+// COPCAR sets each of its 12 criminals to die in its seat (SET_CHAR_FORCE_DIE_IN_CAR, 0x2CDB55): CTaskComplexDieInCar
+// then neither stops the car nor lets the body out, and the car of a dead driver drove on with its orders (the players'
+// report, 08.11; the user's choice: as any killed driver). Without it the car brakes, the driver falls out after 2 s and
+// the passengers stay seated, as with the other mission people. Its parameters taken, the flag not set.
+bool CriminalsDieSeated(void* script, uint16_t op) {
+    if (op != 0x0982 || !Net().Online() || _strnicmp(Field<char[8]>(script, 0x08), "copcar", 8)) return false;
+    CallMethod<0x464080>(script, (int16_t)2);  // CRunningScript::CollectParameters: the criminal, the flag
+    return true;
+}
+
+// A script of this game lets a player go (MARK_CHAR_AS_NO_LONGER_NEEDED: an ordinary person then, out of its car and
+// wandering) or takes the other player's copy out of its car (TASK_LEAVE_CAR_IMMEDIATELY). AMBULAN does both to whoever
+// sits beside its player: the other player riding there got out here and walked off while it rode on in its own game.
+// Players are nobody's to let go, and a copy's seat is its owner's game's to say.
+bool ReleasesPlayer(void* script, uint16_t op) {
+    if ((op != 0x01C2 && op != 0x0622) || !Net().Online()) return false;
+    uint8_t*& ip = Field<uint8_t*>(script, 0x14);
+    uint8_t* at = ip;
+    CallMethod<0x464080>(script, (int16_t)1);  // the person's handle
+    CPed* ped = GetPed(Ref<int32_t>(0xA43C78));
+    ip = at;
+    bool copy = ped && Players::Instance().FindByPed(ped);
+    if (!copy && !(op == 0x01C2 && ped && ped == FindPlayerPed(0))) return false;
+    CallMethod<0x464080>(script, (int16_t)(op == 0x0622 ? 2 : 1));
+    static int told = 0;
+    if (told++ < 5)
+        LOGW("%.8s: %04X of %s: not done", Field<char[8]>(script, 0x08), op, copy ? "the other player's copy" : "our player");
+    return true;
+}
+
+// A mission that waits for a model which never loads stands still for good: "Architectural Espionage" asks for its cops
+// after the photo of the blueprints and loops on HAS_MODEL_LOADED, and it went no further for two players (01.11; the
+// host's streaming loaded the people outside meanwhile, and the mod touches no such request). After 10 s the model is
+// asked for again, its texture dictionary too (a model never loads without it), before all others (STREAMING_MISSION_
+// REQUIRED | STREAMING_PRIORITY_REQUEST): a request lost on the way goes in again, one kept behind others goes first.
+// Nothing loads at once (a file that fails is read again and again: a load at once would hang the game). After 15 s it
+// is said in the log, with the streaming's state, as Diagnostics does for a cutscene's models.
+struct ModelWait {
+    uint64_t since = 0, last = 0;
+    bool again = false, told = false;
+};
+std::map<int, ModelWait> g_modelWaits;
+void NoteModelWait(void* script) {
+    int model = ResolvedModel(Ref<int32_t>(0xA43C78));  // HAS_MODEL_LOADED's model, as the command read it
+    if (IsModelLoaded(model)) {
+        g_modelWaits.erase(model);
+        return;
+    }
+    uint64_t now = NowMs();
+    ModelWait& w = g_modelWaits[model];
+    if (now - w.last > 1000) w = {now, now, false, false};  // asked for anew
+    w.last = now;
+    void* mi = model >= 0 && model < 20000 ? Ref<void*>(addr::ModelInfoPtrs + (uintptr_t)model * 4) : nullptr;
+    int txd = mi ? 20000 + Field<int16_t>(mi, 0x0A) : -1;  // CBaseModelInfo::m_nTxdIndex
+    if (!w.again && now - w.since >= 10000) {
+        w.again = true;
+        if (txd >= 20000) RequestModel(txd, 0x4 | 0x10);
+        RequestModel(model, 0x4 | 0x10);
+        LOGW("%.8s has waited 10 s for model %d (state %d, its txd %d state %d): asked for again, first", Field<char[8]>(script, 0x08),
+             model, ModelLoadState(model), txd, ModelLoadState(txd));
+    }
+    if (w.told || now - w.since < 15000) return;
+    w.told = true;
+    // CStreaming: ms_memoryUsedBytes, ms_memoryAvailable, ms_numModelsRequested, ms_numPriorityRequests, both channels'
+    // states, ms_disableStreaming
+    LOGW("%.8s has waited 15 s for model %d (state %d, its txd %d state %d): streaming %u of %u KB, %d asked for (%u first), "
+         "channels %d %d%s",
+         Field<char[8]>(script, 0x08), model, ModelLoadState(model), txd, ModelLoadState(txd), Ref<uint32_t>(0x8E4CB4) / 1024,
+         Ref<uint32_t>(0x8A5A80) / 1024, Ref<int32_t>(0x8E4CB8), Ref<uint32_t>(0x8E4BA0), Ref<int32_t>(0x8E4A60 + 0x80),
+         Ref<int32_t>(0x8E4A60 + 0x98 + 0x80), Ref<uint8_t>(0x9654B0) ? ", streaming off" : "");
+}
+
 // Every command of every script, with the handler CRunningScript::Process took for it from the table (its opcode / 100),
 // as Process calls it: the opcode read, the instruction pointer past it, the NOT flag set.
 using CommandHandlerFn = int8_t(__thiscall*)(void*, int);
 int8_t ScriptCommand(void* script, void* handler, int command) {
+    if (LocateOfNobody(script, (uint16_t)command) || PassengerOfEmptySeat(script, (uint16_t)command) ||
+        AnimOfNoObject(script, (uint16_t)command) || PassengerJobButton(script, (uint16_t)command) ||
+        CriminalsDieSeated(script, (uint16_t)command) || ReleasesPlayer(script, (uint16_t)command) ||
+        rules::SkipCommand(script, (uint16_t)command))
+        return 0;
     const uint8_t* ip = Field<uint8_t*>(script, 0x14) - 2;  // CRunningScript::m_pCurrentIP: past the command's opcode
     uint16_t op = (uint16_t)command;
+    // the partner's camera came back to the player in the middle of the host's cutscene ("Fender Ketchup", 30.10): who
+    // switches it here is still unknown (SWITCH_WIDESCREEN, RESTORE_CAMERA, RESTORE_CAMERA_JUMPCUT, MISSION_HAS_FINISHED)
+    if (g_csState == 2 && (op == 0x02A3 || op == 0x015A || op == 0x02EB || op == 0x00D8) && Net().Online() && !Net().IsHost())
+        LOGI("During the host's cutscene a script here runs %04X (%.8s)", op, Field<char[8]>(script, 0x08));
     bool forwardOnly = (op == 0x00BB || op == 0x00BC) && !ShowSubtitles() && Net().Online() && Net().IsHost() && Replicating();
     if (forwardOnly) ShowSubtitles() = 1, g_forwardOnly = true;
     bool dressing = (op == 0x087B || op == 0x0784 || op == 0x070D) && Net().Online() && Net().IsHost() && Replicating() &&
@@ -1191,11 +1740,27 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
             Call<0x587CE0>(old);  // CRadar::ClearBlip
             LOGI("Trucking: its drop's blip was set again over a live one: the old one removed");
         }
+    // A story mission moves one of main.scm's own objects, made at the game's start and never the mission's: the garage
+    // door of "Fender Ketchup", the shutter of "You've Had Your Chips", Area 69's blast doors. It never reached the
+    // partner, shut in or before a closed door (30-31.10). Announced before the move, where the partner's own
+    // one stands (SLIDE_OBJECT, SET_OBJECT_COORDINATES; the object in a global variable).
+    // ROTATE_OBJECT turns the ship's door of "The Da Nang Thang" and the vault's of "Breaking the Bank at Caligula's" (the
+    // partner stood before a shut one), SET_OBJECT_HEADING and SET_OBJECT_ROTATION set them.
+    if ((op == 0x034E || op == 0x01BC || op == 0x034D || op == 0x0177 || op == 0x0453) && ip[2] == 0x02 && Net().Online() &&
+        Net().IsHost() && Replicating() && StoryMission(script))
+        AnnounceScmObject(Ref<int32_t>(addr::ScriptSpace + *(const uint16_t*)(ip + 3)));
     // a joint job of ours: the other player's ambulance or the other player itself for this one command (Jobs.cpp)
     int32_t jobWas = 0;
     int32_t* jobVar = Net().Online() && Field<uint8_t>(script, 0xDC) ? jobs::BeforeCommand(script, op, ip, jobWas) : nullptr;
+    bool story = Net().Online() && Net().IsHost() && Replicating() && StoryMission(script);
+    if (story && !jobVar) jobVar = rules::BeforeCommand(script, ip, jobWas);  // a stretch of the mission that goes for another player
     int8_t r = ((CommandHandlerFn)handler)(script, command);
     if (jobVar) *jobVar = jobWas;
+    if (story) rules::AfterCommand(op, ip);
+    // DONT_REMOVE_OBJECT takes the object off the mission's list, the same frame it was made: the cabins of "Deconstruction",
+    // the doors of "Small Town Bank" and the rest never reached the partner (HostScan reads that list)
+    if (story && op == 0x01C7) AnnounceKeptObject(Ref<int32_t>(0xA43C78));
+    if (op == 0x0248 && Field<uint8_t>(script, 0xDC)) NoteModelWait(script);  // HAS_MODEL_LOADED in a mission
     if (op == 0x004F && Net().Online() && Net().IsHost() && MissionThread(script)) NoteMissionThread();  // START_NEW_SCRIPT
     // PLAY_MISSION_PASSED_TUNE: the passed mission's jingle played in the host's game only, the partner saw the text in
     // silence
@@ -1225,13 +1790,21 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
         SendLookAt((const int32_t*)0xA43C78);  // TASK_LOOK_AT_CHAR, as the command read it
     if (op == 0x0985 && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script))
         SendNoCollide((const int32_t*)0xA43C78);  // SET_CHAR_USES_COLLISION_CLOSEST_OBJECT_OF_TYPE
-    if ((op == 0x0464 || op == 0x0465) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script))
-        SendPersonOnCar(op == 0x0464, (const int32_t*)0xA43C78);  // ATTACH_CHAR_TO_CAR, DETACH_CHAR_FROM_CAR
+    if ((op == 0x0464 || op == 0x0465) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script)) {
+        const auto* p = (const int32_t*)0xA43C78;  // ATTACH_CHAR_TO_CAR, DETACH_CHAR_FROM_CAR, as the command read them
+        TrackPersonOnCar(op == 0x0464, p, SendPersonOnCar(op == 0x0464, p));
+    }
     // CJ made a vehicle's gunner and back: the gun is the vehicle's (CPed::AttachPedToEntity gives it, the detach takes it
-    // back), not one the mission gives to keep. The partner walked about with the host's minigun (28.10).
-    if ((op == 0x0464 || op == 0x0465) && g_tickWeapons && *(const int32_t*)0xA43C78 == GetPedRef(FindPlayerPed(0)))
+    // back), not one the mission gives to keep. The partner walked about with the host's minigun (28.10). A turret on an
+    // object (ATTACH_CHAR_TO_OBJECT, ZERO1's roof) or a bike (ATTACH_CHAR_TO_BIKE) too: after "Air Raid" the partner kept
+    // a minigun with no end of ammo (#102).
+    if (op == 0x048F && g_tickWeapons && *(const int32_t*)0xA43C78 == GetPedRef(FindPlayerPed(0)) && StoryMission(script))
+        SendTakeAll(g_tickFrom);
+    if ((op == 0x0464 || op == 0x0465 || op == 0x04F4 || op == 0x06A7) && g_tickWeapons &&
+        *(const int32_t*)0xA43C78 == GetPedRef(FindPlayerPed(0)))
         g_tickWeapons->Take(FindPlayerPed(0));
-    if ((op == 0x00AB || op == 0x0175 || op == 0x0519) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script))
+    if ((op == 0x00AB || op == 0x0175 || op == 0x0519 || op == 0x0683) && Net().Online() && Net().IsHost() && Replicating() &&
+        StoryMission(script))
         SendCarCommand(op, (const int32_t*)0xA43C78);  // CTheScripts::ScriptParams
     if (CameraTake(op) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script)) g_scriptCam = true;
     if (Net().Online() && Net().IsHost()) minigames::AfterCommand(script, op, ip, Replicating() && StoryMission(script));
@@ -1247,7 +1820,10 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
         int answer = pool::Answer(script, op);
         if (answer < 0 && mission) answer = jobs::Answer(script, op);
         if (answer < 0 && !mission) answer = courier::Answer(script, op);
+        if (answer < 0 && !mission) answer = contest::Answer(script, op);
         if (answer < 0 && !mission) answer = AirportGateAnswer(script, op);
+        if (answer < 0 && mission) answer = ObjectiveAnswer(script, op);
+        if (answer < 0 && story) answer = rules::Answer(script, handler, command, ip);
         if (answer < 0 && JointValet(script)) answer = jobs::ValetAnswer(op);
         // in the other's valet shift ours stays off: VALET_L and VALET take our player for out of the hotel's grounds
         if (answer < 0 && op == 0x00A3 && SideJoined() && g_side.joined == "valet" && !_strnicmp(Field<char[8]>(script, 0x08), "valet", 5))
@@ -1264,6 +1840,19 @@ int8_t ScriptCommand(void* script, void* handler, int command) {
     if ((op == 0x0110 || (op == 0x0629 && *(const int32_t*)0xA43C78 == 181)) && Net().Online() && Net().IsHost() && Replicating() &&
         StoryMission(script))
         HostSendPolicy(true, op == 0x0110);
+    // ALTER_WANTED_LEVEL(_NO_DROP) of the mission's player: the partner by the host gets the stars too. The stars of a
+    // mission came to the host alone (#100).
+    // "The Da Nang Thang" repeats it every frame from its start to its end: 190 reliable messages a second (04.11).
+    if ((op == 0x010D || op == 0x010E) && *(const int32_t*)0xA43C78 == 0 && Net().Online() && Net().IsHost() && Replicating() &&
+        StoryMission(script)) {
+        static uint8_t lastStars = 0xFF;
+        static uint64_t lastStarsMs = 0;
+        uint8_t stars = (uint8_t)(std::clamp(((const int32_t*)0xA43C78)[1], 0, 6) | (op == 0x010E ? 0x80 : 0));
+        if (stars != lastStars || NowMs() - lastStarsMs >= 1000) {
+            lastStars = stars, lastStarsMs = NowMs();
+            HostSendPolicy(true, false, stars);
+        }
+    }
     if ((op == 0x0363 || op == 0x088D || op == 0x03B6) && Net().Online() && Net().IsHost() && Replicating() && StoryMission(script)) {
         const auto* p = (const float*)0xA43C78;  // CTheScripts::ScriptParams, as the command read them
         MapEdit e{op, {p[0], p[1], p[2]}, p[3], ResolvedModel(((const int32_t*)p)[4]), ((const int32_t*)p)[5]};
@@ -1391,8 +1980,11 @@ void* PlayerWanted() { return Call<0x56E230, void*>(-1); }  // FindPlayerWanted
 // STAT_CITY_UNLOCKED (CStats::StatTypesInt[181 - 120]): the cities of the story so far. The forbidden territories give 4
 // stars past it (CGameLogic::SetPlayerWantedLevelForForbiddenTerritories), and "The Green Sabre" raises it at its end
 int32_t& CityStat() { return Ref<int32_t>(0xB79000 + (181 - 120) * 4); }
-uint8_t g_sentMax = 0xFF, g_sentBackOff = 0xFF, g_sentCity = 0xFF;
+uint8_t g_sentMax = 0xFF, g_sentBackOff = 0xFF, g_sentCity = 0xFF, g_sentMilitary = 0xFF;
 float g_sentMult = -1.0f;
+// CCullZones::bMilitaryZonesDisabled (SET_DISABLE_MILITARY_ZONES): off, CCullZones::Update gives 5 stars inside Area 69.
+// "Black Project" turns them off for its player, and the partner got 5-6 stars there beside the host (issue #106).
+uint8_t& MilitaryZonesOff() { return Ref<uint8_t>(0xC87ACD); }
 bool g_policyApplied = false;  // partner: the host's rules are on ours
 struct Policy {
     uint8_t max = 6, backOff = 0;
@@ -1400,23 +1992,29 @@ struct Policy {
     // SET_PED_DENSITY_MULTIPLIER, SET_CAR_DENSITY_MULTIPLIER: "Home Invasion" empties the house (0), and the partner's game
     // filled it with its own people while the host carried a crate outside
     float peds = 1.0f, cars = 1.0f;
+    uint8_t noMilitary = 0;
 } g_ownPolicy;  // partner: its rules before the host's (the early game's world allows 4 stars, not 6)
 float& PedDensity() { return Ref<float>(0x8D2530); }  // CPopulation::PedDensityMultiplier
 float& CarDensity() { return Ref<float>(0x8A5B20); }  // CCarCtrl::CarDensityMultiplier
 float g_sentPeds = -1.0f, g_sentCars = -1.0f;
+Policy g_hostPolicy;        // partner: the rules of the host's mission now
+bool g_ownDensity = false;  // partner: its own densities stand, far from the host (KeepOwnRulesFar)
+bool g_ownWanted = false;   // partner: its own wanted rules stand, far from the host
 
 // clearWanted: the mission wiped its player's stars (CLEAR_WANTED_LEVEL), the partner's go too
-void HostSendPolicy(bool force, bool clearWanted) {
+void HostSendPolicy(bool force, bool clearWanted, uint8_t stars) {
     void* wanted = PlayerWanted();
     if (!wanted) return;
     uint8_t max = (uint8_t)Ref<int32_t>(0x8CDEE4), backOff = Field<uint8_t>(wanted, 0x1E) & 5;  // MaximumWantedLevel; police, everybody
     float mult = Field<float>(wanted, 0x14);                                                      // CWanted::m_Multiplier
     uint8_t city = (uint8_t)std::clamp(CityStat(), 0, 255);
     float peds = PedDensity(), cars = CarDensity();
-    if (!force && !clearWanted && max == g_sentMax && backOff == g_sentBackOff && mult == g_sentMult && city == g_sentCity &&
-        peds == g_sentPeds && cars == g_sentCars)
+    uint8_t military = MilitaryZonesOff() ? 1 : 0;
+    if (!force && !clearWanted && stars == 0xFF && max == g_sentMax && backOff == g_sentBackOff && mult == g_sentMult && city == g_sentCity &&
+        peds == g_sentPeds && cars == g_sentCars && military == g_sentMilitary)
         return;
     g_sentMax = max, g_sentBackOff = backOff, g_sentMult = mult, g_sentCity = city, g_sentPeds = peds, g_sentCars = cars;
+    g_sentMilitary = military;
     Writer w(proto::G_MISSION_POLICY);
     w.U8(max);
     w.U8(backOff);
@@ -1425,6 +2023,8 @@ void HostSendPolicy(bool force, bool clearWanted) {
     w.U8(clearWanted);
     w.F32(peds);
     w.F32(cars);
+    w.U8(stars);
+    w.U8(military);
     Net().Send(proto::CH_RELIABLE, w);
 }
 
@@ -1436,8 +2036,18 @@ void ApplyPolicy(const Policy& p) {
     Field<uint8_t>(wanted, 0x1E) = (uint8_t)((Field<uint8_t>(wanted, 0x1E) & ~5) | (p.backOff & 5));
     PedDensity() = p.peds;
     CarDensity() = p.cars;
-    LOGI("Host mission's police rules: max wanted %u, multiplier %.2f, back off %u, density of people %.2f and cars %.2f", p.max,
-         p.mult, p.backOff, p.peds, p.cars);
+    MilitaryZonesOff() = p.noMilitary;
+    LOGI("Host mission's police rules: max wanted %u, multiplier %.2f, back off %u, density of people %.2f and cars %.2f%s", p.max,
+         p.mult, p.backOff, p.peds, p.cars, p.noMilitary ? ", military zones off" : "");
+}
+
+// past the reach of the copies of the host's people (120 m), or on a street with the host indoors: not at its mission
+constexpr float kOwnRulesFar = 150.0f;
+bool FarFromHost() {
+    CPlayerPed* me = FindPlayerPed(0);
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    return host && host->hasState && me->AreaCode() == 0 &&
+           (host->state.area != 0 || (host->state.pos - me->GetPosition()).Length2D() > kOwnRulesFar);
 }
 
 void HandlePolicy(uint8_t from, Reader& r) {
@@ -1446,14 +2056,26 @@ void HandlePolicy(uint8_t from, Reader& r) {
     uint8_t city = r.U8();
     bool clearWanted = r.U8() != 0;
     float peds = r.F32(), cars = r.F32();
+    uint8_t stars = r.U8();
+    uint8_t noMilitary = r.U8() ? 1 : 0;
     if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady() || !flow::InHostWorld() || max > 6 ||
         !(mult >= 0.0f && mult <= 10.0f) || city > 4 || !(peds >= 0.0f && peds <= 10.0f) || !(cars >= 0.0f && cars <= 10.0f))
         return;
+    // A cutscene loading or loaded here holds both densities at 0 and keeps ours in CCutsceneMgr::m_fPrevPedDensity and
+    // m_fPrevCarDensity: taken from the live values, the host's mission end put back 0 and the partner's streets stayed
+    // empty until a world reload (30.10)
+    bool scene = Ref<int32_t>(kCutsceneLoadStatus) != 0;
     if (!g_policyApplied)
         if (void* wanted = PlayerWanted())
             g_ownPolicy = {(uint8_t)Ref<int32_t>(0x8CDEE4), (uint8_t)(Field<uint8_t>(wanted, 0x1E) & 5), Field<float>(wanted, 0x14),
-                           PedDensity(), CarDensity()};
-    ApplyPolicy({max, backOff, mult, peds, cars});
+                           scene ? Ref<float>(0xBC1D6C) : PedDensity(), scene ? Ref<float>(0xBC1D68) : CarDensity(),
+                           (uint8_t)(MilitaryZonesOff() ? 1 : 0)};
+    g_hostPolicy = {max, backOff, mult, peds, cars, noMilitary};
+    g_ownWanted = FarFromHost();
+    Policy now = g_hostPolicy;
+    if (g_ownWanted) now.max = g_ownPolicy.max, now.backOff = g_ownPolicy.backOff, now.mult = g_ownPolicy.mult;
+    if (g_ownDensity) now.peds = g_ownPolicy.peds, now.cars = g_ownPolicy.cars;
+    ApplyPolicy(now);
     g_policyApplied = true;
     // the world we play is the host's from before its mission: the city it opened comes now, or the countryside the story
     // takes us to gave 4 stars for good, and with stars the host's new world never loaded (Flow's ReloadBlocker)
@@ -1461,10 +2083,46 @@ void HandlePolicy(uint8_t from, Reader& r) {
         LOGI("The host's story opened city level %u (ours %d)", city, CityStat());
         CityStat() = city;
     }
-    if (clearWanted) {
+    if (clearWanted && !g_ownWanted) {
         Cmd(0x0110).I(0).Run();  // CLEAR_WANTED_LEVEL
         LOGI("The host's mission cleared the wanted level: ours too");
     }
+    // the mission's stars where its police come: by the host, not across the map
+    CPlayerPed* me = FindPlayerPed(0);
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    int level = stars & 0x7F;  // bit 7: no drop
+    if (level <= 6 && host && host->hasState && host->state.area == me->AreaCode() && (host->state.pos - me->GetPosition()).Length() < 150.0f) {
+        Cmd(stars & 0x80 ? 0x010E : 0x010D).I(0).I(level).Run();  // ALTER_WANTED_LEVEL_NO_DROP, ALTER_WANTED_LEVEL
+        LOGI("The host's mission set %d stars: ours too", level);
+    }
+}
+
+// Most story missions set the densities to 0 for the place of their scenes, some for most of their time. Taken for the
+// whole map, the streets around a partner far from the host had nobody on them till it came back. Far from the host its
+// own densities stand. Indoors the host's still hold: "Home Invasion" keeps its house empty so.
+// So the wanted rules: dozens of missions take the stars off their player (multiplier or maximum 0, a stars' wipe), and
+// the partner got none anywhere on the map for as long as they ran (04.11). By the host they stay the mission's.
+void KeepOwnRulesFar() {
+    if (!g_policyApplied || !core::IsPlayerReady()) return;
+    bool far = FarFromHost();
+    if (void* wanted = PlayerWanted(); wanted && far != g_ownWanted) {
+        g_ownWanted = far;
+        const Policy& p = far ? g_ownPolicy : g_hostPolicy;
+        Call<0x561E70>((int)p.max);  // CWanted::SetMaximumWantedLevel
+        Field<float>(wanted, 0x14) = p.mult;
+        Field<uint8_t>(wanted, 0x1E) = (uint8_t)((Field<uint8_t>(wanted, 0x1E) & ~5) | (p.backOff & 5));
+        LOGI("Wanted rules: max %u, multiplier %.2f: %s", p.max, p.mult, far ? "far from the host, our own" : "by the host, its mission's");
+    }
+    // a scene here holds both at 0 and puts back what it found: looked at again after it
+    if (Ref<int32_t>(kCutsceneLoadStatus) != 0) {
+        g_ownDensity = false;
+        return;
+    }
+    if (far == g_ownDensity) return;
+    g_ownDensity = far;
+    PedDensity() = far ? g_ownPolicy.peds : g_hostPolicy.peds;
+    CarDensity() = far ? g_ownPolicy.cars : g_hostPolicy.cars;
+    LOGI("Density of people %.2f and cars %.2f: %s", PedDensity(), CarDensity(), far ? "far from the host, our own" : "by the host, its mission's");
 }
 
 std::set<int> g_missionWeapons;  // partner: what the host's mission gave (only those it takes back)
@@ -1493,9 +2151,22 @@ void HandleMissionWeapon(uint8_t from, Reader& r) {
     int weapon = r.U8();
     int ammo = r.I32();
     bool inHand = r.U8() != 0;
-    if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady() || !flow::InHostWorld() || weapon <= 0 || weapon > 46) return;
+    Vec3 at = op == WEAPON_TAKE_ALL ? r.Vec() : Vec3{};
+    if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady() || !flow::InHostWorld()) return;
     CPlayerPed* me = FindPlayerPed(0);
     int h = GetPedRef(me);
+    if (op == WEAPON_TAKE_ALL) {
+        const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+        CVector from{at.x, at.y, at.z}, pos = me->GetPosition();
+        if ((from - pos).Length() > 150.0f && !(host && host->hasState && (host->state.pos - pos).Length() < 150.0f)) return;
+        Cmd(0x048F).I(h).Run();  // REMOVE_ALL_CHAR_WEAPONS
+        g_missionWeapons.clear();
+        g_replaced.clear();  // nothing of ours to give back
+        ui::TheChat().AddSystem(TR("Вместе с CJ хоста вы тоже остались без оружия.", "Like the host's CJ, you lost all your weapons."));
+        LOGI("The host's mission took all of CJ's weapons: ours too");
+        return;
+    }
+    if (weapon <= 0 || weapon > 46) return;
     auto give = [&](int type, int count) { GiveWeaponNow(h, type, count); };
     if (op == WEAPON_GIVE) {
         WeaponSlots was;
@@ -1778,7 +2449,8 @@ bool PartnersAtMarker(CPed* host) {
         // a partner whose game sends nothing for 5 s (in the pause menu, loading, hung) cannot come: the host was held
         // at the marker for good. Such a player is away in SA-MP and MTA too.
         if (!rp || !rp->hasState || NowMs() - rp->stateRecvMs > 5000) continue;
-        if (!rp->ped || !InArea(marker, rp->ped->GetPosition(), 1.0f)) {  // two can not stand on one spot
+        // two can not stand on one spot, four still less
+        if (!rp->ped || !InArea(marker, rp->ped->GetPosition(), 0.5f + 0.5f * (float)Net().Peers().size())) {
             g_waitMs = NowMs();
             g_waitArea = marker;
             if (g_currentScript) memcpy(g_waitBy, Field<char[8]>(g_currentScript, 0x08), 8);
@@ -1857,7 +2529,13 @@ void HandleMissionWait(uint8_t from, Reader& r) {
     bool on = r.U8() != 0;
     Area a{};
     if (on) a = {0x40000001u, r.F32(), r.F32(), r.F32(), r.F32(), r.F32(), 0};
+    bool goal = r.U8() == 1;  // at a marker of its mission, not at a mission's start
     if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    if (goal) {
+        if (on != g_hostWaitsGoal) LOGI(on ? "The host waits at its mission's marker" : "The host does not wait at its mission's marker any more");
+        g_hostWaitsGoal = on;
+        return;
+    }
     if (on != g_hostWaits) LOGI(on ? "The host waits at a mission marker" : "The host does not wait at the marker any more");
     g_hostWaits = on;
     g_waitArea = a;  // the partner's game may not have this marker yet (story progress comes on reconnect)
@@ -2262,7 +2940,8 @@ std::vector<Marked> HostMarked() {
 }
 
 void HostSendMarked(bool force) {
-    std::vector<Marked> now = Replicating() || SideOwning() ? HostMarked() : std::vector<Marked>{};
+    // a race for two: the other racer has its own checkpoint (Race.cpp), ours would show it where we are
+    std::vector<Marked> now = (Replicating() || SideOwning()) && !race::ForTwo() ? HostMarked() : std::vector<Marked>{};
     if (!force && now == g_sentMarked) return;
     g_sentMarked = now;
     Writer w(proto::G_CHECKPOINTS);
@@ -2364,6 +3043,11 @@ void SendSpot(const scene::Spot& s, float at) {
     w.F32(s.heading);
     w.U8(s.pose);
     w.U8(s.act);
+    w.U8(s.walk);
+    w.U8(s.viaSet);  // the walk's turn round something (protocol 40)
+    w.Vec({s.via.x, s.via.y, s.via.z});
+    w.U8(s.seats);  // the next partners' seats in a car of the scene (protocol 50)
+    for (int i = 0; i < s.seats; ++i) w.Vec({s.seat[i].x, s.seat[i].y, s.seat[i].z});
     Net().Send(proto::CH_RELIABLE, w);
 }
 
@@ -2400,7 +3084,9 @@ void __cdecl HookRebuildCutscenePlayer(CPlayerPed* ped, int model) {
 }
 
 void __cdecl HookLoadCutscene(const char* name) {
-    if (Net().Online() && Net().IsHost() && name) {
+    g_cutsceneOwn = Net().Online() && Net().IsHost() && !HostOnMission();
+    if (g_cutsceneOwn && name) LOGI("Cutscene %s loading: not the story's, the host's own", name);
+    if (Net().Online() && Net().IsHost() && name && !g_cutsceneOwn) {
         // a script that clears one cutscene and loads the next in the same frame (the prologue does): the end goes
         // out first, otherwise the partner takes it for the end of the one it is loading
         if (g_hostCutscene) {
@@ -2412,8 +3098,8 @@ void __cdecl HookLoadCutscene(const char* name) {
         SendCutscene(CS_LOAD, name);
         LOGI("Cutscene %s loading (replicated)", name);
     }
-    if (Net().Online() && Net().IsHost()) {
-        scene::Prepare();  // before the cutscene's own streaming requests
+    if (Net().Online() && Net().IsHost() && !g_cutsceneOwn) {
+        scene::Prepare(name);  // before the cutscene's own streaming requests
         DressCutsceneCj(FindPlayerPed(0));
     }
     g_origLoadCutscene(name);
@@ -2421,7 +3107,7 @@ void __cdecl HookLoadCutscene(const char* name) {
 int32_t& CurrentArea() { return Ref<int32_t>(0xB72914); }  // CGame::currArea: the interior being drawn
 
 void __cdecl HookStartCutscene() {
-    if (Net().Online() && Net().IsHost()) SendCutscene(CS_START, "", CurrentArea());
+    if (Net().Online() && Net().IsHost() && !g_cutsceneOwn) SendCutscene(CS_START, "", CurrentArea());
     g_origStartCutscene();
 }
 
@@ -2463,11 +3149,18 @@ void StandNextToCutsceneCj() {
     scene::Spot spot;
     if (!scene::CurrentSpot(spot)) return;
     CPlayerPed* me = FindPlayerPed(0);
-    if (CEntity* cj = CutsceneCj()) me->AreaCode() = cj->AreaCode();
-    scene::Hold(me, spot);
-    if (const RemotePlayer* host = Players::Instance().Get(Net().HostId()); host && host->ped) {
-        host->ped->Flags() &= ~0x80u;  // the cutscene CJ is the host
-        Cmd(0x04D7).I(host->pedHandle).I(1).Run();  // FREEZE_CHAR_POSITION: no collision around it now
+    CEntity* cj = CutsceneCj();
+    if (cj) me->AreaCode() = cj->AreaCode();
+    scene::Hold(me, scene::ForRank(spot, PartnerRank(Net().MyId())));
+    for (auto& [id, rp] : Players::Instance().All()) {
+        if (!rp.ped) continue;
+        if (id == Net().HostId()) {
+            rp.ped->Flags() &= ~0x80u;  // the cutscene CJ is the host
+            Cmd(0x04D7).I(rp.pedHandle).I(1).Run();  // FREEZE_CHAR_POSITION: no collision around it now
+            continue;
+        }
+        if (cj) rp.ped->AreaCode() = cj->AreaCode();  // the other partners stand where their games have them
+        scene::Hold(rp.ped, scene::ForRank(spot, PartnerRank(id)));
     }
 }
 
@@ -2656,7 +3349,7 @@ bool NearHost(float range);
 
 // Riding with the host in a car one of its mission's people drives (Sweet's of "Tagging Up Turf"): the host got out at the
 // tags, the partner did not in time and was driven off with Sweet to the next district, then moved with the car back to
-// the yard (Nikolai, 26.10). Out with the host.
+// the yard (26.10). Out with the host.
 void LeaveWithHost() {
     static bool hostWasIn = false;
     CPlayerPed* me = FindPlayerPed(0);
@@ -2744,7 +3437,7 @@ void HandleCutscene(uint8_t from, Reader& r) {
             g_csCar = GetVehicleRef(me->Vehicle());
             g_csSeat = me->Vehicle()->Driver() == me ? -1 : PassengerSeatOf(me->Vehicle(), me);
         }
-        scene::Prepare();  // before the cutscene's own streaming requests
+        scene::Prepare(name.c_str());  // before the cutscene's own streaming requests
         if (const RemotePlayer* host = Players::Instance().Get(Net().HostId()); host && host->ped)
             g_cutsceneCj = host->ped;  // the story's CJ is the host: dressed as LoadCutsceneData builds it
         g_origLoadCutscene(name.c_str());
@@ -2760,8 +3453,17 @@ void HandleCutscene(uint8_t from, Reader& r) {
         scene::Spot s;
         s.ground = {p.x, p.y, p.z};
         s.heading = r.F32();
-        s.pose = (scene::Pose)std::min<uint8_t>(r.U8(), scene::POSE_CAR);
+        s.pose = (scene::Pose)std::min<uint8_t>(r.U8(), scene::POSE_WAY);
         s.act = r.U8();
+        s.walk = r.U8() != 0;
+        s.viaSet = r.U8() != 0;
+        Vec3 via = r.Vec();
+        s.via = {via.x, via.y, via.z};
+        s.seats = std::min<uint8_t>(r.U8(), 2);
+        for (int i = 0; i < s.seats; ++i) {
+            Vec3 seat = r.Vec();
+            s.seat[i] = {seat.x, seat.y, seat.z};
+        }
         if (r.Ok()) scene::FollowSpot(s, at);
     } else if (op == CS_FOLLOW) {
         Vec3 to = r.Vec(), from = r.Vec();
@@ -2780,13 +3482,14 @@ void HandleCutscene(uint8_t from, Reader& r) {
             LOGI("The host's mission moved it to area %d: we stay (%s)", area, busy);
             return;
         }
-        CVector p = CVector{to.x, to.y, to.z} + CVector{std::cos(heading), std::sin(heading), 0.0f} * 1.5f;  // its right hand
+        CVector p = CVector{to.x, to.y, to.z} + PartnerSide(heading, Net().MyId(), 1.5f);
         if (g_inScene) {  // the scene's end puts us there, not back at the old place
             g_scenePos = p, g_sceneArea = (int8_t)area, g_sceneHeading = heading, g_csCar = -1;
         } else {
             CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr;
-            // riding with the host: its car brings us
-            if (v && v->Driver() != me && area == 0 && Players::Instance().FindByPed(v->Driver())) return;
+            // riding with the host: its car brings us, into an interior too while it still drives (the plane's hold)
+            const RemotePlayer* driver = v && v->Driver() != me ? Players::Instance().FindByPed(v->Driver()) : nullptr;
+            if (driver && (area == 0 || driver->mode != RemotePlayer::Mode::OnFoot)) return;
             int h = GetPedRef(me);
             if (v && (area != 0 || v->Driver() != me)) Cmd(0x0362).I(h).F(p.x).F(p.y).F(p.z).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
             Cmd(0x04BB).I(area).Run();                           // SET_AREA_VISIBLE
@@ -2795,6 +3498,7 @@ void HandleCutscene(uint8_t from, Reader& r) {
             Cmd(0x0173).I(h).F(heading * 57.29578f).Run();       // SET_CHAR_HEADING
             LightArea(area, p);
             UseStreetDoor(area, p, CVector{from.x, from.y, from.z});
+            g_followMs = NowMs();
         }
         if (const RemotePlayer* host = Players::Instance().Get(Net().HostId());
             host && host->hasState && host->mode != RemotePlayer::Mode::OnFoot && area == 0 && !g_inScene)
@@ -2817,9 +3521,14 @@ void UpdatePartnerCutscene() {
         Cmd(0x03CB).F(o.x).F(o.y).F(o.z).Run();        // LOAD_SCENE around the cutscene
         g_origStartCutscene();
         g_csState = 2;
+        g_csStartedMs = NowMs(), g_csCamTold = false;
         LOGI("Host cutscene started here");
     } else if (g_csState == 2) {
         StandNextToCutsceneCj();
+        if (!g_csCamTold && NowMs() - g_csStartedMs > 3000 && (cam::Mode() != 17 || !TheCameraWide())) {  // MODE_FLYBY
+            g_csCamTold = true;
+            LOGW("Host cutscene here: the camera left it (mode %d, wide screen %d)", (int)cam::Mode(), (int)TheCameraWide());
+        }
     } else if (g_csState == 3 && (!CutsceneRunning() || Call<0x5B0570, bool>())) {  // CCutsceneMgr::HasCutsceneFinished
         PartnerClearCutscene();
     }
@@ -2863,6 +3572,8 @@ void HostScanBlips(bool force) {
             if (uint16_t id = MissionObjectNetId(o)) b.entKind = 4, b.entId = id;  // on its copy: the arrow over it moves with it
         } else if (b.type != BLIP_COORD && b.type != 5 && b.type != 6) {
             continue;  // pickups: not replicated yet; airstrips (8): the game's own, for a player in a plane
+        } else if (b.type == BLIP_COORD && race::ForTwo()) {
+            continue;  // our route's marks: the other racer has its own (Race.cpp)
         }
         present.insert(b.index);
         auto it = g_sentBlips.find(b.index);
@@ -3137,6 +3848,7 @@ struct SceneSample {
 };
 SceneSample g_sceneLast, g_scenePrev;  // the last two of the scene's current shot
 bool g_sceneHave = false, g_watching = false;
+bool g_watchFollowed = false;  // the scene began right after the host's mission moved us to the host
 uint8_t g_sceneEnded = 0;
 uint64_t g_sceneEndedMs = 0, g_shownMs = 0;
 CVector g_shownSrc, g_shownFront;
@@ -3194,6 +3906,7 @@ void StartWatching() {
     Cmd(0x092F).I(1).Run();                                // CAMERA_PERSIST_TRACK
     Cmd(0x0931).I(1).Run();                                // CAMERA_PERSIST_FOV
     g_watching = true;
+    g_watchFollowed = NowMs() - g_followMs < 2000;
     FreezeForScene(true);
     LOGI("The host's scene %u on the engine: watching", s.scene);
 }
@@ -3208,6 +3921,22 @@ void StopWatching(bool restore) {
     }
     FreezeForScene(g_weWide && TheCameraWide());  // the host's bars still up: the scene's own rule holds us
     LOGI("The host's scene on the engine: over here");
+    // The scene began as the host's mission brought us to the host, and it took the host away by car: "Fender Ketchup"
+    // drives out of the garage and shuts it, and the partner stayed locked in (30.10). A drive is no script
+    // move, and no follow comes after it: beside the host again.
+    const RemotePlayer* host = g_watchFollowed ? Players::Instance().Get(Net().HostId()) : nullptr;
+    g_watchFollowed = false;
+    CPlayerPed* me = FindPlayerPed(0);
+    // Not beside a host in the air: on a helicopter's gun the partner goes onto its copy, and in the sky it only fell (04.11)
+    int hostRide = host && host->ped && host->ped->InVehicle() && host->ped->Vehicle() ? host->ped->Vehicle()->VehicleSubClass() : -1;
+    if (g_gunner.want || hostRide == VEHICLE_TYPE_PLANE || hostRide == VEHICLE_TYPE_HELI) host = nullptr;
+    if (host && host->hasState && host->ped && me && !me->InVehicle() && (host->state.pos - me->GetPosition()).Length() > 10.0f) {
+        CPed* hp = host->ped;
+        CVector side = hp->InVehicle() && hp->Vehicle() && hp->Vehicle()->Matrix() ? hp->Vehicle()->Matrix()->right * 2.5f
+                                                                                   : PartnerSide(hp->CurrentRotation(), Net().MyId(), 1.5f);
+        LOGI("After the host's scene: beside the host again (%.0f m away)", (host->state.pos - me->GetPosition()).Length());
+        Players::Instance().GoTo(*host, host->state.pos + side, true);
+    }
 }
 
 // "Predict, then correct", as the copies of the players: the shot's motion carries the camera on between samples, a new
@@ -3373,6 +4102,7 @@ void ClearPartnerOnscreen() {
 void HandleMissionStart(uint8_t from, Reader& r) {
     std::string name = r.Str(16);
     if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    g_side.hostLeads = false;
     if (!g_partnerMission) ui::TheChat().AddSystem(Format(TR("%s начал миссию.", "%s started a mission."), Net().PeerName(from).c_str()));
     g_partnerMission = true;
     g_hostMission = name;
@@ -3381,6 +4111,9 @@ void HandleMissionStart(uint8_t from, Reader& r) {
 
 void PartnerMissionCleanup() {
     if (core::IsPlayerReady()) StopWatching(true);
+    rules::MissionOver();
+    if (g_gunner.on && core::IsPlayerReady()) GunnerOff(FindPlayerPed(0), false);
+    g_gunner = {};
     RestoreOwnLook();
     ReleaseMissionIfps();
     if (g_noiseMission && core::IsPlayerReady()) ShowOwnNoise(false);
@@ -3394,7 +4127,7 @@ void PartnerMissionCleanup() {
                     Cmd(0x017B).I(GetPedRef(me)).I(weapon).I(std::min(own.second, 99999)).Run();  // SET_CHAR_AMMO
     g_missionWeapons.clear();
     g_replaced.clear();
-    if (g_policyApplied && core::IsPlayerReady()) ApplyPolicy(g_ownPolicy);
+    bool ownPolicy = g_policyApplied && core::IsPlayerReady();  // put back after the scene's clear below
     g_partnerEdits.clear();
     if (g_gateOpenSet) Ref<int32_t>(addr::ScriptSpace + kAirportGateOpen) = 0, g_gateOpenSet = false;  // as DRIV3's end
     g_policyApplied = false;
@@ -3406,6 +4139,8 @@ void PartnerMissionCleanup() {
     // a cutscene loaded and never started (the mission failed in between) hid the player and took its controls too
     if (g_csState == 2) PartnerEndCutscene();
     if (g_csState != 0) PartnerClearCutscene();
+    // after it: clearing a scene puts back the densities kept at its load, the host's mission's
+    if (ownPolicy) ApplyPolicy(g_ownPolicy);
     if (g_weFaded && Darkening()) Fade(0.5f, 1);
     if (g_weWide) SetWideScreen(false);
     g_weFaded = g_weWide = false;
@@ -3499,7 +4234,10 @@ void ShowMissionMarks() {
 }
 
 // ---------------------------------------------------------------- shared side activities: the call and its answers
-std::string OtherName() { return Net().Peers().empty() ? std::string() : Net().PeerName(Net().Peers().begin()->first); }
+std::string OtherName() {
+    if (Net().Peers().size() > 1) return TR("напарников", "your partners");
+    return Net().Peers().empty() ? std::string() : Net().PeerName(Net().Peers().begin()->first);
+}
 bool CanCall() {  // not from our own taxi job in the other's (Side::parallel)
     return !g_side.name.empty() && !SideOwning() && !SideJoined() && !g_side.offered && NowMs() < g_side.offerUntil &&
            !Net().Peers().empty();
@@ -3581,6 +4319,32 @@ void CourierUpdate();
 // the police car: both work, Jobs.cpp; races, bikes; a pimp's car has its one seat for the girl), or in a free seat of
 // the owner's vehicle where the job's people leave one (the burglar's van, the truck). Tried twice a second for 15 s:
 // the owner's vehicle copy comes with its model, the spot needs room.
+// Brought indoors from far away (a joint range round's booth): the interior's floor streams in some frames later
+// (CColStore::EnsureCollisionIsInMemory waits only inside big areas), and the second player fell through it under the
+// first and could not get out (#92, 30.10). Held until the floor is under it, 5 s at most, then put on it.
+struct FloorWait {
+    CVector at;
+    uint64_t until = 0;
+} g_floorWait;
+void HoldUntilFloor(const CVector& at) {
+    Cmd(0x04D7).I(GetPedRef(FindPlayerPed(0))).I(1).Run();  // FREEZE_CHAR_POSITION
+    g_floorWait = {at, NowMs() + 5000};
+}
+void FloorWaitUpdate() {
+    if (!g_floorWait.until) return;
+    int h = GetPedRef(FindPlayerPed(0));
+    bool found = false;
+    const CVector& at = g_floorWait.at;
+    float z = Call<0x5696C0, float>(at.x, at.y, at.z + 1.0f, &found, (CEntity**)nullptr);  // CWorld::FindGroundZFor3DCoord
+    bool floor = found && z > at.z - 2.5f;  // not the ground under the interior
+    if (!floor && NowMs() < g_floorWait.until) return;
+    if (floor) Cmd(0x00A1).I(h).F(at.x).F(at.y).F(z).Run();  // SET_CHAR_COORDINATES: on it
+    Cmd(0x04D7).I(h).I(0).Run();  // FREEZE_CHAR_POSITION off
+    LOGI("Brought indoors at %.1f,%.1f,%.1f (area %d, visible %d): %s", at.x, at.y, at.z, (int)FindPlayerPed(0)->AreaCode(),
+         Ref<int32_t>(0xB72914), floor ? "on the floor" : "no floor found there in 5 s");
+    g_floorWait = {};
+}
+
 void BoardSide() {
     if (!g_side.boardUntil || NowMs() - g_side.boardTryMs < 500) return;
     g_side.boardTryMs = NowMs();
@@ -3602,7 +4366,9 @@ void BoardSide() {
             if (std::fabs(d.x) > 25.0f || std::fabs(d.y) > 25.0f || std::fabs(d.z) > 10.0f) continue;
             float h = b[3] * 0.0174533f;
             CVector ahead{-std::sin(h), std::cos(h), 0.0f}, across{std::cos(h), std::sin(h), 0.0f};
-            Players::Instance().GoTo(*owner, booth - across * 0.8f - ahead * 0.6f, true);
+            CVector at = booth - across * (0.8f + 0.7f * (float)std::max(PartnerRank(Net().MyId()), 0)) - ahead * 0.6f;
+            Players::Instance().GoTo(*owner, at, true);
+            HoldUntilFloor(at);
             Cmd(0x0173).I(GetPedRef(me)).F(b[3]).Run();  // SET_CHAR_HEADING
             g_side.boardUntil = 0;
             ui::TheChat().AddSystem(Format(TR("Вы рядом с игроком %s.", "You are next to %s."), Net().PeerName(g_side.owner).c_str()));
@@ -3624,7 +4390,7 @@ void BoardSide() {
     bool riding = quarry && me->InVehicle() && me->Vehicle()->Driver() == me;
     if ((me->GetPosition() - at).Length() > (riding ? 300.0f : 30.0f) || inTheirs || me->AreaCode() != owner->state.area) {
         float h = owner->ped->CurrentRotation();
-        Players::Instance().GoTo(*owner, at + CVector{std::cos(h) * 3.0f, std::sin(h) * 3.0f, 0.0f}, true);  // its right hand
+        Players::Instance().GoTo(*owner, at + PartnerSide(h, Net().MyId(), 3.0f), true);
         LOGI("Over to %s for the joint job", Net().PeerName(g_side.owner).c_str());
         return;
     }
@@ -3693,13 +4459,13 @@ void SideUpdate() {
             Writer w(proto::G_BLIP);
             w.U8(BLIP_CLEAR);
             Net().Send(proto::CH_RELIABLE, w);
-            SendSide(SIDE_END, g_side.with, g_side.name, earned);
-            LOGI("Shared side activity over (%s): $%d more for %s too", g_side.name.c_str(), earned, Net().PeerName(g_side.with).c_str());
+            SendSide(SIDE_END, 0xFF, g_side.name, earned);
+            LOGI("Shared side activity over (%s): $%d more for the %zu who joined", g_side.name.c_str(), earned, g_side.with.size());
         } else if (g_side.parallel && SideJoined()) {
             PayOther(g_side.owner);  // the rest of our own taxi job's
         }
         g_side.name.clear();
-        g_side.with = 0xFF;
+        g_side.with.clear();
         g_side.offered = false;
         g_side.offerUntil = 0;
         ForgetSent();
@@ -3710,6 +4476,10 @@ void SideUpdate() {
         LOGI("Our own taxi job over: back to %s's", Net().PeerName(g_side.owner).c_str());
     }
     uint64_t now = NowMs();
+    if (Net().IsHost() && SideOwning() != g_side.leadsSent) {  // before its marks: a partner who did not join leaves them out
+        g_side.leadsSent = SideOwning();
+        SendSide(SIDE_LEADS, 0xFF, g_side.name, g_side.leadsSent);
+    }
     if (SideOwning() || g_side.parallel) {
         static uint64_t tick = 0;
         if (now - tick >= 250) {
@@ -3722,7 +4492,7 @@ void SideUpdate() {
             }
             // who joined is paid each fare as it comes, not all at the end: it saw no money while it helped, and none at
             // all when it left before the end (#73). Its own taxi job in ours pays us so (Side::parallel).
-            PayOther(SideOwning() ? g_side.with : g_side.owner);
+            PayOther(SideOwning() ? (uint8_t)0xFF : g_side.owner);
         }
     }
     if (SideJoined() && Net().IsHost()) ShowMissionMarks();  // the partner does it in PartnerUpdate
@@ -3735,7 +4505,7 @@ void SideUpdate() {
     CourierUpdate();
     // a joint burglary: a thing of ours into the van, a thing we lifted, the residents woken for us (Jobs.cpp)
     const std::string& joint = SideOwning() ? g_side.name : g_side.joined;
-    uint8_t other = SideOwning() ? g_side.with : g_side.owner;
+    uint8_t other = SideOwning() ? (uint8_t)0xFF : g_side.owner;
     for (const jobs::Tell& t : jobs::Update(SideJoined() ? g_side.joined : std::string(), SideOwning() ? g_side.name : std::string())) {
         if (t.loot) SendSide(SIDE_LOOT, other, joint);
         auto at = [&](uint8_t op, int32_t value) {
@@ -3856,7 +4626,9 @@ void HandleSide(uint8_t from, Reader& r) {
     if (!r.Ok() || (to != 0xFF && to != Net().MyId()) || !core::IsPlayerReady() || !flow::InSharedWorld()) return;
     bool job = SideJob(name);
     std::string who = Net().PeerName(from);
-    if (op == SIDE_OFFER) {
+    if (op == SIDE_LEADS) {
+        if (from == Net().HostId()) g_side.hostLeads = money != 0;
+    } else if (op == SIDE_OFFER) {
         void* own = FindMissionScript();
         if (name == "shrange" && jobs::RangeWaits(own)) own = nullptr;  // ours waiting at its marker ends as we join (Jobs.cpp)
         bool busy = own || jobs::ValetShift() || SideJoined() || (Net().IsHost() ? HostOnMission() : HostMissionRecent(0));
@@ -3868,11 +4640,12 @@ void HandleSide(uint8_t from, Reader& r) {
         g_side.inviteFrom = from, g_side.inviteName = name, g_side.inviteUntil = NowMs() + 20000;
         LOGI("%s calls us in (%s)", who.c_str(), name.c_str());
     } else if (op == SIDE_ACCEPT) {
-        if (name != g_side.name || SideOwning()) {  // over already, or the other joined first
+        if (name != g_side.name) {  // over already
             SendSide(SIDE_END, from, name);
             return;
         }
-        g_side.with = from, g_side.offered = false;
+        if (SideHelps(from)) return;
+        g_side.with.push_back(from), g_side.offered = false;
         ForgetSent();  // all it has now goes to the newcomer
         if (name == "kicksta" || name == "blood") contest::Drop();  // one score for both now
         ui::TheChat().AddSystem(Format(TR("%s принимает приглашение на %s.", "%s accepts your invitation to %s."), who.c_str(),
@@ -3897,10 +4670,10 @@ void HandleSide(uint8_t from, Reader& r) {
         LOGI("%s's side activity over (%s), $%d", who.c_str(), name.c_str(), money);
     } else if (op == SIDE_DROP) {
         Vec3 p = r.Vec();
-        if (r.Ok() && SideOwning() && from == g_side.with && !_stricmp(name.c_str(), "bcour")) CourierDelivery({p.x, p.y, p.z});
+        if (r.Ok() && SideHelps(from) && !_stricmp(name.c_str(), "bcour")) CourierDelivery({p.x, p.y, p.z});
     } else if (op == SIDE_PAY) {
         // the owner's job's money, or the fares of the taxi job of its own who joined our taxi job drives (Side::parallel)
-        bool owner = SideJoined() && from == g_side.owner, helper = SideOwning() && from == g_side.with;
+        bool owner = SideJoined() && from == g_side.owner, helper = SideHelps(from);
         if ((!owner && !helper) || money <= 0 || money > 10000000) return;
         PlayerInfos()[0].money += money;
         g_side.received += money;
@@ -3908,41 +4681,49 @@ void HandleSide(uint8_t from, Reader& r) {
                                       : Format(TR("За пассажиров игрока %s: +$%d.", "For %s's fares: +$%d."), who.c_str(), money));
         LOGI("%s's side activity paid us $%d", who.c_str(), money);
     } else if (op == SIDE_RESYNC) {
-        if (!SideOwning() || from != g_side.with) return;
+        if (!SideHelps(from)) return;
         ForgetSent();  // its own taxi job is over: what ours shows goes to it again
         LOGI("%s is back to our side activity (%s)", who.c_str(), name.c_str());
     } else if (op == SIDE_LOOT) {
-        if (!SideOwning() || from != g_side.with) return;
+        if (!SideHelps(from)) return;
         if (int things = jobs::Stashed())
             ui::TheChat().AddSystem(Format(TR("%s кладёт вещь в фургон. Вещей в фургоне: %d.", "%s puts a thing into the van. Things in it: %d."),
                                            who.c_str(), things));
     } else if (op == SIDE_TAKEN || op == SIDE_ALARM) {  // a joint burglary's house: the same in both games (Jobs.cpp)
         Vec3 p = r.Vec();
-        bool partner = (SideOwning() && from == g_side.with) || (SideJoined() && from == g_side.owner);
+        bool partner = SideHelps(from) || (SideJoined() && from == g_side.owner);
         if (!r.Ok() || !partner || name != "burgjb") return;
         if (op == SIDE_TAKEN) jobs::Taken(money, p.x, p.y, p.z);
         else jobs::Alarm(p.x, p.y, p.z);
+        if (g_side.with.size() > 1) {  // what one of those who joined did goes on to the others: their word is the owner's
+            Writer w(proto::G_SIDE);
+            w.U8(op), w.U8(0xFF), w.Str(name, 8), w.I32(money), w.Vec(p);
+            Net().Send(proto::CH_RELIABLE, w);
+        }
     } else if (op == SIDE_LEAVE) {
-        if (from != g_side.with) return;
-        g_side.with = 0xFF;
+        if (!SideHelps(from)) return;
+        std::erase(g_side.with, from);
         ui::TheChat().AddSystem(Format(TR("%s выходит из %s.", "%s leaves %s."), who.c_str(), JobOf(name).c_str()));
         LOGI("%s left our side activity (%s)", who.c_str(), name.c_str());
     }
 }
 
 // ---------------------------------------------------------------- module
-void SendWait(bool waiting) {
+void SendWait(bool waiting, bool goal = false) {
     Writer w(proto::G_MISSION_WAIT);
     w.U8(waiting);
     if (waiting)
         for (float f : {g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z}) w.F32(f);
+    w.U8(goal ? 1 : 0);
     Net().Send(proto::CH_RELIABLE, w);
 }
 
 // host: a partner's game (re)started — send the running mission's state again
 void MissionsResync() {
     if (!Net().IsHost()) return;
+    if (g_side.leadsSent) SendSide(SIDE_LEADS, 0xFF, g_side.name, 1);
     if (g_waitSent) SendWait(true);  // waiting at a marker: sent only on change, a partner new here has not seen it
+    if (g_goalWaitSent) SendWait(true, true);
     if (!g_active) return;
     Writer w(proto::G_MISSION_START);
     w.Str(g_missionName, 16);
@@ -3958,7 +4739,7 @@ void MissionsResync() {
     // A cutscene loaded and not started yet goes too (CCutsceneMgr::ms_cutsceneLoadStatus): its start came alone and was
     // ignored. The start with its interior: area 0 hid the interior the scene plays in.
     bool loaded = Ref<int32_t>(0xB5F84C) != 0;
-    if ((CutsceneRunning() || loaded) && g_cutsceneName[0]) {
+    if ((CutsceneRunning() || loaded) && g_cutsceneName[0] && !g_cutsceneOwn) {
         SendCutscene(CS_LOAD, g_cutsceneName);
         if (CutsceneRunning()) {
             SendCutscene(CS_START, "", CurrentArea());
@@ -3978,6 +4759,7 @@ public:
         mem::RedirectCallFn(0x46A21B, &HookScriptProcess, &g_origScriptProcess);
         mem::RedirectCallFn(0x484361, &HookScriptClearArea, &g_origClearArea);  // CLEAR_AREA (opcode 0395)
         mem::HookFn(0x609590, &HookCanPlayerStartMission, &g_origCanStart, "CPlayerPed::CanPlayerStartMission");
+        mem::HookFn(0x56E580, &HookKillPlayer, &g_origKillPlayer, "CPlayerInfo::KillPlayer");
         mem::HookFn(0x464C20, &HookStartNewScript, &g_origStartScript, "CTheScripts::StartNewScript");
         mem::HookFn(0x69F0B0, &HookMsg, &g_origMsg, "CMessages::AddMessage");
         mem::HookFn(0x69F1E0, &HookMsgQ, &g_origMsgQ, "CMessages::AddMessageJumpQ");
@@ -4063,6 +4845,7 @@ public:
         else PartnerUpdate(), ShowHostLines();
         SideUpdate();
         BoardSide();
+        FloorWaitUpdate();
         if (!g_personOnCar.empty()) ApplyPersonsOnCars();
     }
     // the partner's spot in a cutscene is chosen with the camera of the frame being drawn
@@ -4080,7 +4863,8 @@ public:
     void OnPeerLeave(uint8_t id) override {
         g_partnersAt.erase(id);
         if (id == g_callDeclined) g_callDeclined = 0xFF;
-        if (id == g_side.with) g_side.with = 0xFF;  // a shared side activity goes on alone
+        std::erase(g_side.with, id);  // a shared side activity goes on without it
+        if (id == Net().HostId()) g_side.hostLeads = false;
         if (id == g_side.inviteFrom) g_side.inviteFrom = 0xFF;
         if (id == g_side.owner && core::IsPlayerReady()) DropJoined();
         // the host gone in the middle of its mission (its game crashed) while a dedicated server goes on: its fade-out
@@ -4119,6 +4903,7 @@ public:
         // reload gives the partner its weapons again, the given ones with them)
         std::set<int> given = g_partnerMission ? g_missionWeapons : std::set<int>{};
         Reset();
+        g_side.hostLeads = false;  // loading, we may have missed its end; the host's resync says so if it still leads
         g_thrown.clear();  // the old world's objects: their handles may be new ones' now
         g_courierPackage = -1;
         g_missionWeapons = std::move(given);
@@ -4160,8 +4945,11 @@ private:
         g_placed.clear();  // checkpoints and spheres too
         g_sentMarked.clear();
         g_missionWeapons.clear();
+        g_gunner = {};  // a new world: our CJ is on nothing
         g_partnerMission = g_weFaded = g_weWide = g_onscreenSet = false;
         g_waitSent = g_hostWaits = false;
+        g_goalWait = {};
+        g_goalWaitSent = g_hostWaitsGoal = false;
         g_waitMs = 0;
         g_partnersAt.clear();
         g_callDeclined = 0xFF;
@@ -4172,7 +4960,7 @@ private:
         g_mapEdits.clear();
         g_iplEdits.clear();
         for (PartnerEdit& pe : g_partnerEdits) pe.applied = false;  // a new world: built as it was, edited again
-        g_sentMax = g_sentBackOff = 0xFF;
+        g_sentMax = g_sentBackOff = g_sentMilitary = 0xFF;
         g_sentMult = -1.0f;
         g_policyApplied = false;
         g_skipOpen = false;
@@ -4300,8 +5088,18 @@ private:
             else LOGI("Mission marker at %.1f,%.1f: not waiting any more", x, y);
             SendWait(waiting);
         }
+        // the same at a marker of the mission itself (ObjectiveAnswer)
+        bool goalWaiting = active && g_goalWait.heldMs && NowMs() - g_goalWait.heldMs < 1000;
+        if (goalWaiting != g_goalWaitSent) {
+            g_goalWaitSent = goalWaiting;
+            if (!goalWaiting) LOGI("The mission's marker: not waiting any more");
+            SendWait(goalWaiting, true);
+        }
 
         HostSkipUpdate();
+        HostOnCarUpdate();
+        SharedLifeUpdate();
+        HostDownUpdate();
         // cutscene end
         bool cs = CutsceneRunning();
         // the mission moved us: sent once we can move again (no scene, no fade, control back). A camera trick in between
@@ -4310,7 +5108,10 @@ private:
         // street after INTRO1B, 19 s, "Ah shit, here we go again").
         CPlayerPed* me = FindPlayerPed(0);
         bool standing = me->InVehicle() ? !InAirOrWater() : (me->PedFlags() & 1) != 0;  // bIsStanding
-        if (g_movedPending && !cs && FadeAlpha() < 1.0f && (!GetPad(0)->DisablePlayerControls || (HostScene() && standing))) {
+        // Parked in a frozen vehicle out of the world (ZERO4's RC part: a BMX in the air of area 10): the partner sent
+        // there fell into the bay with 4 stars (31.10). It waits until the mission puts CJ back on the street.
+        if (g_movedPending && !cs && FadeAlpha() < 1.0f && !OwnCarFrozen() &&
+            (!GetPad(0)->DisablePlayerControls || (HostScene() && standing))) {
             g_movedPending = false;
             CVector p = me->GetPosition();
             float moved = (p - g_movedFrom).Length();
@@ -4333,7 +5134,7 @@ private:
             SendCutscene(CS_END);
             LOGI("Cutscene ended (replicated)");
         }
-        g_hostCutscene = cs;
+        g_hostCutscene = cs && !g_cutsceneOwn;
         scene::Spot spot;
         float at;
         if (scene::TakeDecision(spot, at)) SendSpot(spot, at);
@@ -4344,7 +5145,7 @@ private:
                     // the scene's interior, not the one its game reports: before its cutscene starts there and after
                     // it ends it is elsewhere, and a ped of another area is not drawn (it vanished from the scene)
                     if (cj) rp.ped->AreaCode() = cj->AreaCode();
-                    scene::Hold(rp.ped, spot);
+                    scene::Hold(rp.ped, scene::ForRank(spot, PartnerRank(id)));
                 }
             g_sceneHeld = true;
         } else if (!cs && g_sceneHeld) {
@@ -4380,6 +5181,8 @@ private:
         if (!g_noCollide.empty()) ApplyNoCollides();
         SeatWithHost();
         LeaveWithHost();
+        GunnerUpdate();
+        KeepOwnRulesFar();
         static uint64_t editsMs = 0, contactsMs = 0;
         if (!g_partnerEdits.empty() && NowMs() - editsMs > 500 && flow::InHostWorld()) editsMs = NowMs(), ApplyPartnerEdits();
         // every frame while it runs: a world loaded meanwhile brings the flag down
@@ -4443,6 +5246,8 @@ std::string CutsceneSkipText(std::string& hint) {
 void CutsceneSkipPress() {
     if (Net().Online() && !g_skipYes.count(Net().MyId())) SkipVote(Net().MyId(), true);
 }
+
+void ClaimMissionFlag() { g_flagBy[0] = 0; }
 
 bool CutsceneSkipDecline() {
     if (!Net().Online() || !g_skipOpen || g_skipYes.count(Net().MyId())) return false;
@@ -4512,7 +5317,11 @@ std::string MissionWaitText(std::string& hint) {
     hint.clear();
     if (!Net().Online()) return "";
     if (Net().IsHost()) {
-        if (g_waitSent) return TR("Ждём напарника", "Waiting for your partner");
+        bool many = Net().Peers().size() > 1;
+        if (g_waitSent) return many ? TR("Ждём напарников", "Waiting for your partners") : TR("Ждём напарника", "Waiting for your partner");
+        if (g_goalWaitSent)
+            return many ? TR("Ждём напарников у цели", "Waiting for your partners at the objective")
+                        : TR("Ждём напарника у цели", "Waiting for your partner at the objective");
         uint8_t id = PartnerCalling();
         if (id == 0xFF) return "";
         hint = TR("Y - переместиться к маркеру, N - нет", "Y: go to the marker, N: no");
@@ -4520,6 +5329,7 @@ std::string MissionWaitText(std::string& hint) {
     }
     std::string host = Net().PeerName(Net().HostId());
     if (g_hostWaits) return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), host.c_str());
+    if (g_hostWaitsGoal) return Format(TR("%s ждёт вас у цели", "%s is waiting for you at the objective"), host.c_str());
     if (g_atSent == PW_AT) return Format(TR("Ждём %s у маркера миссии", "Waiting for %s at the mission marker"), host.c_str());
     return "";
 }
@@ -4553,9 +5363,13 @@ void ShowOwnCounter(uint32_t varOffset, const char* label, bool on) {
 
 bool SideLeading() { return Net().Online() && SideOwning(); }
 uint8_t SideLeader() { return Net().Online() ? g_side.owner : 0xFF; }
-uint8_t SideHelper() { return Net().Online() ? g_side.with : 0xFF; }
+std::vector<uint8_t> SideHelpers() { return Net().Online() ? g_side.with : std::vector<uint8_t>{}; }
 
 void MissionWeaponUnder(int& type, int& ammo) {
+    if (g_gunner.on && type == g_gunner.weapon) {  // the host's vehicle's gun in our hands: our own of that slot
+        type = g_gunner.slotType, ammo = g_gunner.slotType ? g_gunner.slotAmmo : 0;
+        return;
+    }
     if (Net().IsHost() || !g_missionWeapons.count(type)) return;
     auto it = g_replaced.find(type);
     type = it != g_replaced.end() ? it->second.first : 0;
@@ -4588,7 +5402,15 @@ bool SharePersonOnCar(bool on, int ped, int car, float x, float y, float z) {
 
 void* RunningMission() { return FindMissionScript(); }
 
+bool OwnSchool() {
+    void* s = FindMissionScript();
+    for (const char* name : {"dskool", "bskool", "boat", "desert5"})
+        if (s && !_strnicmp(Field<char[8]>(s, 0x08), name, 8)) return true;
+    return false;
+}
+
 bool HostMissionRecent(uint64_t graceMs) { return g_partnerMission || NowMs() - g_partnerMissionEndedAt < graceMs; }
+std::string HostMissionName() { return g_partnerMission ? g_hostMission : std::string(); }
 bool SceneWatched() { return g_watching; }
 
 bool AtMissionMarker() {

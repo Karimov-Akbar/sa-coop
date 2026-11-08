@@ -3,9 +3,11 @@
 // partner's game neither puts cars away nor brings any out: both games doing it made every kept car twice, and a car
 // the partner had put away was gone with the next world. The partner's game asks the host's instead. When a garage
 // closes behind a car of the partner's, the host's game keeps its record (as it would its own) and the partner's lets
-// it go. When a garage opens for the partner, the host's game hands over the partner's own cars it keeps there (the
-// host's stay for the host) and the partner's brings them out (where the partner is, the ground is loaded). The host's snapshots of its world for the partners are saves too: they no longer slam an open garage
-// shut on the cars in it.
+// it go. When a garage opens for the partner, the host's game hands over every car it keeps there and the partner's
+// brings them out (where the partner is, the ground is loaded). The garages are shared (the players' choice, 02.11):
+// before, the host's cars came out for the host only and the partner's for the partner only, and neither could take a
+// car the other had left there. The host's snapshots of its world for the partners are saves too: they no
+// longer slam an open garage shut on the cars in it.
 // The doors of the shops (Pay 'n' Spray, bomb shops, mod shops) move in both games as in the game of the player who
 // uses the garage (see HookGarageUpdate).
 #include <algorithm>
@@ -40,8 +42,9 @@ using game::script::Cmd;
 constexpr uintptr_t kGarages = 0x96C048, kNumGarages = 0x96C024;  // CGarages::aGarages (CGarage 0xD8 each), NumGarages
 constexpr uintptr_t kStoredCars = 0x96ABD8;                         // CGarages::aCarsInSafeHouse: 4 CStoredCar (0x40) a house
 constexpr size_t kGarageSize = 0xD8;
-enum : uint8_t { GARAGE_STORE = 1, GARAGE_KEPT = 2, GARAGE_BRING_OUT = 3, GARAGE_CARS = 4, GARAGE_BACK = 5 };
+enum : uint8_t { GARAGE_STORE = 1, GARAGE_KEPT = 2, GARAGE_BRING_OUT = 3, GARAGE_CARS = 4, GARAGE_BACK = 5, GARAGE_COUNT = 6 };
 constexpr size_t kStoredCarSize = 0x40;
+constexpr int kHouses = 20;  // CGarages::aCarsInSafeHouse
 
 uint8_t TypeOf(void* g) { return Field<uint8_t>(g, 0x4C); }  // CGarage::m_nType
 bool IsHideout(uint8_t t) { return (t >= 16 && t <= 18) || (t >= 24 && t <= 32) || (t >= 39 && t <= 42) || t == 45; }
@@ -65,8 +68,8 @@ bool Occupied(CVehicle* v) {
     return false;
 }
 
-// host: the partners' cars in its stores. Their records lie in the store's places like the host's own (the host's save
-// keeps them), these say whose they are, for this session: a loaded world brings the host's cars only.
+// host: the records the partners' games put in its stores, for this session. They lie in the store's places like the
+// host's own (the host's save keeps them); listed, they are kept from the host's own clear-out (TakePartnersOut).
 struct PartnerCar {
     uint8_t owner;
     std::array<uint8_t, kStoredCarSize> record;
@@ -85,9 +88,9 @@ size_t PartnerCount(uint8_t* store) {
     return it == g_partnerCars.end() ? 0 : it->second.size();
 }
 
-// The game's own restore and clear-out of a house's garage see the host's cars only: the partners' records are out of
-// the places while they run, and back in free places after. The clear-out empties all four places first and rebuilds
-// them from the cars standing inside: a partner's car taken in while the host's door stood open was wiped when it shut.
+// The game's own clear-out of a house's garage sees the host's cars only: the partners' records are out of the places
+// while it runs, and back in free places after. It empties all four places first and rebuilds them from the cars
+// standing inside: a partner's car taken in while the host's door stood open was wiped when it shut.
 void TakePartnersOut(uint8_t* store) {
     auto it = g_partnerCars.find(store);
     if (it == g_partnerCars.end()) return;
@@ -112,6 +115,17 @@ void PutPartnersBack(uint8_t* store) {
             c = it->second.erase(c);
         }
     }
+}
+// the records the game's restore brought out (it clears a place's model for each car it made): out of the list too, or
+// the next clear-out put them back while their cars stood in the garage, and they came out twice
+void ForgetTakenOut(uint8_t* store) {
+    auto it = g_partnerCars.find(store);
+    if (it == g_partnerCars.end()) return;
+    std::erase_if(it->second, [store](const PartnerCar& c) {
+        for (int k = 0; k < 4; ++k)
+            if (!memcmp(store + k * kStoredCarSize, c.record.data(), kStoredCarSize)) return false;
+        return true;
+    });
 }
 
 // Copies of the other players' cars in the host's garage when its door shuts: the clear-out skips mission cars
@@ -195,11 +209,9 @@ using RestoreFn = bool(__fastcall*)(void*, void*, void*);
 // the game's own until redirected: a site another mod changed is left alone, and this is still called
 RestoreFn g_origRestore = (RestoreFn)0x448550;
 bool __fastcall HookRestore(void* garage, void* edx, void* stored) {  // CGarage::RestoreCarsForThisHideOut
-    if (!Partner()) {  // the host's cars come out for the host, the partners' stay in for them
-        if (!PartnerCount((uint8_t*)stored)) return g_origRestore(garage, edx, stored);
-        TakePartnersOut((uint8_t*)stored);
+    if (!Partner()) {  // every car kept here comes out, the partners' too (shared garages)
         bool done = g_origRestore(garage, edx, stored);
-        PutPartnersBack((uint8_t*)stored);
+        ForgetTakenOut((uint8_t*)stored);
         return done;
     }
     if (core::IsPlayerReady()) {
@@ -211,11 +223,63 @@ bool __fastcall HookRestore(void* garage, void* edx, void* stored) {  // CGarage
     return true;  // nothing to wait for here: the door opens (CGarage::Update asks until all cars are out)
 }
 
+// The host's save takes what its stores hold, and the cars of a garage opened for the partner stand in the partner's
+// game meanwhile, the host's own among them since the garages are shared: a host who saved and quit then had lost
+// them. For the save the copies of them here are records too, and out of the stores again right after it.
+std::vector<std::pair<uint8_t*, std::array<uint8_t, kStoredCarSize>>> g_forSave;
+bool RecordNear(const uint8_t* store, int model, const CVector& p) {
+    for (int k = 0; k < 4; ++k) {
+        const uint8_t* rec = store + k * kStoredCarSize;
+        if (RecordModel(rec) == model && (Ref<CVector>((uintptr_t)rec) - p).Length() < 2.0f) return true;  // m_vPosn
+    }
+    return false;
+}
+void KeepCopiesForSave() {
+    CPoolHeader* pool = VehiclePool();
+    for (int i = 0; pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
+        NetVehicle* nv = Vehicles::Instance().Find(v);
+        if (!nv || !Vehicles::Instance().IsMirror(*nv) || nv->script || Occupied(v)) continue;
+        CVector p = v->GetPosition();
+        void* g = nullptr;
+        for (int k = 0; !g && GarageAt(k); ++k)
+            if (IsHideout(TypeOf(GarageAt(k))) && Inside(GarageAt(k), p)) g = GarageAt(k);
+        // its record is there already: the other game put the car away a moment ago, and its copy is not gone yet
+        if (!g || RecordNear(StoreOf(g), v->ModelIndex(), p)) continue;
+        uint8_t* place = FreePlace(StoreOf(g));
+        if (!place) {
+            LOGW("Garage %s is full: a car of player %d there is not in the save", NameOf(g).c_str(), nv->owner);
+            continue;
+        }
+        CallMethod<0x449760>(place, v);  // CStoredCar::StoreCar
+        if (nv->crashProofHere) place[0x10] &= (uint8_t)~8u;  // m_nStoredCarFlags: collision-proof as a copy only
+        g_forSave.push_back({StoreOf(g), {}});
+        memcpy(g_forSave.back().second.data(), place, kStoredCarSize);
+    }
+    if (!g_forSave.empty()) LOGI("The save keeps %zu car(s) of garages opened in the other games", g_forSave.size());
+}
+
 using CloseFn = void(__cdecl*)();
 CloseFn g_origCloseBeforeSave = nullptr;
 void __cdecl HookCloseBeforeSave() {  // CGarages::Save
     if (core::SavingSnapshot()) return;  // the partners' copy of the world: an open garage stays open with its cars
     g_origCloseBeforeSave();
+    if (Net().Online() && Net().IsHost()) KeepCopiesForSave();
+}
+
+using SaveFn = bool(__cdecl*)();
+SaveFn g_origGaragesSave = nullptr;
+bool __cdecl HookGaragesSave() {  // CGenericGameStorage::GenericSave
+    bool ok = g_origGaragesSave();
+    for (auto& [store, rec] : g_forSave)
+        for (int k = 0; k < 4; ++k)
+            if (uint8_t* place = store + k * kStoredCarSize; !memcmp(place, rec.data(), kStoredCarSize)) {
+                memset(place, 0, kStoredCarSize);
+                break;
+            }
+    g_forSave.clear();
+    return ok;
 }
 
 // What CStoredCar::RestoreCar (0x447E40) can make here: it asks the streamer for the model and every part unchecked (a
@@ -228,6 +292,32 @@ bool Restorable(const uint8_t* car) {
     }
     int8_t paintjob = Ref<int8_t>((uintptr_t)car + 0x3A);
     return paintjob >= -1 && paintjob < 4;
+}
+
+// A car at a shut door the partner's game checks against its own copy of the stores, the host's world as it was loaded
+// there: the door stayed shut on "You cannot store any more vehicles in this garage!!" while the host's store had room,
+// and a store emptied by the partner since still read as full. The host's game tells it each house's count.
+std::array<int8_t, kHouses> g_sentCount, g_hostCount;  // host: as sent; partner: as the host's game told; -1: not known
+void SendCount(void* g) {
+    uint8_t* store = StoreOf(g);
+    int house = (int)((uintptr_t)store - kStoredCars) / 0x100;
+    if (house < 0 || house >= kHouses) return;
+    int n = 0;
+    for (int k = 0; k < 4; ++k) n += RecordModel(store + k * kStoredCarSize) != 0;
+    if (n == g_sentCount[house]) return;
+    g_sentCount[house] = (int8_t)n;
+    Writer w(proto::G_GARAGE);
+    w.U8(GARAGE_COUNT);
+    w.U8((uint8_t)house);
+    w.U8((uint8_t)n);
+    Net().Send(proto::CH_RELIABLE, w);
+}
+using CountFn = int(__cdecl*)(int);
+CountFn g_origCount = nullptr;
+int __cdecl HookHideoutCount(int type) {  // CGarages::CountCarsInHideoutGarage: a car at the shut door (CGarage::Update)
+    int house = Call<0x4489F0, int>(type);  // CGarages::FindSafeHouseIndexForGarageType
+    if (Partner() && house >= 0 && house < kHouses && g_hostCount[house] >= 0) return g_hostCount[house];
+    return g_origCount(type);
 }
 
 // host: a partner's record into a free place of the store, and on its list
@@ -243,6 +333,11 @@ bool KeepForPartner(uint8_t* store, uint8_t owner, const uint8_t* rec) {
 
 void Handle(uint8_t from, Reader& r) {
     uint8_t op = r.U8(), index = r.U8();
+    if (op == GARAGE_COUNT) {  // index: a house; taken while a world loads too (it comes again only on a change)
+        uint8_t n = r.U8();
+        if (r.Ok() && from == Net().HostId() && !Net().IsHost() && index < kHouses && n <= 4) g_hostCount[index] = (int8_t)n;
+        return;
+    }
     void* g = GarageAt(index);
     if (!r.Ok() || from == Net().MyId() || !g || !IsHideout(TypeOf(g)) || !core::IsPlayerReady()) return;
     if (op == GARAGE_STORE && Net().IsHost()) {
@@ -262,6 +357,7 @@ void Handle(uint8_t from, Reader& r) {
         w.U8((uint8_t)kept.size());
         for (int32_t h : kept) w.I32(h);
         w.U8(full ? 1 : 0);
+        w.U8(from);  // the handles are that game's
         Net().Send(proto::CH_RELIABLE, w);
         LOGI("Garage %s keeps %zu car(s) of player %d%s", NameOf(g).c_str(), kept.size(), from, full ? " (no room for more)" : "");
     } else if (op == GARAGE_KEPT && from == Net().HostId() && !Net().IsHost()) {
@@ -269,7 +365,7 @@ void Handle(uint8_t from, Reader& r) {
         std::vector<int32_t> kept;
         for (int i = 0; i < n && i < 4; ++i) kept.push_back(r.I32());
         bool full = r.U8() != 0;
-        if (!r.Ok()) return;
+        if (r.U8() != Net().MyId() || !r.Ok()) return;
         int gone = 0;
         for (int32_t h : kept) {
             g_askedMs.erase(h);
@@ -281,30 +377,27 @@ void Handle(uint8_t from, Reader& r) {
         }
         if (full) ui::TheChat().AddSystem(TR("Гараж хоста полон: машина осталась снаружи.", "The host's garage is full: the car stays outside."));
         LOGI("Garage %s: the host keeps %d car(s) of ours now%s", NameOf(g).c_str(), gone, full ? ", no room for more" : "");
-    } else if (op == GARAGE_BRING_OUT && Net().IsHost()) {  // the partner's own cars go to its game: out of our store
+    } else if (op == GARAGE_BRING_OUT && Net().IsHost()) {  // every car kept here goes to its game, ours too: out of our store
         uint8_t* store = StoreOf(g);
-        auto it = g_partnerCars.find(store);
         std::vector<std::array<uint8_t, kStoredCarSize>> cars;
-        if (it != g_partnerCars.end()) {
-            TakePartnersOut(store);
-            for (auto c = it->second.begin(); c != it->second.end();)
-                if (c->owner == from && cars.size() < 4) {
-                    cars.push_back(c->record);
-                    c = it->second.erase(c);
-                } else {
-                    ++c;
-                }
-            PutPartnersBack(store);
+        for (int k = 0; k < 4; ++k) {
+            uint8_t* place = store + k * kStoredCarSize;
+            if (!RecordModel(place)) continue;
+            memcpy(cars.emplace_back().data(), place, kStoredCarSize);
+            memset(place, 0, kStoredCarSize);
         }
+        g_partnerCars.erase(store);
         if (cars.empty()) return;
         Writer w(proto::G_GARAGE);
         w.U8(GARAGE_CARS);
         w.U8(index);
+        w.U8(from);  // they come out in that game alone
         w.U8((uint8_t)cars.size());
         for (auto& c : cars) w.Bytes(c.data(), kStoredCarSize);
         Net().Send(proto::CH_RELIABLE, w);
-        LOGI("Garage %s opened for player %d: its %zu car(s) go out there", NameOf(g).c_str(), from, cars.size());
+        LOGI("Garage %s opened for player %d: %zu car(s) go out there", NameOf(g).c_str(), from, cars.size());
     } else if (op == GARAGE_CARS && from == Net().HostId() && !Net().IsHost()) {
+        if (r.U8() != Net().MyId()) return;
         uint8_t n = r.U8(), cars[4 * kStoredCarSize] = {};
         for (int k = 0; k < n && k < 4; ++k) {
             std::vector<uint8_t> c = r.Bytes(kStoredCarSize);
@@ -374,8 +467,11 @@ bool DoorShared(uint8_t t) { return (t >= 2 && t <= 5) || (t >= 36 && t <= 38) |
 // keeps its door open that near) one in a car before one on foot, the nearer of two alike (the host's when they are
 // about as near); nobody near: each game its own. Both games come to the same answer.
 bool Theirs(void* g, uint8_t from) {
-    // a script's door: the host's mission drives it in both games, out of a mission each game's own scripts do
-    if (ScriptDoor(TypeOf(g))) return !Net().IsHost() && from == Net().HostId() && HostMissionRecent(0);
+    // a script's door: the host's mission drives it in both games, and so does the script of a joint side activity this
+    // game takes part in (BURGJB opens its lockup for the van the partner drives, shut here: 01.11); out of those each
+    // game's own scripts do
+    if (ScriptDoor(TypeOf(g)))
+        return (!Net().IsHost() && from == Net().HostId() && HostMissionRecent(0)) || (from != 0xFF && from == SideLeader());
     const RemotePlayer* rp = Players::Instance().Get(from);
     CPlayerPed* me = FindPlayerPed(0);
     if (!rp || !rp->hasState || !me) return false;
@@ -400,7 +496,7 @@ GarageUpdateFn g_origGarageUpdate = nullptr;
 // A safe house's door opens for this game's player only (CGarage::Update reads FindPlayerCoors and FindPlayerVehicle), and
 // a door that opens up is solid whenever it is not open, from the moment it starts to shut (m_bDoorClosed,
 // CObject::ProcessGarageDoorBehaviour). Shut or shutting here, it stood in the other player's way into its garage: the
-// copy of its car was pushed out by the door and pulled back by the sync, and shook (Holder, 29.10). While that player
+// copy of its car was pushed out by the door and pulled back by the sync, and shook (29.10). While that player
 // is at the door as the game asks of its own (in a car within 10 m, on foot within 4 m) it opens here too: a shutting one
 // turns back as for our player still inside, an open one stays open, a shut one is only lifted (its store neither comes
 // out nor is cleared out when it shuts, which would drop the cars still kept in it).
@@ -415,6 +511,7 @@ bool OtherPlayerAt(void* g) {
     return false;
 }
 void HideoutUpdate(void* g, void* edx, int id) {
+    if (Net().Online() && Net().IsHost()) SendCount(g);
     uint8_t& state = Field<uint8_t>(g, 0x4D);  // CGarage::m_nDoorState
     uint8_t& flags = Field<uint8_t>(g, 0x4E);
     bool theirs = Net().Online() && core::IsPlayerReady() && !(flags & kGarageInactive) && OtherPlayerAt(g);
@@ -487,12 +584,18 @@ public:
         mem::RedirectCallFn(0x44A1EA, &HookStoreBeforeSave, &g_origStoreBeforeSave);  // CGarages::CloseHideOutGaragesBeforeSave
         mem::RedirectCallFn(0x44C1E1, &HookRestore, &g_origRestore);                  // CGarage::Update
         mem::RedirectCallFn(0x5D3165, &HookCloseBeforeSave, &g_origCloseBeforeSave);  // CGarages::Save
+        mem::RedirectCallFn(0x5D14E9, &HookGaragesSave, &g_origGaragesSave);          // CGenericGameStorage::GenericSave
         mem::RedirectCallFn(0x44C910, &HookGarageUpdate, &g_origGarageUpdate);        // CGarages::Update
+        mem::RedirectCallFn(0x44BF27, &HookHideoutCount, &g_origCount);               // CGarage::Update
+        g_sentCount.fill(-1);
+        g_hostCount.fill(-1);
         Net().SetHandler(proto::G_GARAGE, &Handle);
         Net().SetHandler(proto::G_GARAGE_DOOR, &HandleDoor);
     }
+    void OnPeerJoin(uint8_t) override { g_sentCount.fill(-1); }  // the stores' counts go to it again
     void OnPeerResync(uint8_t) override {  // its world is new: the next update sends every door again
         for (Door& d : g_doors) d.sent = 0xFF;
+        g_sentCount.fill(-1);
     }
     void OnPeerLeave(uint8_t id) override {
         for (Door& d : g_doors)
@@ -502,6 +605,8 @@ public:
         for (Door& d : g_doors) d.remote = DOOR_NONE, d.sent = 0xFF;
         g_partnerCars.clear();  // their records stay in the stores, the host's now (as a loaded world's are)
         g_askedMs.clear();
+        g_sentCount.fill(-1);
+        g_hostCount.fill(-1);
     }
     void OnGameStarted() override {  // a world loaded: what its stores hold is its own
         g_partnerCars.clear();

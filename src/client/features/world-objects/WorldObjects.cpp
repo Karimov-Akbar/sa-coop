@@ -43,6 +43,10 @@ struct Thing {
     bool byCopy = false;   // its first change here was a copy's of the other game's car or person (CopyNear): not ours
     bool following = false;  // our copy plays the other game's moves
     uint64_t updatedMs = 0, sentMs = 0, appliedMs = 0;
+    // Last met within our range: a record lasts while its object stays changed here. One that ran out with the post still
+    // lying broken by our player made it a new change, sent every 5 minutes: the other game's post, whole again, burst
+    // in front of its player by itself (31.10, the fourth test).
+    uint64_t seenMs = 0;
 };
 std::vector<Thing> g_things;
 uint64_t g_scanMs = 0, g_statsMs = 0;
@@ -141,7 +145,10 @@ void Break(CObject* o, uint8_t stage, uint8_t weapon) {
 // a copy here in the state the record has (it was made after the change, or the change is the other game's); while
 // the other game moves it, our physics carries it on between its poses
 void CatchUp(CObject* o, Thing& t, bool driven) {
-    if (StageOf(o) < t.stage) Break(o, t.stage, t.weapon);
+    // Made again (streamed out and back in) long after it broke: gone as it was left, without breaking once more. The
+    // replayed ObjectDamage burst it again, and posts broken minutes before fell to pieces in front of a car (30.10).
+    if (StageOf(o) < t.stage && t.stage >= 2 && NowMs() - t.updatedMs > 2000) o->Flags() &= ~(1u | 0x80u);
+    else if (StageOf(o) < t.stage) Break(o, t.stage, t.weapon);
     if (!t.moved || StageOf(o) >= 2) return;
     if (driven) {
         if (t.appliedMs != t.updatedMs || !t.following) Place(o, t.pos, t.rot, true, t.speed, t.turn);
@@ -195,6 +202,7 @@ void Scan() {
         CEntity* d = Dummy(o);
         CVector at = o->GetPosition(), origin = d->GetPosition();
         Thing* t = Find(o->ModelIndex(), origin);
+        if (t) t->seenMs = now;
         if (t && t->remote) {
             // the other game moves it right now, or this copy is behind its last word: as there
             bool driven = t->moving && now - t->updatedMs < kFollowMs;
@@ -254,7 +262,7 @@ void Scan() {
     }
     // records nobody needs any more
     g_things.erase(std::remove_if(g_things.begin(), g_things.end(),
-                                  [&](const Thing& t) { return now - t.updatedMs > kKeepMs; }),
+                                  [&](const Thing& t) { return now - std::max(t.updatedMs, t.seenMs) > kKeepMs; }),
                    g_things.end());
 }
 

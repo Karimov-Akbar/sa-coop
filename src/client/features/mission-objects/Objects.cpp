@@ -50,6 +50,7 @@ struct NetObject {
     uint64_t enterMs = 0;    // host: that player pressed its enter button holding it
     uint64_t heldMs = 0;     // host: since then
     bool copyHeld = false;   // host: its copy took it up; partner: the host's copy was given it
+    uint8_t magnetBy = 0xFF;  // host: the player whose toy's magnet carries it ("New Model Army")
 };
 
 // A crate the mission lets its player carry (SET_OBJECT_AS_STEALABLE: CObject::m_nObjectFlags +0x140, bIsLiftable): the
@@ -57,9 +58,13 @@ struct NetObject {
 // mission counts the partner's crate as its player's (Missions: IS_CHAR_HOLDING_OBJECT and the rest of "Home Invasion").
 // The other game's copy of whoever carries it takes the crate up as a player does (TakeUp), so both games show the lift,
 // the carry and the put down at the van.
-enum : uint8_t { OBJ_LIFTABLE = 1, OBJ_HELD_HOST = 2 };
-enum : uint8_t { HOLD = 1, RELEASE = 2, HOLD_ENTER = 3, HOLD_DENY = 4 };
-constexpr uint32_t kLiftable = 0x2000;
+// The host's object with its collision off (SET_OBJECT_COLLISION) is passed through by the copy too, and one its player's
+// gun locks onto (MAKE_OBJECT_TARGETTABLE) lets the partner's lock on: "Small Town Bank" switches the collision of its ATMs
+// off for its bullets to reach the target in front of them, whose damage breaks them, and the partner's bullets stopped
+// in the ATM's copy (31.10). OBJ_SCM: one of main.scm's own objects (AnnounceScmObject).
+enum : uint8_t { OBJ_LIFTABLE = 1, OBJ_HELD_HOST = 2, OBJ_NO_COLLISION = 4, OBJ_TARGET = 8, OBJ_SCM = 16 };
+enum : uint8_t { HOLD = 1, RELEASE = 2, HOLD_ENTER = 3, HOLD_DENY = 4, MAGNET = 5 };
+constexpr uint32_t kLiftable = 0x2000, kTargetable = 0x200;  // CObject::bIsLiftable, bIsTargetable
 uint32_t& ObjectFlags(CObject* o) { return Field<uint32_t>(o, 0x140); }
 
 // what a ped carries (CTaskSimpleHoldEntity, or its pick up or put down: their m_pEntityToHold)
@@ -102,11 +107,12 @@ bool Alive(const NetObject& no) { return no.obj && IsObjectValid(no.obj) && GetO
 bool Broken(CObject* o) { return !o->IsVisible() && !(o->Flags() & 1); }  // smashed: no rendering, no collision
 Quat RotationOf(CObject* o) { return o->Matrix() ? Quat::FromMatrix(*o->Matrix()) : Quat{}; }
 
-// the copy as the host's object: no collision while that rides attached, its size
+// the copy as the host's object: no collision while that rides attached or has none, its size, its lock-on
 void ApplyRide(NetObject& no) {
     if (!Alive(no) || Broken(no.obj)) return;
-    Cmd(0x0382).I(no.handle).I(no.attached ? 0 : 1).Run();  // SET_OBJECT_COLLISION
-    Field<float>(no.obj, 0x15C) = no.scale;                // CObject::m_fScale (CObject::PreRender scales it)
+    Cmd(0x0382).I(no.handle).I(no.attached || (no.flags & OBJ_NO_COLLISION) ? 0 : 1).Run();  // SET_OBJECT_COLLISION
+    Field<float>(no.obj, 0x15C) = no.scale;  // CObject::m_fScale (CObject::PreRender scales it)
+    ObjectFlags(no.obj) = no.flags & OBJ_TARGET ? ObjectFlags(no.obj) | kTargetable : ObjectFlags(no.obj) & ~kTargetable;
 }
 
 void Place(CObject* o, const CVector& pos, const Quat& rot) {
@@ -123,6 +129,8 @@ void Place(CObject* o, const CVector& pos, const Quat& rot) {
 uint8_t FlagsOf(CObject* o) {
     uint8_t f = (ObjectFlags(o) & kLiftable) ? OBJ_LIFTABLE : 0;
     if (Held(FindPlayerPed(0)) == (CEntity*)o) f |= OBJ_HELD_HOST;
+    if (!(o->Flags() & 1)) f |= OBJ_NO_COLLISION;  // CEntity::bUsesCollision
+    if (ObjectFlags(o) & kTargetable) f |= OBJ_TARGET;
     return f;
 }
 
@@ -154,6 +162,25 @@ NetObject* FindByObject(std::map<uint16_t, NetObject>& m, CObject* o) {
     return nullptr;
 }
 
+void Announce(int h, CObject* o, bool scm = false) {
+    NetObject no;
+    no.netId = g_nextId++;
+    no.obj = o;
+    no.handle = h;
+    no.model = o->ModelIndex();
+    no.pos = o->GetPosition();
+    no.rot = RotationOf(o);
+    no.area = o->AreaCode();
+    no.broken = Broken(o);
+    no.attached = o->AttachedTo() != nullptr;
+    no.scale = Field<float>(o, 0x15C);
+    no.flags = FlagsOf(o) | (scm ? OBJ_SCM : 0);
+    no.sentMs = NowMs();
+    g_owned[no.netId] = no;
+    SendCreate(no);
+    LOGI("Mission object %04X (model %d) announced", no.netId, no.model);
+}
+
 // host: announce new mission objects, report moves, breaks and ends
 void HostScan() {
     std::vector<int> handles;
@@ -168,22 +195,7 @@ void HostScan() {
         for (int h : handles) {
             CObject* o = GetObject(h);
             if (!o || FindByObject(g_owned, o)) continue;
-            NetObject no;
-            no.netId = g_nextId++;
-            no.obj = o;
-            no.handle = h;
-            no.model = o->ModelIndex();
-            no.pos = o->GetPosition();
-            no.rot = RotationOf(o);
-            no.area = o->AreaCode();
-            no.broken = Broken(o);
-            no.attached = o->AttachedTo() != nullptr;
-            no.scale = Field<float>(o, 0x15C);
-            no.flags = FlagsOf(o);
-            no.sentMs = NowMs();
-            g_owned[no.netId] = no;
-            SendCreate(no);
-            LOGI("Mission object %04X (model %d) announced", no.netId, no.model);
+            Announce(h, o);
         }
     }
     for (auto it = g_owned.begin(); it != g_owned.end();) {
@@ -207,7 +219,7 @@ void HostScan() {
                          std::fabs(rot.w - no.rot.w);
             bool attached = no.obj->AttachedTo() != nullptr;
             float scale = Field<float>(no.obj, 0x15C);
-            uint8_t flags = no.heldBy != 0xFF ? no.flags : FlagsOf(no.obj);  // carried by the partner: as it was
+            uint8_t flags = no.heldBy != 0xFF ? no.flags : FlagsOf(no.obj) | (no.flags & OBJ_SCM);  // carried by the partner: as it was
             int8_t area = (int8_t)no.obj->AreaCode();  // a crate carried out of the house goes into the street's area
             // and again every 2 s at rest: the state channel can lose the last one, and a pushed box stood half-way there
             bool moved = (pos - no.pos).Length() > 0.02f || turn > 0.01f || attached != no.attached || scale != no.scale ||
@@ -252,16 +264,22 @@ void DeleteCopy(NetObject& no) {
     if (Alive(no) && !no.adopted) Cmd(0x0108).I(no.handle).Run();  // DELETE_OBJECT
 }
 
-// the same object in the same place, not a copy yet: the host's world, loaded here, brought it along
+// The same object in the same place, not a copy yet: the host's world, loaded here, brought it along. One of main.scm's
+// own is this game's as well wherever it stands nearby (this world not the host's yet, an older mission moved it): a
+// copy beside it left it as it was, and the partner ran into an invisible wall at the open shutter of "You've Had Your
+// Chips" (31.10).
 CObject* FindTwin(const NetObject& no) {
     CPoolHeader* pool = ObjectPool();
+    CObject* best = nullptr;
+    float bestD = no.flags & OBJ_SCM ? 15.0f : 0.25f;
     for (int i = 0; pool && i < pool->size; ++i) {
         if (pool->byteMap[i] < 0) continue;
         auto* o = (CObject*)(pool->objects + (size_t)i * kObjectPoolElemSize);
-        if (o->ModelIndex() != no.model || (o->GetPosition() - no.pos).Length() > 0.25f || FindByObject(g_mirrors, o)) continue;
-        return o;
+        float d = (o->GetPosition() - no.pos).Length();
+        if (o->ModelIndex() != no.model || d > bestD || FindByObject(g_mirrors, o)) continue;
+        best = o, bestD = d;
     }
-    return nullptr;
+    return best;
 }
 
 void ClearCopies() {
@@ -330,6 +348,131 @@ void WatchHold() {
     }
 }
 
+// "New Model Army" for two: the partner's RC Goblin over the war table carries a magnet as the host's does (the players'
+// choice of 02.11). The mission's own magnet is its script (GET_OFFSET_FROM_CAR_IN_WORLD_COORDS 0,0,-1, LOCATE_OBJECT_3D
+// of 1 m, the fire button, ATTACH_OBJECT_TO_CAR): the partner's takes up the copies of the table's barrels and planks with
+// the fire button the same way and drops them, and the host's game carries the real ones under its copy of the toy. The
+// bomb stays the host's: the script blows up only the one its own magnet dropped.
+int UsedModel(const char* name) {  // a model of main.scm's list (CTheScripts::UsedObjectArray: name, index)
+    for (int i = 1; i < 395; ++i)
+        if (!_stricmp((const char*)(0xA44B70 + (uintptr_t)i * 0x1C), name)) return Ref<int32_t>(0xA44B70 + (uintptr_t)i * 0x1C + 0x18);
+    return -1;
+}
+bool TableToy(CVehicle* v) { return v && v->ModelIndex() == 501 && v->AreaCode() == 10; }  // an RC Goblin in the war room
+float MagnetTurn(uint16_t model) { return model == UsedModel("BARREL2") ? 90.0f : 0.0f; }  // as ZERO4 hangs them
+
+// a MINI_MAGNET under the toy, as ZERO4 hangs its own (no collision: it only shows)
+int HangMagnet(CVehicle* toy) {
+    int model = UsedModel("MINI_MAGNET");
+    if (model <= 0) return -1;
+    if (!IsModelLoaded(model)) {
+        RequestModel(model);
+        return -1;
+    }
+    if (!HasRoom(ObjectPool(), kKeepObjects, "object")) return -1;
+    CVector p = toy->GetPosition();
+    int h = -1;
+    Cmd(0x0107).I(model).F(p.x).F(p.y).F(p.z - 0.2f).Out(&h).Run();  // CREATE_OBJECT
+    CObject* o = h >= 0 ? GetObject(h) : nullptr;
+    if (!o) return -1;
+    Cmd(0x0382).I(h).I(0).Run();  // SET_OBJECT_COLLISION
+    Cmd(0x0681).I(h).I(GetVehicleRef(toy)).F(0.0f).F(0.0f).F(-0.2f).F(0.0f).F(0.0f).F(0.0f).Run();  // ATTACH_OBJECT_TO_CAR
+    o->AreaCode() = toy->AreaCode();
+    return h;
+}
+void TakeDownMagnet(int& h) {
+    if (h >= 0 && GetObject(h)) Cmd(0x0108).I(h).Run();  // DELETE_OBJECT
+    h = -1;
+}
+
+int g_magnetObj = -1;   // partner: the magnet under our toy
+uint16_t g_magnet = 0;  // partner: the copy it carries, 0: none
+std::map<uint8_t, int> g_theirMagnets;  // host: the magnet under each other player's toy
+
+// partner: the copy off our magnet, where it hangs now: the host's game drops the real one there
+void DropMagnet() {
+    if (!g_magnet) return;
+    auto it = g_mirrors.find(g_magnet);
+    if (it != g_mirrors.end() && Alive(it->second)) {
+        NetObject& no = it->second;
+        if (no.obj->AttachedTo()) Cmd(0x0682).I(no.handle).F(0.0f).F(0.0f).F(0.0f).I(0).Run();  // DETACH_OBJECT
+        SendHold(RELEASE, g_magnet, &no);
+        Cmd(0x0550).I(no.handle).I(1).Run();  // FREEZE_OBJECT_POSITION: a copy again, moved by the host's falls
+        ApplyRide(no);
+    } else {
+        SendHold(RELEASE, g_magnet);
+    }
+    LOGI("Mission object %04X: off our magnet", g_magnet);
+    g_magnet = 0;
+}
+
+void PartnerMagnet() {
+    CVehicle* toy = PlayerInfos()[0].remoteVehicle;
+    if (!TableToy(toy)) {
+        DropMagnet();
+        TakeDownMagnet(g_magnetObj);
+        return;
+    }
+    if (g_magnetObj < 0 || !GetObject(g_magnetObj)) g_magnetObj = HangMagnet(toy);
+    const CPad* pad = GetPad(0);
+    if (!pad->NewState.ButtonCircle || pad->OldState.ButtonCircle) return;  // the fire button, ZERO4's button 17
+    if (g_magnet) return DropMagnet();
+    CMatrix* m = toy->Matrix();
+    CVector at = m ? m->pos - m->up : toy->GetPosition();  // GET_OFFSET_FROM_CAR_IN_WORLD_COORDS 0,0,-1
+    int barrel = UsedModel("BARREL2"), plank = UsedModel("KMB_PLANK");
+    NetObject* best = nullptr;
+    float bestD = 0.0f;
+    for (auto& [id, no] : g_mirrors) {
+        if (!Alive(no) || Broken(no.obj) || no.attached || (no.model != barrel && no.model != plank)) continue;
+        CVector d = no.obj->GetPosition() - at;
+        if (std::fabs(d.x) > 1.0f || std::fabs(d.y) > 1.0f || std::fabs(d.z) > 1.0f) continue;  // LOCATE_OBJECT_3D 1 m
+        if (!best || d.Length() < bestD) best = &no, bestD = d.Length();
+    }
+    if (!best) return;
+    g_magnet = best->netId;
+    Cmd(0x0550).I(best->handle).I(0).Run();  // FREEZE_OBJECT_POSITION off: it rides the toy
+    Cmd(0x0382).I(best->handle).I(0).Run();  // SET_OBJECT_COLLISION
+    Cmd(0x0681).I(best->handle).I(GetVehicleRef(toy)).F(0.0f).F(0.0f).F(-1.2f).F(0.0f).F(MagnetTurn(best->model)).F(0.0f).Run();  // ATTACH_OBJECT_TO_CAR
+    SendHold(MAGNET, g_magnet);
+    LOGI("Mission object %04X: on our magnet", g_magnet);
+}
+
+// host: the real one off the other player's magnet, where that player's copy hung (it falls from there)
+void ReleaseMagnet(NetObject& no, const CVector* pos, const Quat* rot) {
+    no.magnetBy = 0xFF;
+    if (!Alive(no)) return;
+    if (no.obj->AttachedTo()) Cmd(0x0682).I(no.handle).F(0.0f).F(0.0f).F(0.0f).I(0).Run();  // DETACH_OBJECT
+    if (pos && rot) Place(no.obj, *pos, *rot);
+}
+
+// host: the magnets under the other players' toys, and what they carry: let go when the toy is gone or another magnet
+// took it (the mission's own, the host's or Berkley's, attaches it to its toy)
+void HostMagnets() {
+    for (auto& [id, rp] : Players::Instance().All()) {
+        CVehicle* toy = RemoteToy(rp);
+        auto it = g_theirMagnets.find(id);
+        int h = it != g_theirMagnets.end() ? it->second : -1;
+        if (TableToy(toy) && (h < 0 || !GetObject(h))) h = HangMagnet(toy);
+        else if (!TableToy(toy)) TakeDownMagnet(h);
+        g_theirMagnets[id] = h;
+    }
+    for (auto& [netId, no] : g_owned) {
+        if (no.magnetBy == 0xFF) continue;
+        const RemotePlayer* rp = Players::Instance().Get(no.magnetBy);
+        CVehicle* toy = rp ? RemoteToy(*rp) : nullptr;
+        if (!toy || !Alive(no)) {
+            ReleaseMagnet(no, nullptr, nullptr);
+        } else if (no.obj->AttachedTo() != (CEntity*)toy) {
+            Writer w(proto::G_OBJ_HOLD);  // to its game: taken off its magnet
+            w.U8(HOLD_DENY);
+            w.U16(netId);
+            Net().Send(proto::CH_RELIABLE, w);
+            no.magnetBy = 0xFF;
+            LOGI("Mission object %04X: taken off player %d's magnet", netId, rp->id);
+        }
+    }
+}
+
 // host: the partner's copy carries the real one, taken up by the game's task; a copy that did not take it within 2 s (busy
 // with something else) holds it in front of its chest
 void FollowHolder(NetObject& no) {
@@ -364,6 +507,16 @@ void HandleHold(uint8_t from, Reader& r) {
     uint16_t id = r.U16();
     if (!r.Ok() || !core::IsPlayerReady() || from == Net().MyId()) return;
     if (op == HOLD_DENY) {  // to the partner: the host's player took it first
+        if (from == Net().HostId() && id && id == g_magnet) {  // another magnet has it: ours lets go
+            if (auto it = g_mirrors.find(id); it != g_mirrors.end() && Alive(it->second)) {
+                if (it->second.obj->AttachedTo()) Cmd(0x0682).I(it->second.handle).F(0.0f).F(0.0f).F(0.0f).I(0).Run();  // DETACH_OBJECT
+                Cmd(0x0550).I(it->second.handle).I(1).Run();  // FREEZE_OBJECT_POSITION
+                ApplyRide(it->second);
+            }
+            g_magnet = 0;
+            LOGI("Mission object %04X: another magnet took it from ours", id);
+            return;
+        }
         if (from != Net().HostId() || id != g_holding) return;
         Cmd(0x070B).I(GetPedRef(FindPlayerPed(0))).I(0).Run();  // DROP_OBJECT
         LOGI("Mission object %04X: the host has it, ours dropped", id);
@@ -373,6 +526,34 @@ void HandleHold(uint8_t from, Reader& r) {
     auto it = g_owned.find(id);
     if (it == g_owned.end() || !Alive(it->second)) return;
     NetObject& no = it->second;
+    if (op == MAGNET) {
+        const RemotePlayer* rp = Players::Instance().Get(from);
+        CVehicle* toy = rp ? RemoteToy(*rp) : nullptr;
+        // on a magnet already (the host's, Berkley's), or carried
+        if (!toy || no.obj->AttachedTo() || no.heldBy != 0xFF || (no.magnetBy != 0xFF && no.magnetBy != from)) {
+            Writer w(proto::G_OBJ_HOLD);
+            w.U8(HOLD_DENY);
+            w.U16(id);
+            Net().Send(proto::CH_RELIABLE, w);
+            return;
+        }
+        no.magnetBy = from;
+        int th = GetVehicleRef(toy);
+        Cmd(0x0681).I(no.handle).I(th).F(0.0f).F(0.0f).F(-1.2f).F(0.0f).F(MagnetTurn(no.model)).F(0.0f).Run();  // ATTACH_OBJECT_TO_CAR
+        Cmd(0x050E).I(no.handle).I(th).Run();  // SORT_OUT_OBJECT_COLLISION_WITH_CAR, as ZERO4
+        LOGI("Mission object %04X: on player %d's magnet", id, from);
+        return;
+    }
+    if (op == RELEASE && no.magnetBy == from) {
+        Vec3 p = r.Vec();
+        Quat q;
+        q.Read(r);
+        CVector pos{p.x, p.y, p.z};
+        bool placed = r.Ok() && std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+        ReleaseMagnet(no, placed ? &pos : nullptr, placed ? &q : nullptr);
+        LOGI("Mission object %04X: dropped by player %d's magnet", id, from);
+        return;
+    }
     if (op == HOLD) {
         if (Held(FindPlayerPed(0)) == (CEntity*)no.obj || (no.heldBy != 0xFF && no.heldBy != from)) {
             Writer w(proto::G_OBJ_HOLD);
@@ -413,6 +594,7 @@ void CreatePending() {
         int h = -1;
         CObject* o = FindTwin(no);
         no.adopted = o != nullptr;
+        float off = o ? (o->GetPosition() - no.pos).Length() : 0.0f;
         if (o) h = GetObjectRef(o);
         else Cmd(0x029B).I(no.model).F(no.pos.x).F(no.pos.y).F(no.pos.z).Out(&h).Run();  // CREATE_OBJECT_NO_OFFSET
         if (!o) {
@@ -431,7 +613,8 @@ void CreatePending() {
         ApplyRide(copy);
         ApplyLiftable(copy);
         if (broken) BreakCopy(copy, 0);
-        LOGI("Mission object %04X (model %d) %s", no.netId, no.model, no.adopted ? "found here" : "copied");
+        if (no.adopted) LOGI("Mission object %04X (model %d) found here (%.1f m off)", no.netId, no.model, off);
+        else LOGI("Mission object %04X (model %d) copied", no.netId, no.model);
     }
 }
 
@@ -582,8 +765,13 @@ public:
                 it->second.area = area;
             } else if (auto m = g_mirrors.find(id); m != g_mirrors.end() && Alive(m->second)) {
                 NetObject& no = m->second;
-                if (no.flags != flags) no.flags = flags, ApplyLiftable(no);
-                if (id == g_holding) return;  // in our player's hands: the hold task moves it
+                if (no.flags != flags) {
+                    bool ride = (no.flags ^ flags) & (OBJ_NO_COLLISION | OBJ_TARGET);
+                    no.flags = flags;
+                    ApplyLiftable(no);
+                    if (ride) ApplyRide(no);
+                }
+                if (id == g_holding || id == g_magnet) return;  // in our player's hands or on our magnet: moved here
                 no.area = area;
                 no.obj->AreaCode() = area;
                 // in the host's hands: on its copy's chest (the copy plays the host's carry, Anims), through the doors with it
@@ -638,12 +826,25 @@ public:
     }
 
     void OnSessionEnd() override {
+        if (core::IsPlayerReady()) {
+            TakeDownMagnet(g_magnetObj);
+            for (auto& [id, h] : g_theirMagnets) TakeDownMagnet(h);
+        }
+        g_magnet = 0;
+        g_magnetObj = -1;
+        g_theirMagnets.clear();
         ClearCopies();
         g_owned.clear();
     }
     void OnPeerLeave(uint8_t id) override {
-        for (auto& [netId, no] : g_owned)
+        for (auto& [netId, no] : g_owned) {
             if (no.heldBy == id) ReleaseHeld(no, nullptr, nullptr);  // it falls where its carrier left it
+            if (no.magnetBy == id) ReleaseMagnet(no, nullptr, nullptr);
+        }
+        if (auto it = g_theirMagnets.find(id); it != g_theirMagnets.end()) {
+            TakeDownMagnet(it->second);
+            g_theirMagnets.erase(it);
+        }
         if (id == Net().HostId() || Net().IsHost()) ClearCopies();
     }
     void OnPeerResync(uint8_t id) override {
@@ -655,7 +856,9 @@ public:
             if (Alive(no)) SendCreate(no);
     }
     void OnGameStarted() override {  // a new world: the objects of the old one are gone
-        g_holding = 0;
+        g_holding = g_magnet = 0;
+        g_magnetObj = -1;
+        g_theirMagnets.clear();
         g_owned.clear();
         g_mirrors.clear();
         g_pending.clear();
@@ -671,9 +874,11 @@ public:
             }
             for (auto& [netId, no] : g_owned)
                 if (no.heldBy != 0xFF) FollowHolder(no);
+            HostMagnets();
         } else {
             if (!g_pending.empty()) CreatePending();
             WatchHold();
+            PartnerMagnet();
         }
     }
 
@@ -698,6 +903,21 @@ uint16_t MissionObjectNetId(void* object) {
     for (auto& [id, no] : g_owned)
         if (no.obj == object && Alive(no)) return id;
     return 0;
+}
+
+// A story mission moves one of main.scm's own objects (Missions.cpp): announced at once, before it moves, where the
+// partner's own one stands (FindTwin adopts that one there); HostScan reports its moves from then on
+void AnnounceScmObject(int handle) {
+    game::CObject* o = game::GetObject(handle);
+    if (!o || FindByObject(g_owned, o)) return;
+    for (int i = 0; i < 75; ++i)  // the mission's own (a bottle of "Nines and AKs" turned by SET_OBJECT_HEADING): HostScan's
+        if (uintptr_t e = kMissionCleanUp + (uintptr_t)i * 8; Ref<uint8_t>(e) == 3 && Ref<int32_t>(e + 4) == handle) return;
+    Announce(handle, o, true);
+}
+
+void AnnounceKeptObject(int handle) {
+    game::CObject* o = game::GetObject(handle);
+    if (o && !FindByObject(g_owned, o)) Announce(handle, o);
 }
 
 int MissionObjectCopyHandle(uint16_t netId) {

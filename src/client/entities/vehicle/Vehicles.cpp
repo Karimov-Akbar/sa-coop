@@ -35,7 +35,7 @@ constexpr uint8_t VEHICLE_CREATED_RANDOM = 1, VEHICLE_CREATED_MISSION = 2, VEHIC
 constexpr float kTrafficIn = 170.0f;   // owned vehicles closer than this to the partner are announced (> car spawn range)
 constexpr float kTrafficOut = 220.0f;  // and dropped from the network beyond this
 // an aircraft is seen from much farther: a police helicopter over the other player, 60-100 m up, came and went for a
-// partner a little way off (Hh hh, 26.10)
+// partner a little way off (26.10)
 constexpr float kAirIn = 350.0f, kAirOut = 420.0f;
 bool Aircraft(CVehicle* v) {
     int type = v->VehicleSubClass();
@@ -79,19 +79,42 @@ bool HasDamageManager(CVehicle* v) {  // CAutomobile and its subclasses
     return false;
 }
 
-// shows the damage of the owner's vehicle: parts are reset, then rebuilt from the damage state the way
-// a loaded save does it (no debris flies off, the parts are just gone or bent)
-void ApplyDamage(CVehicle* v, const uint8_t (&damage)[20]) {
-    uint8_t* dm = (uint8_t*)v + kDamageManager + 4;
-    if (!memcmp(dm, damage, sizeof(damage))) return;
-    CallMethod<0x6A3440>(v);  // CAutomobile::Fix
-    memcpy(dm, damage, sizeof(damage));
-    switch (v->VehicleSubClass()) {  // SetupDamageAfterLoad of the exact class
+void SetupDamageAfterLoad(CVehicle* v) {  // of the exact class
+    switch (v->VehicleSubClass()) {
     case VEHICLE_TYPE_HELI: CallMethod<0x6C4550>(v); break;
     case VEHICLE_TYPE_PLANE: CallMethod<0x6CAC10>(v); break;
     case VEHICLE_TYPE_QUAD: CallMethod<0x6CE340>(v); break;
     default: CallMethod<0x6B3E90>(v); break;
     }
+}
+
+// shows the damage of the owner's vehicle: parts are reset, then rebuilt from the damage state the way a loaded save
+// does it. That rebuild throws every part that is gone off the car (SpawnFlyingComponent), and each new dent of the
+// owner's car threw the copy's lost bonnet and bumpers off once more, a heap of them by one car (02.11). A part
+// lost since the last rebuild falls once; the ones lost before are only hidden: the spawn gives up with 150 temporary
+// objects about (CObject::nNoTempObjects).
+void ApplyDamage(CVehicle* v, const uint8_t (&damage)[20]) {
+    uint8_t* dm = (uint8_t*)v + kDamageManager + 4;
+    if (!memcmp(dm, damage, sizeof(damage))) return;
+    uint8_t fresh[20];  // the new state with what the copy had lost already left on
+    memcpy(fresh, damage, sizeof(fresh));
+    for (int d = 0; d < 6; ++d)  // bonnet, boot, the four doors
+        if (dm[5 + d] == 4) fresh[5 + d] = 0;  // DAMSTATE_NOTPRESENT
+    uint32_t had, panels;
+    memcpy(&had, dm + 16, 4);
+    memcpy(&panels, fresh + 16, 4);
+    for (int p : {0, 1, 5, 6})  // the wings, the bumpers
+        if (((had >> 4 * p) & 0xF) == 3) panels &= ~(0xFu << 4 * p);  // DAMSTATE_OPENED_DAMAGED
+    memcpy(fresh + 16, &panels, 4);
+    CallMethod<0x6A3440>(v);  // CAutomobile::Fix
+    memcpy(dm, fresh, sizeof(fresh));
+    SetupDamageAfterLoad(v);
+    memcpy(dm, damage, sizeof(damage));
+    uint16_t& temp = Ref<uint16_t>(0xBB4A70);  // CObject::nNoTempObjects
+    uint16_t kept = temp;
+    temp = 150;
+    SetupDamageAfterLoad(v);
+    temp = kept;
 }
 
 VehicleLook CaptureLook(CVehicle* v) {
@@ -196,7 +219,7 @@ NetVehicle* Vehicles::EnsureNetworked(CVehicle* v) {
     return &nv;
 }
 
-void Vehicles::Announce(const NetVehicle& nv) {
+VehicleSpawn Vehicles::SpawnOf(const NetVehicle& nv) const {
     CVehicle* v = nv.veh;
     VehicleSpawn sp;
     sp.netId = nv.netId;
@@ -206,12 +229,17 @@ void Vehicles::Announce(const NetVehicle& nv) {
     if (CMatrix* m = v->Matrix()) sp.rot = Quat::FromMatrix(*m);
     memcpy(sp.colors, v->Colors(), 4);
     sp.health = v->Health();
-    sp.area = v->AreaCode();
+    sp.area = TrueArea(v);
     sp.lockState = (uint8_t)v->DoorLock();
     sp.script = nv.createdByUs ? nv.script : v->CreatedBy() == VEHICLE_CREATED_MISSION;
+    sp.owned = (Field<uint8_t>(v, 0x42A) & 2) != 0;  // CVehicle::bHasBeenOwnedByPlayer
     sp.extras[0] = Field<int8_t>(v, 0x438), sp.extras[1] = Field<int8_t>(v, 0x439);  // CVehicle::m_anExtras
+    return sp;
+}
+
+void Vehicles::Announce(const NetVehicle& nv) {
     Writer w(proto::G_VEH_CREATE);
-    sp.Write(w);
+    SpawnOf(nv).Write(w);
     Net().Send(proto::CH_RELIABLE, w);
 }
 
@@ -273,8 +301,13 @@ void Vehicles::ApplyLook(NetVehicle& nv) {
     // CVehicle::SetRemap reads the model's four paintjobs at that index, unchecked
     if (nv.look.paintjob >= 0 && nv.look.paintjob < 4 && pj != nv.look.paintjob)
         Cmd(0x06ED).I(h).I(nv.look.paintjob).Run();  // GIVE_VEHICLE_PAINTJOB
-    if (HasDamageManager(v)) ApplyDamage(v, nv.look.damage);
-    else if (v->VehicleSubClass() == VEHICLE_TYPE_BIKE) memcpy((uint8_t*)v + kBikeTyres, nv.look.bikeTyres, 2);
+    // against the owner's damage last shown, not the live state: the rebuild itself rewrites some of it (a door that
+    // cannot be damaged, CAutomobile::SetDoorDamage), and the copy was rebuilt twice a second with parts falling each time
+    if (HasDamageManager(v) && (nv.damageOn != v || memcmp(nv.damageShown, nv.look.damage, sizeof(nv.damageShown)))) {
+        ApplyDamage(v, nv.look.damage);
+        memcpy(nv.damageShown, nv.look.damage, sizeof(nv.damageShown));
+        nv.damageOn = v;
+    } else if (v->VehicleSubClass() == VEHICLE_TYPE_BIKE) memcpy((uint8_t*)v + kBikeTyres, nv.look.bikeTyres, 2);
     // the lock it had when it became known stayed: a mission car locked then held the partner who got in, after the
     // mission it was opened only in the owner's game (the Savanna of "Cesar Vialpando"); same rule as at the spawn
     v->DoorLock() = nv.look.lock == 2 && !nv.script ? 1 : nv.look.lock;
@@ -285,6 +318,7 @@ void Vehicles::TakeOwnership(NetVehicle& nv) {
     nv.owner = Net().MyId();
     nv.hasState = false;
     nv.lastChangeMs = NowMs();
+    nv.damageOn = nullptr;  // a mirror again later: its owner's damage is rebuilt anew
     Release(nv);
     Writer w(proto::G_VEH_OWNER);
     w.U16(nv.netId);
@@ -347,8 +381,8 @@ CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
         // streamed in the background, CreateMirror is retried every frame. A request with no flag lasts one streaming
         // update (CStreaming::PurgeRequestList at its end): a mission's car of a model this game had nowhere lost that race
         // for long, and the people in it waited for it ("Running Dog": the Vagos' car, "Mike Toreno": the van and the
-        // bikers, 28.10). A script's car goes first; the flag clears once its read starts.
-        RequestModel(sp.model, sp.script ? 0x10 /* PRIORITY_REQUEST */ : 0);
+        // bikers, 28.10). A script's car goes first.
+        RequestCopyModel(sp.model, sp.script);
         return nullptr;
     }
     if (!HasRoom(VehiclePool(), kKeepVehicles, "vehicle") && !FreeRandomCar()) return nullptr;
@@ -357,14 +391,26 @@ CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
     // between the two games (27.10).
     auto* comps = (int8_t*)0x8A6458;  // CVehicleModelInfo::ms_compsToUse
     for (int i = 0; i < 2; ++i) comps[i] = sp.extras[i] >= -1 && sp.extras[i] <= 5 ? sp.extras[i] : -2;
+    // CREATE_CAR clears the copy's spot of this game's own cars (ClearSpaceForMissionEntity). One of ours it clears gave
+    // way to the copy and none keeps it (HandleRemove): two games had their own cars on the same spots of a car park,
+    // announced at once, and each one's copy cleared the other's. Every game around kept the cleared ones and announced
+    // them again, those copies cleared each other in turn, a hundred cars in 15 s with four players (08.11).
+    std::vector<uint16_t> ours;
+    for (auto& [id, nv] : m_byId)
+        if (!IsMirror(nv) && Alive(nv)) ours.push_back(id);
     int handle = -1;
     Cmd(0x00A5).I(sp.model).F(sp.pos.x).F(sp.pos.y).F(sp.pos.z).Out(&handle).Run();  // CREATE_CAR
     comps[0] = comps[1] = -2;  // a model with no components takes none: not left for the next car
+    for (uint16_t id : ours)
+        if (NetVehicle* nv = Find(id); nv && !Alive(*nv)) nv->gaveWay = true;
     CVehicle* v = GetVehicle(handle);
     if (!v) return nullptr;
     // CREATE_CAR marks the car as held by a script (CVehicle::bIsLocked), and a tow truck or a tractor never hooks such
     // a car (CAutomobile::TowTruckControl, 0x6A4366); a mission's car stays so, as in its owner's game
     if (!sp.script) v->VehicleFlagsLo() &= ~8u;
+    // CCarCtrl::CreateCarForScript marks it as a player's own (bHasBeenOwnedByPlayer, 0x4321E7): stealing the other game's
+    // traffic was never reported here (#92). As its owner's game has it: a car a player had is no theft.
+    if (!sp.script && !sp.owned) Field<uint8_t>(v, 0x42A) &= ~2u;
     SetVehicleMatrix(v, sp.pos, sp.rot);
     memcpy(v->Colors(), sp.colors, 4);
     v->Health() = sp.health;
@@ -401,8 +447,16 @@ void Vehicles::HandleCreate(uint8_t from, Reader& r) {
     else m_pending[sp.netId] = sp;
 }
 
+// a player rides in it, or it is a script's (a mission's blips and gunners go by its copy): shown wherever it is
+static bool ShownAnywhere(uint16_t netId, bool script) {
+    for (auto& [id, rp] : Players::Instance().All())
+        if (rp.hasState && rp.mode != RemotePlayer::Mode::OnFoot && rp.vehNetId == netId) return true;
+    return script;
+}
+
 bool Vehicles::CreateMirror(const VehicleSpawn& sp) {
     if (Find(sp.netId)) return true;  // announced again meanwhile and made already
+    if (!ShownAnywhere(sp.netId, sp.script) && FarFromUs(sp.pos, sp.area, kTrafficIn)) return false;  // waits in m_pending
     bool adopted = false;
     CVehicle* v = FindAdoptable(sp.model, sp.pos);
     if (v) {
@@ -423,6 +477,7 @@ bool Vehicles::CreateMirror(const VehicleSpawn& sp) {
     nv.createdByUs = !adopted;
     nv.script = sp.script;
     if (adopted) Protect(nv);
+    SetApart(nv, nv.script && OwnSchool());  // now: a frame of it inside our lesson's car is enough
     m_byPtr[v] = sp.netId;
     LOGI("Vehicle %04X (model %d) %s for player %d", sp.netId, sp.model, adopted ? "adopted" : "created", sp.owner);
     return true;
@@ -459,11 +514,39 @@ void Vehicles::Protect(NetVehicle& nv) {
 // game stays a mission car: dropping it here would make the owner drop it in the middle of its mission)
 void Vehicles::Release(NetVehicle& nv) {
     CVehicle* v = nv.veh;
+    if (IsVehicleValid(v)) {
+        SetApart(nv, false);
+        if (nv.noCollision) v->Flags() |= 1u;  // CEntity::m_bUsesCollision
+    }
+    nv.noCollision = false;
     if (nv.crashProofHere && IsVehicleValid(v)) v->PhysicalFlags() &= ~CPhysical::PF_COLLISION_PROOF;
     nv.crashProofHere = false;
     uint8_t by = nv.createdByUs ? (nv.script ? VEHICLE_CREATED_MISSION : VEHICLE_CREATED_RANDOM) : nv.origBy;
     if (IsVehicleValid(v) && by && v->CreatedBy() != by && !ScriptHolds(v)) SetVehicleCreatedBy(v, by);
     nv.origBy = 0;
+}
+
+// Both players at one school: each game's script puts its lesson's car on one spot, and the copy of the other game's
+// stood inside it. The two threw each other about, burnt or blew up, or the lesson failed. While our player
+// is at a school a car the other game's script holds is not here: not drawn and touched by nothing, so its cones stay up
+// for the lesson here too. With no collision it has no gravity either (CPhysical::ApplyGravity): the states carry it.
+void Vehicles::SetApart(NetVehicle& nv, bool on) {
+    if (on == nv.apart) return;
+    nv.apart = on;
+    if (on) nv.veh->Flags() &= ~0x81u;  // CEntity: m_bUsesCollision, m_bIsVisible
+    else nv.veh->Flags() |= nv.noCollision ? 0x80u : 0x81u;
+    LOGI("Vehicle %04X (model %d) of the other game's school: %s", nv.netId, nv.model, on ? "not here for our lesson" : "back");
+}
+
+// A car of the other game this player took, left by the door that player went in at: that game keeps its own instance for
+// its player's way out (KeepCarWhileInside). Let go here it was two cars: that game announced its instance on top of ours as
+// soon as we stood by it (found 04.11).
+static bool ByTheirDoor(CVehicle* v) {
+    CVector p = v->GetPosition();
+    for (auto& [id, rp] : Players::Instance().All())
+        if (rp.hasState && rp.state.area != 0 && rp.streetPos.x != 0.0f && TrueArea(v) == 0 && (rp.streetPos - p).Length() < kTrafficOut)
+            return true;
+    return false;
 }
 
 // The owner let the vehicle go: a mirror spawned here goes too (unless this player sits in it), an instance this game had
@@ -536,12 +619,21 @@ bool Vehicles::KeepsWhenDeleted(const NetVehicle& nv) const {
     if (!Net().IsHost() && HostMissionRecent(0)) return false;
     int type = v->VehicleSubClass();
     bool aircraft = type == VEHICLE_TYPE_HELI || type == VEHICLE_TYPE_PLANE || type == VEHICLE_TYPE_FHELI || type == VEHICLE_TYPE_FPLANE;
-    return !aircraft && type != VEHICLE_TYPE_TRAIN && v->AreaCode() == me->AreaCode() &&
-           (v->GetPosition() - me->GetPosition()).Length() < 80.0f;
+    constexpr float kNear = 80.0f;
+    if (aircraft || type == VEHICLE_TYPE_TRAIN || v->AreaCode() != me->AreaCode() || (v->GetPosition() - me->GetPosition()).Length() >= kNear)
+        return false;
+    // One game keeps it: the host's if its player is by it, between the others the lowest id's (as HandleOwner), the rest
+    // get its announcement. Each of three games by a car kept it and announced it as its own, their copies on one spot (08.11).
+    for (auto& [id, rp] : Players::Instance().All())
+        if (id != nv.owner && !Net().IsHost() && (id == Net().HostId() || id < Net().MyId()) && rp.hasState &&
+            NowMs() - rp.stateRecvMs < 1500 && rp.state.area == v->AreaCode() && (rp.state.pos - v->GetPosition()).Length() < kNear)
+            return false;
+    return true;
 }
 
 void Vehicles::HandleRemove(uint8_t from, Reader& r) {
     uint16_t id = r.U16();
+    bool gaveWay = r.U8() != 0;  // the copy of another game's car took its spot there (SpawnMirror): that car stands here
     if (!r.Ok()) return;
     m_pending.erase(id);
     NetVehicle* nv = Find(id);
@@ -557,7 +649,8 @@ void Vehicles::HandleRemove(uint8_t from, Reader& r) {
             return Forget(id, true);
         }
     }
-    if (KeepsWhenDeleted(*nv)) {
+    if (gaveWay) LOGI("Vehicle %04X (model %d): it gave way to the copy of another player's car there: gone", id, nv->model);
+    else if (KeepsWhenDeleted(*nv)) {
         LOGI("Vehicle %04X (model %d): its owner deleted it by us: kept", id, nv->model);
         return TakeOver(*nv, from);
     }
@@ -656,6 +749,8 @@ void Vehicles::HandleSync(uint8_t from, Reader& r) {
 
 void Vehicles::ApplyDriverState(uint8_t from, uint16_t netId, const VehicleState& st) {
     NetVehicle* nv = Find(netId);
+    if (auto it = nv ? m_pending.end() : m_pending.find(netId); it != m_pending.end() && it->second.owner == from)
+        it->second.pos = st.pos, it->second.rot = st.rot;  // held back by FarFromUs: it comes where it is then
     if (!nv || nv->owner != from) return;
     if (nv->hasState && (int32_t)(st.time - nv->lastTime) < 0) return;
     if ((st.flags ^ (nv->hasState ? nv->state.flags : 0)) & VehicleState::F_HORN)
@@ -673,6 +768,7 @@ void Vehicles::HandleOwner(uint8_t from, Reader& r) {
     uint8_t owner = r.U8();
     if (!r.Ok()) return;
     NetVehicle* nv = Find(id);
+    if (auto it = nv ? m_pending.end() : m_pending.find(id); it != m_pending.end()) it->second.owner = owner;
     if (!nv) return;
     CPlayerPed* me = FindPlayerPed(0);
     bool iDrive = me && nv->veh && me->InVehicle() && me->Vehicle() == nv->veh && nv->veh->Driver() == me;
@@ -797,6 +893,14 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
         Cmd(0x020B).I(nv.handle).Run();  // EXPLODE_CAR: it blew up in the owner's game
         return;
     }
+    // "Robbing Uncle Sam" loads its van through a hollow object in the van's place, the van's collision off and the van
+    // frozen (FAKE_MULE_COL). The object's copy stood solid inside a copy that still collided and pushed it away, the boxes
+    // on it left in the air where the van really was (04.11).
+    if (bool off = (st.flags & VehicleState::F_NO_COLLISION) != 0; off != nv.noCollision) {
+        nv.noCollision = off;
+        if (off) v->Flags() &= ~1u;  // CEntity::m_bUsesCollision
+        else if (!nv.apart) v->Flags() |= 1u;
+    }
     // towed in its owner's game: hooked here to the copy of its tower too. A tow truck or a tractor hooks a car only by
     // its driver's pad (CAutomobile::TowTruckControl); linked, the two stop colliding and the hoist holds it up
     CVehicle* tower = nullptr;
@@ -811,7 +915,7 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
     if (!wreck && v->Driver() != me && v->VehicleSubClass() != VEHICLE_TYPE_TRAILER && !tower) v->SetStatus(STATUS_PHYSICS);
 
     // Struck by our player's car: driven to its owner's place each frame, the copy stood like a wall in the car's way and
-    // stopped it (Duke Nukem, 27.10), its owner's game learning of the hit only from its copy of our car. For a moment
+    // stopped it (27.10), its owner's game learning of the hit only from its copy of our car. For a moment
     // after a touch it goes by the hit here as a car of this game would, then eases back to where its owner has it.
     if (CVehicle* mine = me && me->InVehicle() && me->Vehicle() && me->Vehicle()->Driver() == me ? me->Vehicle() : nullptr;
         mine && mine != v && !HasPlayerInside(v) && !Aircraft(v) &&
@@ -894,19 +998,36 @@ void Vehicles::OnPreProcess() {
     for (auto it = m_pending.begin(); it != m_pending.end();)
         it = CreateMirror(it->second) ? m_pending.erase(it) : std::next(it);
     float dt = TimeStep() / 50.0f;
-    std::vector<uint16_t> dead;
+    bool school = OwnSchool();
+    CPlayerPed* me = FindPlayerPed(0);
+    std::vector<uint16_t> dead, far;
     for (auto& [id, nv] : m_byId) {
-        if (!nv.veh || !IsVehicleValid(nv.veh) || nv.veh->ModelIndex() != nv.model) {
+        // A car deleted and another of its model made in its slot within one frame: the pointer still looks fine, the
+        // handle finds nothing, and ApplyLook's GET_CURRENT_VEHICLE_PAINTJOB gave the game no car (#93, "Small Town
+        // Bank": CVehicle::GetRemapIndex on null at 0x6D0B73)
+        if (!nv.veh || !IsVehicleValid(nv.veh) || nv.veh->ModelIndex() != nv.model || GetVehicle(nv.handle) != nv.veh) {
             dead.push_back(id);
             continue;
         }
-        if (IsMirror(nv)) ApplyMirror(nv, dt);
+        if (IsMirror(nv)) {
+            SetApart(nv, school && nv.script && !(me->InVehicle() && me->Vehicle() == nv.veh));
+            ApplyMirror(nv, dt);
+            if (nv.createdByUs && !HasPlayerInside(nv.veh) && !ShownAnywhere(id, nv.script) &&
+                FarFromUs(nv.veh->GetPosition(), TrueArea(nv.veh), kTrafficOut))
+                far.push_back(id);
+        }
+    }
+    for (uint16_t id : far) {  // near a third player, no more near ours: it comes back from the states with the first one near
+        VehicleSpawn sp = SpawnOf(*Find(id));
+        Forget(id, true);
+        m_pending[id] = sp;
     }
     for (uint16_t id : dead) {
         NetVehicle* nv = Find(id);
         if (nv && !IsMirror(*nv)) {
             Writer w(proto::G_VEH_REMOVE);
             w.U16(id);
+            w.U8(nv->gaveWay);
             Net().Send(proto::CH_RELIABLE, w);
         }
         if (nv) m_byPtr.erase(nv->veh);
@@ -933,13 +1054,20 @@ void Vehicles::ScanTraffic() {
     CPoolHeader* pool = VehiclePool();
     if (!pool) return;
     std::vector<uint16_t> gone;
+    // our remote-controlled toy goes out wherever it flies: the other game learns from it where we look (RcToys)
+    CVehicle* toy = PlayerInfos()[0].remoteVehicle;
+    // and the one our player is a gunner on: the partner goes onto its copy from anywhere, and that copy went from under it
+    // as the mission flew the helicopter 840 m off in one frame ("The Da Nang Thang", 04.11)
+    CEntity* onVehicle = FindPlayerPed(0)->AttachedTo();
     for (auto& [id, nv] : m_byId)
-        if (!IsMirror(nv) && IsVehicleValid(nv.veh) && !HasPlayerInside(nv.veh) &&
-            RemoteDistance(nv.veh->GetPosition(), nv.veh->AreaCode()) > (Aircraft(nv.veh) ? kAirOut : kTrafficOut))
+        if (!IsMirror(nv) && IsVehicleValid(nv.veh) && !HasPlayerInside(nv.veh) && nv.veh != toy && (CEntity*)nv.veh != onVehicle &&
+            RemoteViewDistance(nv.veh->GetPosition(), TrueArea(nv.veh)) > (Aircraft(nv.veh) ? kAirOut : kTrafficOut) &&
+            !(nv.createdByUs && ByTheirDoor(nv.veh)))
             gone.push_back(id);
     for (uint16_t id : gone) {
         Writer w(proto::G_VEH_REMOVE);
         w.U16(id);
+        w.U8(0);
         Net().Send(proto::CH_RELIABLE, w);
         // a copy of the other game's car this player took: off the network an ordinary car (a mission one stayed forever)
         if (NetVehicle* nv = Find(id); nv && nv->createdByUs && IsVehicleValid(nv->veh) &&
@@ -952,14 +1080,20 @@ void Vehicles::ScanTraffic() {
     for (int i = 0; i < pool->size; ++i) {
         if (pool->byteMap[i] < 0) continue;
         auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
-        if (m_byPtr.count(v) || !IsSyncableVehicle(v) || (m_local.count(GetVehicleRef(v)) && !v->Driver())) continue;
-        if (RemoteDistance(v->GetPosition(), v->AreaCode()) < (Aircraft(v) ? kAirIn : kTrafficIn)) EnsureNetworked(v);
+        // a local car goes out once a player drives it (a mod's garbage truck with its own driver stays local)
+        if (m_byPtr.count(v) || !IsSyncableVehicle(v) || (m_local.count(GetVehicleRef(v)) && !HasPlayerInside(v))) continue;
+        // A car generator's car far from its player: the game took it away out of the camera at once and made it again,
+        // 37 burglary vans in 10 minutes 144 m from the host at the driving school (03.11), and each one went out and was
+        // made and deleted in the other game. A parked car goes out once it has stood 5 s (CVehicle::m_nCreationTime).
+        if (v->CreatedBy() == VEHICLE_CREATED_PARKED && !HasPlayerInside(v) && Ref<uint32_t>(0xB7CB84) - Field<uint32_t>(v, 0x430) < 5000)
+            continue;
+        if (v == toy || RemoteViewDistance(v->GetPosition(), TrueArea(v)) < (Aircraft(v) ? kAirIn : kTrafficIn)) EnsureNetworked(v);
     }
 }
 
 void Vehicles::KeepLocal(CVehicle* v) {
     if (!v || !m_local.insert(GetVehicleRef(v)).second) return;
-    LOGD("Vehicle %d (model %d) of the police impound stays this game's", GetVehicleRef(v), (int)v->ModelIndex());
+    LOGD("Vehicle %d (model %d) of the police impound or another mod's script stays this game's", GetVehicleRef(v), (int)v->ModelIndex());
 }
 
 // The car the player came in waits outside while the player is in an interior. An interior lies kilometres from its
@@ -989,11 +1123,60 @@ void Vehicles::ReleaseKeptCar() {
     m_kept = -1;
 }
 
+// An empty car of ours where this game has no ground: its player went far or into an interior while the other player
+// stays by the car. Parked, it stood; touched (the other player's copy opening its door here, a bump) it woke and fell
+// through the map, and the other game's copy went down with it, the other player getting in too (03.11, 0.3.2:
+// the partner in Binco, the host at the partner's Savanna; "на расстоянии у напарника часто такое"). It is held still
+// here (FREEZE_CAR_POSITION's flag) till the ground is back, our player sits in it or it is not ours any more: whoever
+// takes the wheel drives it in its own game, which has the ground. The other player's copy getting in as a passenger
+// keeps it held (it would wake it). A car with somebody else of ours in it (traffic) is the game's own business (its
+// ghost mode). The game holds its own mission entities so (m_bIsStaticWaitingForCollision).
+void Vehicles::HoldCarsWithoutGround() {
+    auto frozen = [](CVehicle* v) { return (Field<uint32_t>(v, 0x40) & 0x2000) != 0; };  // CPhysical::bDontApplySpeed
+    CPlayerPed* me = FindPlayerPed(0);
+    auto oursInside = [me](CVehicle* v) { return me && me->InVehicle() && me->Vehicle() == v; };
+    auto peopleInside = [](CVehicle* v) {  // anyone but the players (their copies included)
+        if (v->Driver() && !v->Driver()->IsPlayer()) return true;
+        for (int i = 0; i < 8; ++i)
+            if (v->Passengers()[i] && !v->Passengers()[i]->IsPlayer()) return true;
+        return false;
+    };
+    auto ground = [](CVehicle* v) {
+        CVector p = v->GetPosition();
+        return Call<0x410CE0, bool>(&p, (int)TrueArea(v));  // CColStore::HasCollisionLoaded
+    };
+    // let go at once (our player just got in), held every half second
+    for (auto it = m_heldNoGround.begin(); it != m_heldNoGround.end();) {
+        CVehicle* v = GetVehicle(*it);
+        NetVehicle* nv = v ? Find(v) : nullptr;
+        if (nv && !IsMirror(*nv) && !oursInside(v) && !peopleInside(v) && !ground(v)) {
+            ++it;
+            continue;
+        }
+        if (v && frozen(v)) Cmd(0x0519).I(*it).I(0).Run();  // FREEZE_CAR_POSITION off
+        LOGI("Vehicle %d: the ground is here again or the car is not ours: it moves again", *it);
+        it = m_heldNoGround.erase(it);
+    }
+    if (NowMs() - m_groundCheckMs < 500) return;
+    m_groundCheckMs = NowMs();
+    for (auto& [id, nv] : m_byId) {
+        CVehicle* v = nv.veh;
+        if (IsMirror(nv) || !IsVehicleValid(v) || oursInside(v) || peopleInside(v) || ScriptHolds(v) || frozen(v) ||
+            v->Status() == STATUS_WRECKED || Field<CVehicle*>(v, 0x4C4) || Field<CVehicle*>(v, 0x4C8) || ground(v))  // towing, towed
+            continue;
+        int h = GetVehicleRef(v);
+        Cmd(0x0519).I(h).I(1).Run();  // FREEZE_CAR_POSITION
+        m_heldNoGround.insert(h);
+        LOGI("Vehicle %04X (model %d): no ground under it in this game, held still", id, nv.model);
+    }
+}
+
 void Vehicles::OnPostProcess() {
     if (!Net().Online() || !core::IsPlayerReady()) return;
     CPlayerPed* me = FindPlayerPed(0);
     uint64_t now = NowMs();
     KeepCarWhileInside(me);
+    HoldCarsWithoutGround();
     for (auto& [v, to] : m_giveAway)  // still ours and still free to go
         if (NetVehicle* nv = IsVehicleValid(v) ? Find(v) : nullptr; nv && !IsMirror(*nv) && CanGiveAway(v)) GiveAway(*nv, to);
     m_giveAway.clear();
@@ -1084,15 +1267,23 @@ void Vehicles::OnPeerLeave(uint8_t id) {
         it = it->second.owner == id ? m_pending.erase(it) : std::next(it);
     // The vehicles of the leaving player stay in the world and become ours (its scripts are gone with it). They are
     // networked again under our own ids: its ids, kept, came again from its game when it rejoined (it counts from 1).
-    std::vector<uint16_t> ids;
+    // With other games left only one keeps them (WeInherit), and it announces them.
+    bool heir = WeInherit(id);
+    CPlayerPed* me = FindPlayerPed(0);
+    std::vector<uint16_t> ids, gone;
     for (auto& [vid, nv] : m_byId)
         if (nv.owner == id) {
+            if (!heir && !(me && me->InVehicle() && me->Vehicle() == nv.veh)) {
+                gone.push_back(vid);
+                continue;
+            }
             nv.owner = Net().MyId();
             nv.script = false;
             Release(nv);
             ids.push_back(vid);
         }
     for (uint16_t vid : ids) Forget(vid, false);
+    for (uint16_t vid : gone) Forget(vid, true);
 }
 
 void Vehicles::OnSessionStart() {
@@ -1102,6 +1293,7 @@ void Vehicles::OnSessionStart() {
 void Vehicles::OnGameStarted() {
     m_lastDriven = m_kept = -1;  // a new world: the old handles mean other cars
     m_lastArea = 0;
+    m_heldNoGround.clear();
     m_byId.clear();
     m_byPtr.clear();
     m_pending.clear();

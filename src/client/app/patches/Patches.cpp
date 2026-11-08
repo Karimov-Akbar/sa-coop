@@ -47,8 +47,10 @@ void __cdecl HookIdleMouseSetPos(void* pos) {
 
 using PadFn = void(__fastcall*)(void*, void*);
 PadFn g_origUpdateMouse = nullptr;
+bool g_buttonsWaitUp = false;  // a window let the mouse go: its buttons reach the game once they are let go
 void __fastcall HookUpdateMouse(void* self, void* edx) {
     if (ui::In().MouseCaptured()) {
+        g_buttonsWaitUp = true;
         if (ui::In().CursorFromGameMouse()) {  // exclusive fullscreen: our cursor moves by the game's reading of the mouse
             g_origUpdateMouse(self, edx);
             auto* s = (uint8_t*)0xB73418;  // CPad::NewMouseControllerState, the game's menu settings' inversion undone
@@ -61,6 +63,11 @@ void __fastcall HookUpdateMouse(void* self, void* edx) {
         return;
     }
     g_origUpdateMouse(self, edx);
+    // A window's buttons act on the press, and the window closed with the button still down: the game took it for a new
+    // press, and "Play" in the U window threw a punch before the animation (03.11)
+    auto* s = (uint8_t*)0xB73418;  // lmb, rmb, mmb, wheel up and down, side buttons 1 and 2
+    if (g_buttonsWaitUp && (s[0] || s[1] || s[2] || s[5] || s[6])) memset(s, 0, 7);
+    else g_buttonsWaitUp = false;
 }
 
 // ---------------------------------------------------------------- pause
@@ -103,7 +110,7 @@ void __cdecl HookUpdatePads() {
 }
 // F1 plays the last seconds again (CReplay), F3 a replay saved on the disk: in a session it stopped this world alone, and
 // the copy of the other player, a PLAYER1 ped with no clothes of its own in the recording, crashed the playback
-// (ThomasAckles, 29.10: CReplay::RestoreClothesDesc reading a missing record, 0x45C7D4).
+// (29.10: CReplay::RestoreClothesDesc reading a missing record, 0x45C7D4).
 using TriggerReplayFn = void(__cdecl*)(uint8_t, float, float, float, bool);
 TriggerReplayFn g_origTriggerReplay = nullptr;
 void __cdecl HookTriggerReplay(uint8_t camMode, float x, float y, float z, bool loadScene) {
@@ -340,11 +347,13 @@ void __cdecl HookConstructPedModel(uint32_t model, void* clothes, const void* ol
         auto* desc = (const uint32_t*)clothes;  // CPedClothesDesc: m_anModelKeys[10], m_anTextureKeys[18], fat, muscle
         uint32_t safe[0x78 / 4];
         bool cut = false;
-        for (int i = 0; i < 5; ++i) {  // necklace, watch, glasses, hat, extra1: models 4-8, textures 13-17
+        // necklace, watch, glasses, hat, extra1: models 5-9 (4 is the shoes), textures 13-17. Models 4-8 took off the
+        // neighbour's: no "extra1" cost the host's hat in every cutscene, no "necklace" the shoes (30.10)
+        for (int i = 0; i < 5; ++i) {
             const char* name = game::Ref<const char*>(0x8D0A7C + (uintptr_t)(5 + i) * 4);
-            if (!desc[4 + i] || game::Call<0x7F39F0, void*>(dict, name)) continue;  // RwTexDictionaryFindNamedTexture
+            if (!desc[5 + i] || game::Call<0x7F39F0, void*>(dict, name)) continue;  // RwTexDictionaryFindNamedTexture
             if (!cut) memcpy(safe, desc, sizeof safe), cut = true;
-            safe[4 + i] = safe[10 + 13 + i] = 0;
+            safe[5 + i] = safe[10 + 13 + i] = 0;
             LOGW("Cutscene CJ: no \"%s\" texture for its accessory, built without it", name);
         }
         if (cut) return g_origConstructPedModel(model, safe, old, cutscene);
@@ -713,6 +722,14 @@ game::CVehicle* __cdecl HookCreateCarForScript(int model, game::CVector pos, uin
     // game's stood on top of them (28.10)
     void* s = Net().Online() && !game::script::Running() ? CurrentScript() : nullptr;
     if (v && s && !_strnicmp((const char*)s + 0x08, "impnd", 8)) Vehicles::Instance().KeepLocal(v);  // CRunningScript::m_szName
+    // Another mod's script (Busy Pedestrian, Urbanize: CLEO scripts that park cars at fixed spots and send garbage trucks
+    // out): each game makes its own, and the copies of the other game's stood inside them and blew up (30.10).
+    // Its code lies outside main.scm's space and it is not a streamed script (m_bIsExternal), as in #36.
+    if (v && s && !game::Field<uint8_t>(s, 0xC7)) {
+        auto* ip = game::Field<uint8_t*>(s, 0x14);  // CRunningScript::m_pCurrentIP
+        if (ip < (uint8_t*)game::addr::ScriptSpace || ip >= (uint8_t*)game::addr::ScriptSpace + 200000 + 69000)
+            Vehicles::Instance().KeepLocal(v);
+    }
     return v;
 }
 
@@ -727,6 +744,88 @@ ClearSpaceFn g_origClearSpace = nullptr;
 void __cdecl HookClearSpace(const game::CVector& pos, game::CEntity* entity) {
     if (game::script::Running() && entity && !entity->IsVehicle() && entity != (game::CEntity*)game::FindPlayerPed(0)) return;
     g_origClearSpace(pos, entity);
+}
+
+// A procedural object (the rocks, bushes and litter CPlantMgr lays on the ground: ProcObjectMan_c) deleted by anyone but
+// its manager stayed on the manager's list, and when its ground went out of range ProcessTriangleRemoved (0x5A3F70)
+// called the dead object's DeleteRwObject through the CPlaceable table its destructor left (#99: five crashes at
+// 0x49646550 near Angel Pine, each time the breakable rock "rockbrkq"). Who deletes it is not known yet: its item leaves
+// the list as the manager's own removal takes it off, and the deleting code's address goes to the log.
+constexpr uintptr_t kProcObjMan = 0xBB7CB0;  // g_procObjMan: +0 matrices given out, +4 surface kinds, +8 those (0x48 each)
+std::string CodeAt(void* addr) {
+    HMODULE mod = nullptr;
+    wchar_t path[MAX_PATH];
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr, &mod) ||
+        !GetModuleFileNameW(mod, path, MAX_PATH))
+        return Format("%08X", (unsigned)(uintptr_t)addr);
+    const wchar_t* name = wcsrchr(path, L'\\');
+    return Format("%08X (%s+%X)", (unsigned)(uintptr_t)addr, WideToUtf8(name ? name + 1 : path).c_str(),
+                  (unsigned)((uintptr_t)addr - (uintptr_t)mod));
+}
+void ForgetProcObject(void* object, void* by) {
+    int kinds = std::min(game::Ref<int32_t>(kProcObjMan + 4), 128);
+    for (int i = 0; i < kinds; ++i) {
+        void* list = (void*)(kProcObjMan + 8 + (uintptr_t)i * 0x48 + 0x3C);  // ProcSurfaceInfo_c::m_Objects
+        for (void* item = game::Ref<void*>((uintptr_t)list); item; item = game::Field<void*>(item, 4)) {
+            if (game::Field<void*>(item, 8) != object) continue;  // ProcObjectListItem::m_Obj
+            game::CallMethod<0x4A8E30>(list, item);                            // List_c::RemoveItem
+            game::CallMethod<0x4A8DF0>((void*)(kProcObjMan + 0x4C08), item);  // List_c::AddItem: the manager's free items
+            game::Field<void*>(item, 8) = nullptr;
+            if (uint16_t& temps = game::Ref<uint16_t>(0xBB4A70); temps) --temps;  // CObject::nNoTempObjects: counted it
+            if (uint8_t& matrix = game::Field<uint8_t>(item, 0x10); matrix) --game::Ref<int32_t>(kProcObjMan), matrix = 0;
+            static int told = 0;
+            if (told++ < 5)
+                LOGW("A procedural object (model %d) deleted by %s, not by its manager: off its list", game::Field<int16_t>(object, 0x22),
+                     CodeAt(by).c_str());
+            return;
+        }
+    }
+}
+using ObjectDeleteFn = void*(__fastcall*)(void*, void*, int);
+ObjectDeleteFn g_origObjectDelete = nullptr;
+void* __fastcall HookObjectDelete(void* object, void* edx, int flags) {  // CObject's deleting destructor, its vtable's first
+    if (game::Field<uint32_t>(object, 0x1C) & 0x04000000) ForgetProcObject(object, __builtin_return_address(0));  // m_bIsProcObject
+    static int told = 0;
+    if (!(flags & 1) && told++ < 5)  // destroyed and kept: the dead objects below
+        LOGW("An object (model %d) destroyed without its slot given back, by %s", game::Field<int16_t>(object, 0x22),
+             CodeAt(__builtin_return_address(0)).c_str());
+    return g_origObjectDelete(object, edx, flags);
+}
+
+// A destroyed object left in the object pool: its slot still taken, its table the one its destructors leave (CPlaceable's).
+// The population's next look at it called its Remove through that table and the game crashed at 0x42480000 (a player's
+// eight crashes in a gym, 02.11; one in CWorld::ClearForRestart's DeleteAllMissionObjects on a load). Who leaves it is not
+// known yet: its slot is given back as CPool::Delete gives it, and what it was goes to the log.
+bool FreeIfDead(void* o) {
+    if (game::Field<uintptr_t>(o, 0) != 0x863C40) return false;  // CPlaceable's vtable
+    game::CPoolHeader* pool = game::ObjectPool();
+    ptrdiff_t off = (uint8_t*)o - pool->objects;
+    int i = (int)(off / game::kObjectPoolElemSize);
+    if (off < 0 || off % game::kObjectPoolElemSize || i >= pool->size || pool->byteMap[i] < 0) return false;
+    static int told = 0;
+    if (told++ < 5) {
+        const auto& at = game::Field<game::CVector>(o, 0x04);  // CPlaceable::m_placement: where it was made, at least
+        LOGW("A destroyed object (model %d, type %d, handle %d, near %.0f %.0f %.0f) was left in the object pool: its slot "
+             "given back", game::Field<int16_t>(o, 0x22), game::Field<uint8_t>(o, 0x13C), (i << 8) | (pool->byteMap[i] & 0x7F),
+             at.x, at.y, at.z);
+    }
+    pool->byteMap[i] = (int8_t)(pool->byteMap[i] | 0x80);
+    if (i < pool->firstFree) pool->firstFree = i;
+    return true;
+}
+
+using ManageObjectFn = void(__cdecl*)(void*, const game::CVector&);
+ManageObjectFn g_origManageObject = nullptr;
+void __cdecl HookManageObject(void* object, const game::CVector& centre) {
+    if (!FreeIfDead(object)) g_origManageObject(object, centre);
+}
+
+VoidFn g_origDeleteMissionObjects = nullptr;
+void __cdecl HookDeleteAllMissionObjects() {  // a load's: every slot first
+    game::CPoolHeader* pool = game::ObjectPool();
+    for (int i = 0; i < pool->size; ++i)
+        if (pool->byteMap[i] >= 0) FreeIfDead(pool->objects + (size_t)i * game::kObjectPoolElemSize);
+    g_origDeleteMissionObjects();
 }
 
 }  // namespace
@@ -804,6 +903,16 @@ void Apply() {
     } else {
         LOGW("Stream cache patch skipped: unexpected bytes at 0x406BC8 (another mod has it)");
     }
+    // The pool of col models (CPools::Initialise): the map takes nearly all of its 10150 for good and every vehicle and ped
+    // model in memory one more. The streets of two players hold more of those than one player's: a ped model loaded with the
+    // pool full crashed the partner's game (05.11, CPedModelInfo::CreateHitColModelSkinned does not check its new CColModel).
+    static const uint8_t kColModels[] = {0x68, 0xA6, 0x27, 0x00, 0x00};  // push 10150
+    if (mem::Check(0x551106, kColModels, sizeof kColModels)) {
+        static const uint8_t kMoreColModels[] = {0x68, 0x20, 0x4E, 0x00, 0x00};  // push 20000
+        mem::Write(0x551106, kMoreColModels, sizeof kMoreColModels);
+    } else {
+        LOGW("Col model pool left as it is: unexpected bytes at 0x551106 (another mod has it)");
+    }
     // only in an exe whose CdStreamSync was moved out there (0x406460: jmp 0x156CD80): another one has nothing at 0x156CDAE
     static const uint8_t kSyncMoved[] = {0xE9, 0x1B, 0x69, 0x16, 0x01};
     static const uint8_t kSyncWait[] = {0xFF, 0x15, 0x88, 0x80, 0x85, 0x00};  // call [__imp_WaitForSingleObject]
@@ -844,6 +953,9 @@ void Apply() {
     InstallGrabScreenFix();
     mem::RedirectCallFn(0x5A8235, &HookRequestMotionGroupAnims, &g_origMotionAnims);  // CClothes::ConstructPedModel
     mem::HookFn(0x5A81E0, &HookConstructPedModel, &g_origConstructPedModel, "CClothes::ConstructPedModel");
+    g_origObjectDelete = (ObjectDeleteFn)mem::SwapVTable((void**)0x866F60, 0, (void*)&HookObjectDelete);  // CObject's vtable
+    mem::HookFn(0x615DC0, &HookManageObject, &g_origManageObject, "CPopulation::ManageObject");
+    mem::HookFn(0x5A1910, &HookDeleteAllMissionObjects, &g_origDeleteMissionObjects, "CObject::DeleteAllMissionObjects");
     if (cfg.windowed) {
         InstallWindowedMode();
         mem::HookFn(0x745C70, &HookSetVideoMode, &g_origSetVideoMode, "SetVideoMode");

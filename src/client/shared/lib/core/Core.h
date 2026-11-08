@@ -45,6 +45,7 @@ void Notify(const std::string& utf8, uint32_t argb = 0xFFFFFFFF);  // message in
 void RequestScreenshot(const std::string& bmpPath, bool withOverlay = false, int scale = 2, uint32_t delayMs = 0);
 void ShowConnectMenu(bool show);
 bool ConnectMenuVisible();
+bool InterfaceHidden();  // F7: the game's HUD and our chat and labels are not drawn (the windows a key opens are)
 
 // Game flow
 bool LoadSaveFile(const std::wstring& path);   // loads an arbitrary save file (from menu or in game)

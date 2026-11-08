@@ -22,6 +22,10 @@
 #include "shared/ui/chat/Chat.h"
 #include "shared/ui/renderer/Renderer.h"
 
+extern "C" void CoopDriverDriveByStub();
+extern "C" void CoopDriveByWeaponStub();
+extern "C" void CoopRocketCrossHairStub();
+
 namespace coop {
 
 using namespace game;
@@ -37,7 +41,17 @@ struct Reg {
     Reg() { core::RegisterModule(&Players::Instance()); }
 } g_reg;
 
-constexpr int kRemoteSlot = 1;  // CWorld::Players index used for the remote player while it is processed
+constexpr int kRemoteSlot = 1;  // CWorld::Players index used for the remote players while each is processed
+// A CPlayerPed keeps its data in its slot's CPlayerInfo (the constructor takes CWorld::Players[n].m_PlayerData), and every
+// copy is made in the one slot: a third player's copy would share the wanted level, clothes and look pitch of the second's.
+// Each has a block of its own by its player's id. What the constructor allocates there stays for its next copy, as in a
+// slot: the game frees a slot's data only at its exit (CWorld::ShutDown).
+constexpr size_t kPlayerDataSize = 0xAC;  // sizeof(CPlayerPedData)
+alignas(8) uint8_t g_copyData[proto::kMaxPlayers][kPlayerDataSize];
+void* SlotData() { return (uint8_t*)PlayerInfo(kRemoteSlot) + 4; }  // CPlayerInfo::m_PlayerData
+// A CPlayerPed takes one of the game's 8 ped groups and nothing gives it back when the ped goes: the copies share one (their
+// group work runs in their own games, HookGroupBehaviour), or each new copy after a death held one more for good.
+int g_copyGroup = -1;
 constexpr int kLastWeapon = 46;  // eWeaponType: the parachute
 constexpr int kCellphone = 330;  // MODEL_CELLPHONE
 constexpr float kTeleportDist = 5.0f;
@@ -147,6 +161,8 @@ void ApplyRemote(RemotePlayer& rp) {
     memset(&p0->bApplyBrakes, 0, 8);
     PlayerInFocus() = (int8_t)kRemoteSlot;
     PlayerInfo(kRemoteSlot)->ped = rp.ped;
+    memcpy(SlotData(), rp.ped->PlayerData(), 8);  // m_pWanted, m_pPedClothesDesc: FindPlayerWanted reads the slot's
+    Field<uint8_t>(PlayerInfo(kRemoteSlot), 0x153) = rp.canDriveBy;
     const CameraState& c = rp.state.cam;
     cam::Mode() = c.mode;
     cam::WeaponMode() = c.weaponMode;
@@ -160,7 +176,12 @@ void ApplyRemote(RemotePlayer& rp) {
     cam::UseMouse3rdPerson() = c.useMouse3rd ? 1 : 0;
     cam::CrosshairMultX() = c.chairX;
     cam::CrosshairMultY() = c.chairY;
-    if (rp.ped->PlayerData()) rp.ped->LookPitch() = c.lookPitch;
+    // A first-person aim (MODE_SNIPER, MODE_ROCKETLAUNCHER, MODE_M16_1STPERSON, MODE_CAMERA, MODE_ROCKETLAUNCHER_HS)
+    // leaves the look pitch where a third-person aim left it, only CCam::Process_AimWeapon sets it: the copy held its
+    // sniper rifle up while its owner aimed down (02.11). Its pitch is its camera's then.
+    bool firstPerson = c.mode == 7 || c.mode == 8 || c.mode == 34 || c.mode == 46 || c.mode == 51;
+    if (rp.ped->PlayerData())
+        rp.ped->LookPitch() = firstPerson ? -std::atan2(c.front.z, std::hypot(c.front.x, c.front.y)) : c.lookPitch;
     // A task walks its owner (the walk-in through a shop's door, a script's go-to) while its pad is still: the copy slid
     // along standing and spun round. Its stick here is the one that walks it the same way: the game turns a player to
     // atan2(-x, -y) of the stick less the camera's orientation, a stick of 60 walks and of 120 runs (as fast as its owner
@@ -174,6 +195,12 @@ void ApplyRemote(RemotePlayer& rp) {
         p0->NewState.LeftStickX = p1->NewState.LeftStickX = (int16_t)(-std::sin(a) * stick);
         p0->NewState.LeftStickY = p1->NewState.LeftStickY = (int16_t)(-std::cos(a) * stick);
     }
+}
+
+// out of the copy's context: its lean-out clears CPlayerInfo::m_bCanDoDriveBy for that copy alone (HookGangDriveByProcess)
+void LeaveRemote(RemotePlayer& rp, const LocalContext& saved) {
+    rp.canDriveBy = Field<uint8_t>(PlayerInfo(kRemoteSlot), 0x153);
+    RestoreLocal(saved);
 }
 
 // A driver's drive-by (CVehicle::DoDriveByShootings: looking aside and firing out of the window) runs only for a car of
@@ -217,6 +244,28 @@ std::map<CPed*, uint8_t> g_ourDriveBy;
 bool AimFromSeat(const CPad* pad) { return pad->NewState.RightShoulder1 || pad->NewState.m_bVehicleMouseLook; }
 
 // our player leans out of a passenger's window (the right mouse button or R1 held)
+// The mod shop's camera is its driver's (CARMOD1-3 run in the driver's game only, HookScriptProcess): a passenger of the
+// other player's car kept the car's own camera in the shop's small room, pushed into the car by its walls
+// (02.11). Meanwhile the passenger sees what the driver does, its fixed camera (MODE_FIXED) in the shop's area.
+bool g_shopCamera = false;
+CVector g_shopSrc, g_shopLook;
+void PassengerShopCamera(CPlayerPed* me) {
+    CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr;
+    const RemotePlayer* rp = v && v->Driver() && v->Driver() != me ? Players::Instance().FindByPed(v->Driver()) : nullptr;
+    if (rp && rp->hasState && rp->ped && rp->state.cam.mode == 15 && v->AreaCode() != 0 && !SceneWatched()) {
+        CVector src = rp->ped->GetPosition() + rp->state.cam.sourceOffset, look = src + rp->state.cam.front * 10.0f;
+        if (!g_shopCamera || (src - g_shopSrc).Length() > 0.02f || (look - g_shopLook).Length() > 0.02f) {
+            Cmd(0x015F).F(src.x).F(src.y).F(src.z).F(0.0f).F(0.0f).F(0.0f).Run();  // SET_FIXED_CAMERA_POSITION
+            Cmd(0x0160).F(look.x).F(look.y).F(look.z).I(2).Run();                  // POINT_CAMERA_AT_POINT, a jump cut
+            g_shopSrc = src, g_shopLook = look;
+        }
+        g_shopCamera = true;
+    } else if (g_shopCamera) {
+        g_shopCamera = false;
+        Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT
+    }
+}
+
 bool PassengerAiming() {
     CPlayerPed* me = FindPlayerPed(0);
     return Net().Online() && me && me->InVehicle() && me->Vehicle() && me->Vehicle()->Driver() != me && AimFromSeat(GetPad(0));
@@ -229,16 +278,77 @@ StationFn g_origNextStation = nullptr, g_origLastStation = nullptr;
 bool __fastcall HookNextStation(CPad* pad, void* edx) { return !PassengerAiming() && g_origNextStation(pad, edx); }
 bool __fastcall HookLastStation(CPad* pad, void* edx) { return !PassengerAiming() && g_origLastStation(pad, edx); }
 
+// A gun to lean out of a window with: any instant-hit one, and a passenger's rocket launcher (#94; the players' choice of
+// 01.11 gave rockets to passengers only).
+constexpr int WEAPON_RLAUNCHER = 35, WEAPON_RLAUNCHER_HS = 36;
+bool DriveByGun(int type, bool passenger) {
+    void* info = type ? Call<0x743C60, void*>(type, (uint8_t)1) : nullptr;  // CWeaponInfo::GetWeaponInfo
+    return info && (Field<int32_t>(info, 0) == 1 || (passenger && (type == WEAPON_RLAUNCHER || type == WEAPON_RLAUNCHER_HS)));  // FIRE_INSTANT_HIT
+}
+bool Passenger(CPed* ped) { return ped->InVehicle() && ped->Vehicle() && ped->Vehicle()->Driver() != ped; }
+
 bool __cdecl PassengerDriveBy() {
     const CPad* pad = GetPad(0);
     CPlayerPed* ped = FindPlayerPed(-1);
     if (!Net().Online() || !ped || pad->DisablePlayerControls || !AimFromSeat(pad) || cam::Mode() == 0x37) return false;  // MODE_AIMWEAPON_FROMCAR
     const CWeapon& w = ped->ActiveWeapon();
-    void* info = w.type ? Call<0x743C60, void*>(w.type, (uint8_t)1) : nullptr;  // CWeaponInfo::GetWeaponInfo
-    if (!info || Field<int32_t>(info, 0) != 1 || w.ammoTotal <= 0) return false;  // m_nWeaponFire: FIRE_INSTANT_HIT
+    if (!DriveByGun(w.type, true) || w.ammoTotal <= 0) return false;
     void* playerInfo = CallMethod<0x609FF0, void*>(ped);  // CPlayerPed::GetPlayerInfoForThisPlayerPed
     g_ourDriveBy.try_emplace(ped, playerInfo ? Field<uint8_t>(playerInfo, 0x153) : (uint8_t)1);
     return true;
+}
+
+// The driver's lean-out is the game's own for the cheat "weapon aiming while driving" (OUIQDMW): with the cheat on,
+// CTaskSimpleCarDrive::ProcessPed (0x6446B6) leans a player driving out with the SMG of its slot. In co-op it leans out
+// while the driver holds the right mouse button (its look in a car; R1 is a pad's handbrake there, so not on a pad) with
+// any instant-hit gun in hand, as a passenger does, and goes back in when it is let go (the players' choice of 01.11:
+// to shoot freely from a motorbike). The other player's copy has no such button in its pad state: it leans
+// out while its owner's camera aims from the car (MODE_AIMWEAPON_FROMCAR, which the lean-out gives a player's camera).
+// The cheat itself as the game has it.
+bool DriverAiming(CPed* ped) {
+    if (ped == (CPed*)FindPlayerPed(0)) return GetPad(0)->NewState.m_bVehicleMouseLook;
+    const RemotePlayer* rp = Players::Instance().FindByPed(ped);
+    return rp && rp->hasState && rp->state.cam.mode == 0x37;
+}
+bool InDriveBy(CPed* ped) {
+    void* intel = ped->Intelligence();
+    return intel && CallMethod<0x681740, void*>((uint8_t*)intel + 4, 1022);  // CTaskManager::FindActiveTaskByType: GANG_DRIVEBY
+}
+bool DriverDriveBy(CPed* ped) {  // the driver processed: ours, or the other player's copy under its own pad and camera
+    if (Ref<uint8_t>(0x969179)) return ped->Weapons()[4].type && ped->Weapons()[4].ammoTotal > 0;  // the cheat on: its SMG slot
+    if (!Net().Online() || GetPad(0)->DisablePlayerControls || InDriveBy(ped) || !DriverAiming(ped)) return false;
+    const CWeapon& w = ped->ActiveWeapon();
+    if (!DriveByGun(w.type, false) || w.ammoTotal <= 0) return false;
+    void* playerInfo = CallMethod<0x609FF0, void*>(ped);  // CPlayerPed::GetPlayerInfoForThisPlayerPed
+    // a mission that took drive-bys away (SET_PLAYER_CAN_DO_DRIVE_BY) takes ours too; the copy goes by its owner's camera
+    if (ped == FindPlayerPed(0) && playerInfo && !Field<uint8_t>(playerInfo, 0x153)) return false;
+    g_ourDriveBy.try_emplace(ped, playerInfo ? Field<uint8_t>(playerInfo, 0x153) : (uint8_t)1);
+    return true;
+}
+
+// The lean-out ends at once for a gun that is not instant-hit (0x62D3DF): a passenger's rocket launcher goes on
+bool DriveByWeaponOk(void* info, CPed* ped) {
+    if (!info || Field<int32_t>(info, 0) == 1) return true;  // the game's own test: none, or FIRE_INSTANT_HIT
+    int type = ped->ActiveWeapon().type;
+    return (type == WEAPON_RLAUNCHER || type == WEAPON_RLAUNCHER_HS) && Passenger(ped) &&
+           (ped == (CPed*)FindPlayerPed(0) || Players::Instance().FindByPed(ped));
+}
+
+// CWeapon::FireProjectile fires a player's rocket only from a camera that aims it (MODE_ROCKETLAUNCHER and the other
+// first-person ones), and leaning out it is MODE_AIMWEAPON_FROMCAR: for our passenger's shot (CTaskSimpleGangDriveBy::
+// FireGun) it is MODE_ROCKETLAUNCHER, and the rocket goes where the camera looks. The other player's copy fires none
+// here: its owner's game sends the rocket (Fire).
+using WeaponFireFn = bool(__fastcall*)(void*, void*, CEntity*, CVector*, CVector*, CEntity*, CVector*, CVector*);
+WeaponFireFn g_origDriveByFire = nullptr;
+bool __fastcall HookDriveByFire(void* weapon, void* edx, CEntity* by, CVector* start, CVector* barrel, CEntity* target, CVector* at,
+                                CVector* origin) {
+    int type = Field<int32_t>(weapon, 0);  // CWeapon::m_eWeaponType
+    uint16_t mode = cam::Mode();
+    bool rocket = (type == WEAPON_RLAUNCHER || type == WEAPON_RLAUNCHER_HS) && by == (CEntity*)FindPlayerPed(0) && mode == 0x37;
+    if (rocket) cam::Mode() = 8;  // MODE_ROCKETLAUNCHER
+    bool fired = g_origDriveByFire(weapon, edx, by, start, barrel, target, at, origin);
+    if (rocket) cam::Mode() = mode;
+    return fired;
 }
 
 int WeaponModel(int weaponType);
@@ -265,14 +375,40 @@ bool __fastcall HookGangDriveByProcess(void* task, void* edx, CPed* ped) {
     // let go: the task's own way out, command 7 (m_nNextCommand; a player's pad sets only 1 and 2 below 4). The rest of
     // the lean-out animation brings the passenger back in, and the task finishes when it is over. Finishing it at once
     // (m_bIsFinished) left the passenger leaning out of the window with the gun until two clicks.
-    if (ours != g_ourDriveBy.end() && !AimFromSeat(GetPad(0))) Field<int8_t>(task, 0x0F) = 7;
+    if (ours != g_ourDriveBy.end() && !(Passenger(ped) ? AimFromSeat(GetPad(0)) : DriverAiming(ped))) Field<int8_t>(task, 0x0F) = 7;
     bool done = g_origGangDriveBy(task, edx, ped);
     if (player && !done) gunInHand();  // taken away in the task's own step: the frame is drawn with it (#35)
+    // Our driver leaning out: the aim camera (CCam::Process_AimWeapon) takes a driver's aim back to the car's nose once
+    // its idle timer (0xB6EC48, ms) is past 2 s with the aim within 30 degrees of it, or past 5 s. The timer stops only
+    // for the stick of the split-screen mode, a shot resets it only below 2 s, and the mouse does neither: the camera
+    // crept to the middle while the driver held the mouse still to shoot (01.11, again 02.11). Kept at 0 while leaning out.
+    if (!done && ours != g_ourDriveBy.end() && ped == (CPed*)FindPlayerPed(0) && !Passenger(ped)) Ref<int32_t>(0xB6EC48) = 0;
     if (done && ours != g_ourDriveBy.end()) {
         if (void* playerInfo = CallMethod<0x609FF0, void*>(ped)) Field<uint8_t>(playerInfo, 0x153) = ours->second;
         g_ourDriveBy.erase(ours);
     }
     return done;
+}
+
+// A swimmer at the Skimmer, the Vortex, the Sea Sparrow or the Leviathan goes to the nearer of its two front doors
+// (CTaskComplexEnterCar::CreateFirstSubTask, and again on the way: CTaskComplexGoToCarDoorAndStandStill), whatever seat it
+// wants: a passenger swam to the pilot's door and went to pull the other player's copy out of it, and a pilot to the
+// passenger's door with the other player in that seat. Neither got in, from a pier both did (a player's report, 08.11).
+// A player's (ours or a copy) goes to the free front seat's door while the other front seat is taken.
+using NearestDoorFn = bool(__cdecl*)(CPed*, CVehicle*, CVector*, int*);
+NearestDoorFn g_origNearestDoor = nullptr;
+bool __cdecl HookNearestCarDoor(CPed* ped, CVehicle* v, CVector* pos, int* door) {
+    bool found = g_origNearestDoor(ped, v, pos, door);
+    if (!found || !ped || !v || !ped->IsPlayer() || !(ped->PhysicalFlags() & 0x100) || (ped->PedFlags() & 1))  // bSubmergedInWater, bIsStanding
+        return found;
+    int model = v->ModelIndex();
+    if ((model != 460 && model != 539 && model != 447 && model != 417) || (*door != 10 && *door != 8) || v->MaxPassengers() < 1)
+        return found;
+    bool pilots = *door == 10;  // CAR_DOOR_LF, the pilot's; CAR_DOOR_RF (8) is the first passenger's
+    if (!(pilots ? v->Driver() : v->Passengers()[0]) || (pilots ? v->Passengers()[0] : v->Driver())) return found;
+    *door = pilots ? 8 : 10;
+    Call<0x64E740, CVector*>(pos, v, *door);  // CCarEnterExit::GetPositionToOpenCarDoor
+    return true;
 }
 
 // Two players dead or busted at about the same time come back at the same hospital or police station door, one inside
@@ -288,7 +424,7 @@ void __cdecl HookRestorePlayer(CPlayerPed* player, CVector pos, float heading) {
             host && host->ped && host->hasState && host->mode == RemotePlayer::Mode::OnFoot && host->state.area == 0 &&
             !(host->state.flags & OnFootState::F_DEAD) && (player->GetPosition() - host->state.pos).Length() < 300.0f) {
             float h = host->state.rotation;
-            pos = host->state.pos + CVector{std::cos(h), std::sin(h), 0.0f} * 2.0f;  // at its right hand
+            pos = host->state.pos + PartnerSide(h, Net().MyId(), 2.0f);
             heading = h * 57.29578f;
             LOGI("Respawn by the host: its mission goes on");
         }
@@ -304,7 +440,7 @@ void __cdecl HookRestorePlayer(CPlayerPed* player, CVector pos, float heading) {
         }
     // A katana's forced kill takes the head off (CPed::RemoveBodyPart: bRemoveHead, m_nBodypartToRemove) and a respawn never
     // puts it back (CPlayerPed::SetInitialState leaves both): in single player no katana kills CJ so, but the other
-    // player's copy is a PLAYER1 ped, whose katana does (dnya, 29.10: both came back headless)
+    // player's copy is a PLAYER1 ped, whose katana does (29.10: both came back headless)
     if (player == FindPlayerPed(0) && (player->PedFlags() & 0x8000u)) {
         player->PedFlags() &= ~0x8000u;
         Field<int8_t>(player, 0x754) = -1;  // as the constructor sets it
@@ -368,7 +504,7 @@ void __fastcall HookPlayerProcessControl(CPlayerPed* self, void* edx) {
     g_origProcessControl(self, edx);
     DriveBy(self);  // still under its pad and camera
     g_inRemoteContext = false;
-    RestoreLocal(saved);
+    LeaveRemote(*rp, saved);
     // Aiming, the game turned the copy to where its owner's camera aims from where the copy stands: up to 7 degrees off.
     // A half turn on foot could also go round the other way. It faces as its owner.
     if (rp->mode == RemotePlayer::Mode::OnFoot && rp->hasState && !rp->animHeld && !self->InVehicle() &&
@@ -382,7 +518,7 @@ void __fastcall HookPlayerProcessControl(CPlayerPed* self, void* edx) {
 // CWorld::ProcessPedsAfterPreRender), not in its ProcessControl, and only while the gun's info its task took is that of
 // the skill read then (CPed::GetWeaponSkill: a player's comes from CStats). The copy's was taken with its owner's skills
 // and met ours there: with their skills for that gun apart (poor, gangster, hitman) the copy aimed and never fired, and
-// neither player saw the other's shots (Holder, 29.10). A shot due this frame fires in the copy's context: its skills,
+// neither player saw the other's shots (29.10). A shot due this frame fires in the copy's context: its skills,
 // and where its owner aims instead of our camera.
 using UseGunPositionFn = bool(__fastcall*)(void*, void*, CPed*);
 UseGunPositionFn g_origUseGunPosition = nullptr;
@@ -396,7 +532,7 @@ bool __fastcall HookUseGunPosition(void* task, void* edx, CPed* ped) {
     g_inRemoteContext = true;
     bool r = g_origUseGunPosition(task, edx, ped);
     g_inRemoteContext = false;
-    RestoreLocal(saved);
+    LeaveRemote(*rp, saved);
     return r;
 }
 
@@ -500,6 +636,18 @@ void DrawWantedStars(int level, float right, float midY, uint8_t alpha) {
 using HudDrawFn = void(__cdecl*)();
 HudDrawFn g_origHudDraw = nullptr;
 void __cdecl HookHudDraw() {
+    // F7 (03.11): the radar, money, health, weapon, stars and the car's name go the way the game's HUD switch and its
+    // scripts hide them. The call itself runs: the shops' menus (CMenuSystem::Process), help boxes and mission texts.
+    if (core::InterfaceHidden()) {
+        bool& hudOn = Ref<bool>(0xBA6769);      // FrontEndMenuManager.m_bHudOn
+        bool& noRadar = Ref<bool>(0xBAA3FB);    // CHud::bScriptDontDisplayRadar
+        bool& noCarName = Ref<bool>(0xBAA3F9);  // CHud::bScriptDontDisplayVehicleName
+        bool a = hudOn, b = noRadar, c = noCarName;
+        hudOn = false, noRadar = true, noCarName = true;
+        g_origHudDraw();
+        hudOn = a, noRadar = b, noCarName = c;
+        return;
+    }
     g_origHudDraw();
     if (Net().Online() && !Cfg().cleanScreen) Players::Instance().DrawWeaponIcons();
 }
@@ -535,6 +683,7 @@ void DrawArrows() {
         uint32_t rgba = c > 8 ? (uint32_t)c : Call<0x584770, uint32_t>((int)(c < 0 ? 7 : c), true, true);
         CRGBA colour{(uint8_t)(rgba >> 24), (uint8_t)(rgba >> 16), (uint8_t)(rgba >> 8), 255};
         CEntity* e = rp.ped->InVehicle() && rp.ped->Vehicle() ? (CEntity*)rp.ped->Vehicle() : (CEntity*)rp.ped;
+        if (CVehicle* toy = RemoteToy(rp)) e = toy;  // where its player looks from: its toy, not its CJ standing by (31.10)
         CMatrix* m = e->Matrix();
         if (!m) continue;
         CVector p = e->GetPosition();
@@ -681,9 +830,8 @@ void __fastcall HookRemoveWeaponEnter(CPed* ped, void* edx, int jetpack) {
     if (Net().Online() && !jetpack && ped == (CPed*)FindPlayerPed(0)) {
         int task = ActivePrimaryTaskType(ped);
         const CWeapon& w = ped->ActiveWeapon();
-        void* info = w.type ? Call<0x743C60, void*>(w.type, (uint8_t)1) : nullptr;  // CWeaponInfo::GetWeaponInfo
-        if ((task == TASK_ENTER_CAR_AS_PASSENGER || task == TASK_ENTER_CAR_AS_PASSENGER_TIMED) && info &&
-            Field<int32_t>(info, 0) == 1 && w.ammoTotal > 0 && w.type != 28 && w.type != 29 && w.type != 32)  // FIRE_INSTANT_HIT; Uzi, MP5, Tec-9
+        if ((task == TASK_ENTER_CAR_AS_PASSENGER || task == TASK_ENTER_CAR_AS_PASSENGER_TIMED) && DriveByGun(w.type, true) &&
+            w.ammoTotal > 0 && w.type != 28 && w.type != 29 && w.type != 32)  // not the Uzi, MP5, Tec-9
             playerInfo = CallMethod<0x609FF0, void*>(ped);  // CPlayerPed::GetPlayerInfoForThisPlayerPed
     }
     uint8_t canDriveBy = playerInfo ? Field<uint8_t>(playerInfo, 0x153) : 0;  // CPlayerInfo::m_bCanDoDriveBy
@@ -827,6 +975,26 @@ int SeatOfTargetDoor(int door) {
 
 int SeatOrAny(CVehicle* v, int seat) { return v && seat >= 0 && seat < v->MaxPassengers() ? seat : -1; }
 
+bool WeInherit(uint8_t leaving) {
+    if (Net().HostId() != leaving) return Net().IsHost();
+    for (auto& [id, peer] : Net().Peers())
+        if (id != leaving && id < Net().MyId()) return false;
+    return true;
+}
+
+int PartnerRank(uint8_t id) {
+    if (id == Net().HostId()) return -1;
+    int rank = Net().MyId() != Net().HostId() && Net().MyId() < id;
+    for (auto& [other, peer] : Net().Peers()) rank += other != Net().HostId() && other < id;
+    return rank;
+}
+
+CVector PartnerSide(float heading, uint8_t id, float apart) {
+    int rank = PartnerRank(id);
+    float a = heading + (rank == 1 ? 3.14159265f : rank >= 2 ? -1.5707963f : 0.0f);
+    return CVector{std::cos(a), std::sin(a), 0.0f} * apart;
+}
+
 float RemoteDistance(const CVector& p, int8_t area, uint8_t* who) {
     float best = 1e9f;
     for (auto& [id, rp] : Players::Instance().All())
@@ -837,6 +1005,29 @@ float RemoteDistance(const CVector& p, int8_t area, uint8_t* who) {
     return best;
 }
 
+bool FarFromUs(const CVector& at, int8_t area, float within) {
+    CPlayerPed* me = FindPlayerPed(0);
+    // (a cutscene takes our player away for its length: the street stays as it is)
+    if (Net().Peers().size() < 2 || !me || Ref<uint8_t>(0xB5F851)) return false;
+    CVehicle* toy = PlayerInfos()[0].remoteVehicle;
+    return area != me->AreaCode() || ((at - me->GetPosition()).Length() > within && (!toy || (at - toy->GetPosition()).Length() > within));
+}
+
+// A partner flying a toy in Zero's missions saw no traffic and none of the host's targets: they were announced by
+// the distance to its CJ, left on Zero's roof (31.10).
+float RemoteViewDistance(const CVector& p, int8_t area) {
+    float best = RemoteDistance(p, area);
+    for (auto& [id, rp] : Players::Instance().All())
+        if (CVehicle* toy = rp.hasState && rp.state.area == area ? RemoteToy(rp) : nullptr)
+            best = std::min(best, (toy->GetPosition() - p).Length());
+    return best;
+}
+
+CVehicle* RemoteToy(const RemotePlayer& rp) {
+    NetVehicle* nv = rp.toyNetId ? Vehicles::Instance().Find(rp.toyNetId) : nullptr;
+    return nv && IsVehicleValid(nv->veh) ? nv->veh : nullptr;
+}
+
 // ------------------------------------------------------------------ module
 void Players::OnInstallHooks() {
     mem::HookFn(0x60EA90, &HookPlayerProcessControl, &g_origProcessControl, "CPlayerPed::ProcessControl");
@@ -845,7 +1036,37 @@ void Players::OnInstallHooks() {
     mem::RedirectCall(0x644A1A, (const void*)&PassengerDriveBy, &coopGame);
     mem::Nop(0x644A27, 28);  // the SMG slot holds a weapon with ammo (PassengerDriveBy checks the gun in hand)
     mem::Nop(0x644A69, 6);   // jne: the camera is MODE_TWOPLAYER_IN_CAR_AND_SHOOTING
+    // the driver's: the cheat's flag read becomes DriverDriveBy, and its SMG slot test goes (DriverDriveBy keeps it for the cheat)
+    static const uint8_t kCheatRead[] = {0xA0, 0x79, 0x91, 0x96, 0x00};  // mov al, [CCheat::m_aCheatsActive + 73]
+    static const uint8_t kSmgSlot[] = {0x8B, 0x86, 0x10, 0x06, 0x00, 0x00, 0x85, 0xC0, 0x0F, 0x84, 0x86, 0x00,
+                                       0x00, 0x00, 0x8B, 0x86, 0x1C, 0x06, 0x00, 0x00, 0x85, 0xC0, 0x7E, 0x7C};
+    if (mem::Check(0x6446B6, kCheatRead, sizeof kCheatRead) && mem::Check(0x6446C3, kSmgSlot, sizeof kSmgSlot)) {
+        uint8_t call[5] = {0xE8};
+        int32_t rel = (int32_t)((uintptr_t)&CoopDriverDriveByStub - (0x6446B6 + 5));
+        memcpy(call + 1, &rel, 4);
+        mem::Write(0x6446B6, call, sizeof call);
+        mem::Nop(0x6446C3, sizeof kSmgSlot);
+    } else {
+        LOGW("Driver's drive-by: unexpected bytes at 0x6446B6 (another mod?), off");
+    }
+    // a passenger's rocket launcher: the lean-out's gun test and the camera of its shot
+    static const uint8_t kGunTest[] = {0x85, 0xC0, 0x74, 0x09, 0x83, 0x38, 0x01, 0x0F, 0x85};  // test eax,eax; je; cmp [eax],1; jne
+    if (mem::Check(0x62D3DB, kGunTest, sizeof kGunTest)) {
+        uint8_t call[7] = {0xE8, 0, 0, 0, 0, 0x90, 0x90};
+        int32_t rel = (int32_t)((uintptr_t)&CoopDriveByWeaponStub - (0x62D3DB + 5));
+        memcpy(call + 1, &rel, 4);
+        mem::Write(0x62D3DB, call, sizeof call);
+        mem::RedirectCallFn(0x628328, &HookDriveByFire, &g_origDriveByFire);  // CTaskSimpleGangDriveBy::FireGun -> CWeapon::Fire
+        // CHud::DrawCrossHairs draws the circle while leaning out for the guns 22-33, 37 and 38 only (0x58E1AE): a rocket
+        // launcher's shot had no sight (01.11). With the camera aiming from the car, 35 and 36 too.
+        static const uint8_t kSightGuns[] = {0x83, 0xF8, 0x25, 0x75, 0x15};  // cmp eax, 37; jne 0x58E1E1
+        if (mem::Check(0x58E1C7, kSightGuns, sizeof kSightGuns)) mem::Jump(0x58E1C7, (void*)&CoopRocketCrossHairStub);
+        else LOGW("Passenger's rockets: unexpected bytes at 0x58E1C7 (another mod?), no sight for them");
+    } else {
+        LOGW("Passenger's rockets: unexpected bytes at 0x62D3DB (another mod?), off");
+    }
     mem::HookFn(0x62D3B0, &HookGangDriveByProcess, &g_origGangDriveBy, "CTaskSimpleGangDriveBy::ProcessPed");
+    mem::HookFn(0x6528F0, &HookNearestCarDoor, &g_origNearestDoor, "CCarEnterExit::GetNearestCarDoor");
     mem::HookFn(0x5E6370, &HookRemoveWeaponEnter, &g_origRemoveWeaponEnter, "CPed::RemoveWeaponWhenEnteringVehicle");
     if (!mem::RedirectCallFn(0x4EB72A, &HookNextStation, &g_origNextStation) ||  // CAERadioTrackManager -> CPad::NextStationJustUp
         !mem::RedirectCallFn(0x4EB753, &HookLastStation, &g_origLastStation))    // -> CPad::LastStationJustUp
@@ -934,6 +1155,8 @@ void Players::OnSessionEnd() {
     for (auto& [id, rp] : m_remote) DestroyRemote(rp);
     m_remote.clear();
     g_ourDriveBy.clear();
+    if (g_shopCamera && core::IsPlayerReady()) Cmd(0x02EB).Run();  // RESTORE_CAMERA_JUMPCUT: the shop's driver is gone
+    g_shopCamera = false;
 }
 
 void Players::OnPeerLeave(uint8_t id) {
@@ -946,6 +1169,7 @@ void Players::OnPeerLeave(uint8_t id) {
 void Players::OnGameStarted() {
     Cmd(0x0501).I(0).I(1).Run();  // SET_PLAYER_CAN_DO_DRIVE_BY: passengers may shoot from the window
     g_ourDriveBy.clear();
+    g_copyGroup = -1;  // the groups were made anew with the world (CPedGroups::Init)
     m_enterReported = nullptr;
     m_lastCar = -1;  // another world
     m_exitReported = false;
@@ -999,7 +1223,7 @@ void Players::OnGameStarted() {
         CVector p = me->GetPosition();
         float h = me->CurrentRotation();
         for (float side : {1.2f, -1.2f}) {
-            CVector q = p + CVector{std::cos(h) * side, std::sin(h) * side, 0};
+            CVector q = p + PartnerSide(h, Net().MyId(), side);
             if (!Call<0x56A490, bool>(&p, &q, true, true, false, true, false, true, false)) continue;  // GetIsLineOfSightClear
             Cmd(0x00A1).I(GetPedRef(me)).F(q.x).F(q.y).F(q.z - 1.0f).Run();  // SET_CHAR_COORDINATES
             break;
@@ -1019,7 +1243,7 @@ void Players::OnGameShutdown() {
 void Players::SpawnRemote(RemotePlayer& rp) {
     if (rp.ped || !rp.hasState || !core::IsPlayerReady()) return;
     CPlayerInfo* slot = PlayerInfo(kRemoteSlot);
-    if (slot->ped) return;  // slot busy (should not happen)
+    if (slot->ped || rp.id >= proto::kMaxPlayers) return;  // slot busy (should not happen)
     if (!HasRoom(PedPool(), 2, "ped")) return;  // the other player above everything else, still not into the last slots
     // a CPlayerPed takes a ped group (its constructor, CPedGroups::AddGroup at 0x60D659) and does not check for none: with
     // all 8 taken (gangs at their hangouts, the scripts' groups) it wrote before CPedGroups::ms_groups
@@ -1035,6 +1259,7 @@ void Players::SpawnRemote(RemotePlayer& rp) {
     // made high above its place: CREATE_PLAYER clears the space around itself of this game's random peds and cars
     // (the taxi the other player sits in), and it goes where it is right after
     float timeScale = Ref<float>(0xB7CB64);  // CTimer::ms_fTimeScale
+    memcpy(SlotData(), g_copyData[rp.id], kPlayerDataSize);
     Cmd(0x0053).I(kRemoteSlot).F(p.x).F(p.y).F(p.z + 300.0f).Out(&playerIndex).Run();  // CREATE_PLAYER
     // a CPlayerPed's constructor sets the game's speed back to normal (SetInitialState, 0x60CD41): a stunt jump's slow
     // motion here ended in mid-air whenever the copy was made again (5 s without its states, its death)
@@ -1049,6 +1274,12 @@ void Players::SpawnRemote(RemotePlayer& rp) {
     }
     // registered in CWorld::Players[1] only while processed (see HookPlayerProcessControl)
     slot->ped = nullptr;
+    memcpy(g_copyData[rp.id], SlotData(), kPlayerDataSize);
+    ped->PlayerData() = g_copyData[rp.id];
+    rp.canDriveBy = 1;
+    uint32_t& group = Field<uint32_t>(ped->PlayerData(), 0x38);  // CPlayerPedData::m_nPlayerGroup
+    if (g_copyGroup < 0) g_copyGroup = (int)group;
+    else if ((int)group != g_copyGroup) Call<0x5FB870>((int)group), group = (uint32_t)g_copyGroup;  // CPedGroups::RemoveGroup
     Cmd(0x00A1).I(handle).F(p.x).F(p.y).F(p.z - 1.0f).Run();  // SET_CHAR_COORDINATES (feet)
     ped->PedType() = PED_TYPE_PLAYER1;  // enemies hostile to the player attack the partner too
     ped->SetProofs(true, true, true, true, true);  // damage is decided by its owner
@@ -1086,6 +1317,10 @@ void Players::DestroyRemote(RemotePlayer& rp) {
         }
         if (PlayerInfo(kRemoteSlot)->ped == ped) PlayerInfo(kRemoteSlot)->ped = nullptr;
         if (CPlayerPed* me = FindPlayerPed(0); me && Field<CEntity*>(me, 0x128) == ped) Field<CEntity*>(me, 0x128) = nullptr;  // KeepApart
+        // What it holds goes out of the world with its hold task (CTaskSimpleHoldEntity's destructor sets m_bRemoveFromWorld)
+        // though a script of ours made it: POOL2's cue of the bar's opponent in a game for two, and POOL2 crashed on its next
+        // look at it (31.10, GET_OBJECT_COORDINATES at 0x47D582). Dropped first, it stays.
+        CallMethod<0x5E0360>(ped, false);  // CPed::DropEntityThatThisPedIsHolding, not deleting it
         WorldRemove(ped);
         Call<0x565510>(ped);            // CWorld::RemoveReferencesToDeletedObject: who stood on it or touched it
         CallVirtual<0, void>(ped, 1u);  // scalar deleting destructor (returns the slot to the ped pool)
@@ -1184,7 +1419,7 @@ void Players::HandleEnterCar(uint8_t from, Reader& r) {
     if (!rp || !rp->ped) return;
     NetVehicle* nv = Vehicles::Instance().Find(netId);
     // a car deleted in the last frame is still listed (Vehicles drops it in its OnPreProcess, after the messages). One
-    // not here yet (its model loads) gets the enter when it comes: the copy stood still, then was warped in (Hh hh, 26.10)
+    // not here yet (its model loads) gets the enter when it comes: the copy stood still, then was warped in (26.10)
     if (!nv || !Vehicles::Alive(*nv)) {
         rp->enterNetId = netId, rp->enterSeat = seat, rp->enterAskedMs = NowMs();
         return;
@@ -1272,9 +1507,59 @@ CVector DanceSide(const OnFootState& st) {
     return CVector{std::cos(h) * 1.2f, std::sin(h) * 1.2f, 0.0f};
 }
 
+std::map<uint8_t, uint64_t> g_rideSince;
+int g_rideAnimsTold = 0;
+void NoteRideAnims(RemotePlayer& rp) {
+    CVehicle* v = rp.ped->InVehicle() ? rp.ped->Vehicle() : nullptr;
+    bool bike = v && (v->VehicleSubClass() == VEHICLE_TYPE_BIKE || v->VehicleSubClass() == VEHICLE_TYPE_QUAD);
+    auto it = g_rideSince.find(rp.id);
+    if (!bike) {
+        if (it != g_rideSince.end()) g_rideSince.erase(it);
+        return;
+    }
+    if (it == g_rideSince.end()) it = g_rideSince.emplace(rp.id, NowMs()).first;
+    if (!it->second || NowMs() - it->second < 4000 || g_rideAnimsTold >= 20) return;
+    it->second = 0;
+    ++g_rideAnimsTold;
+    std::string list;
+    for (void* a = anim::First(rp.ped->RwObject()); a; a = anim::Next(a)) {
+        int block = -1, idx = -1;
+        anim::Locate(anim::Hierarchy(a), block, idx);
+        list += Format(" %s/%d(group %d id %d, blend %.2f, flags %04X)", block >= 0 ? (const char*)anim::Block(block) : "?", idx,
+                       (int)anim::Group(a), (int)anim::Id(a), anim::BlendAmount(a), (unsigned)anim::Flags(a));
+    }
+    LOGI("Player %d's copy on a bike (model %d, %s): animations%s", rp.id, (int)v->ModelIndex(),
+         v->Driver() == rp.ped ? "driver" : "passenger", list.c_str());
+}
+
+// WF_passenger, alone of the bikes' passenger animations, has no bones of the face (26 against 32): with nothing to play
+// them they stood at no rotation, the jaw dropped and the brows askew on whoever rode behind a Wayfarer
+// (found 04.11). CAR_sitp has them with the same rest: laid over at 1%, it holds the face and moves nothing else. Secondary:
+// CCarEnterExit::RemoveCarSitAnim takes it off with the seat.
+void HoldWayfarerFace(CPed* ped, bool& held) {
+    CVehicle* v = ped->InVehicle() ? ped->Vehicle() : nullptr;
+    bool rides = v && v->ModelIndex() == 586 && v->Driver() != ped;
+    if (!rides && !held) return;
+    held = rides;
+    void* clump = ped->RwObject();
+    void* sit = clump ? Call<0x4D42F0, void*>("CAR_sitp", (void*)anim::Block(0)) : nullptr;  // CAnimManager::GetAnimation
+    if (!sit) return;
+    void* a = nullptr;
+    for (void* i = anim::First(clump); i; i = anim::Next(i))
+        if (anim::Hierarchy(i) == sit && (anim::Flags(i) & anim::F_SECONDARY)) a = i;
+    if (!rides) {
+        if (a) anim::FadeOut(a);
+        return;
+    }
+    if (!a) a = anim::Blend(clump, sit, anim::F_LOOPED | anim::F_PARTIAL | anim::F_SECONDARY, 1000.0f);
+    if (a) anim::BlendAmount(a) = 0.01f, anim::BlendDelta(a) = 0.0f;
+}
+
 void Players::ApplyState(RemotePlayer& rp) {
     CPlayerPed* ped = rp.ped;
     const OnFootState& st = rp.state;
+    NoteRideAnims(rp);
+    HoldWayfarerFace(ped, rp.faceHeld);
 
     // pad: "old" is always the previous frame, "new" only changes when a packet arrived
     rp.padOld = rp.padNew;
@@ -1401,7 +1686,10 @@ void Players::ApplyState(RemotePlayer& rp) {
         // round its guns leaning out of the window (27.10): set at once there, the model only while it leans out.
         if (ped->InVehicle()) {
             CallMethod<0x5E6280>(ped, weapon);                                         // CPed::SetCurrentWeapon
-            if (!rp.padNew.RightShoulder1 && model > 0) CallMethod<0x5E3990>(ped, model);  // CPed::RemoveWeaponModel
+            // A driver's SMG stays in its owner's hand all the ride (CPed::RemoveWeaponWhenEnteringVehicle equips it for
+            // drive-bys): taken off here too, the copy fired out of the window with an empty hand (#107, found 04.11).
+            bool drivesWithIt = ped->Vehicle() && ped->Vehicle()->Driver() == ped && (weapon == 28 || weapon == 29 || weapon == 32);
+            if (!rp.padNew.RightShoulder1 && model > 0 && !drivesWithIt) CallMethod<0x5E3990>(ped, model);  // CPed::RemoveWeaponModel
         }
     } else if (weapon != 0 && active.type == weapon) {
         active.ammoTotal = std::max<int>(st.ammo, 1);  // never run dry locally: the owner decides
@@ -1531,8 +1819,8 @@ void Players::ApplyVehicleSeat(RemotePlayer& rp) {
     // the wheel, then pulled out again
     if (NowMs() - rp.exitTaskMs < kEnterGraceMs) return;
     // give the enter animation time; otherwise put the player in place directly. Not once its car has gone on: its owner
-    // sat down and drove off (a bike in a second), and the copy ran after it for those seconds before the warp (Hh hh,
-    // Duke Nukem, 27.10)
+    // sat down and drove off (a bike in a second), and the copy ran after it for those seconds before the warp
+    // (27.10)
     if (NowMs() - rp.enterTaskMs < kEnterGraceMs && EnteringCar(ped)) {
         if (!CarGoneOn(nv->veh, ped)) return;
         Cmd(0x0792).I(rp.pedHandle).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY: its walk to the door ends here
@@ -1622,13 +1910,31 @@ void Players::PassengerWeaponWheel(CPlayerPed* me) {
     int cur = Field<int8_t>(me, 0x718);  // CPed::m_nActiveWeaponSlot
     for (int i = 1; i < 13; ++i) {
         const CWeapon& w = me->Weapons()[((cur + (next ? i : -i)) % 13 + 13) % 13];
-        void* info = w.type ? Call<0x743C60, void*>(w.type, (uint8_t)1) : nullptr;  // CWeaponInfo::GetWeaponInfo
-        if (!info || Field<int32_t>(info, 0) != 1 || w.ammoTotal <= 0) continue;    // FIRE_INSTANT_HIT, rounds left
+        if (!DriveByGun(w.type, true) || w.ammoTotal <= 0) continue;  // rounds left
         CallMethod<0x5E6280>(me, (int)w.type);  // CPed::SetCurrentWeapon: its model in hand, the old one away
         Field<int32_t>(me, 0x70C) = 55;         // CPed::m_nSavedWeapon: none, the chosen gun stays after getting out
         LOGI("Passenger's gun: %d", (int)w.type);
         return;
     }
+}
+
+// The free passenger seat whose door is nearest (-1: none). G and the enter key at the other player's car took the
+// first free one, the front right, wherever the player stood: CJ walked round the car past a free rear door (03.11, the
+// user). A seat with no door of its own (a bus's, a van's fourth) comes last, as before.
+static int NearestFreeSeat(CVehicle* v, const CVector& from) {
+    int best = -1;
+    float bestDist = 0.0f;
+    for (int s = 0; s < v->MaxPassengers() && s < 8; ++s) {
+        if (v->Passengers()[s] || Peds::Instance().SeatClaimed(v, s)) continue;
+        float d = 1e6f;
+        if (int door = Call<0x64F190, int>(v, s); door >= 0) {  // CCarEnterExit::ComputeTargetDoorToEnterAsPassenger
+            CVector at;
+            Call<0x64E740, CVector*>(&at, v, door);  // CCarEnterExit::GetPositionToOpenCarDoor
+            d = (at - from).Length();
+        }
+        if (best < 0 || d < bestDist) best = s, bestDist = d;
+    }
+    return best;
 }
 
 void Players::TryEnterAsPassenger() {
@@ -1647,12 +1953,7 @@ void Players::TryEnterAsPassenger() {
         auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
         float d = (v->GetPosition() - mp).Length();
         if (d > 10.0f || v->Status() == 5 /* wrecked */ || v->IsTrain()) continue;  // a train's copy is locked (Trains)
-        int freeSeat = -1;
-        for (int s = 0; s < v->MaxPassengers() && s < 8; ++s)
-            if (!v->Passengers()[s] && !Peds::Instance().SeatClaimed(v, s)) {
-                freeSeat = s;
-                break;
-            }
+        int freeSeat = NearestFreeSeat(v, mp);
         if (freeSeat < 0) continue;
         bool partnerDrives = v->Driver() && FindByPed(v->Driver());
         float score = d - (partnerDrives ? 100.0f : 0.0f);
@@ -1702,12 +2003,10 @@ void Players::DetectCarTasks() {
         if (type == TASK_ENTER_CAR_AS_DRIVER && target && IsVehicleValid(target) && target->Driver() &&
             FindByPed(target->Driver()) && !Net().FriendlyFire()) {
             Cmd(0x0792).I(GetPedRef(me)).Run();  // CLEAR_CHAR_TASKS_IMMEDIATELY
-            for (int s = 0; s < target->MaxPassengers() && s < 8; ++s)
-                if (!target->Passengers()[s] && !Peds::Instance().SeatClaimed(target, s)) {
-                    Cmd(0x05CA).I(GetPedRef(me)).I(GetVehicleRef(target)).I(10000).I(s).Run();  // TASK_ENTER_CAR_AS_PASSENGER
-                    LOGI("The other player drives this car: a passenger seat (%d) instead", s);
-                    break;
-                }
+            if (int s = NearestFreeSeat(target, me->GetPosition()); s >= 0) {
+                Cmd(0x05CA).I(GetPedRef(me)).I(GetVehicleRef(target)).I(10000).I(s).Run();  // TASK_ENTER_CAR_AS_PASSENGER
+                LOGI("The other player drives this car: a passenger seat (%d) instead", s);
+            }
             return;
         }
         if (target && target != m_enterReported && IsVehicleValid(target)) {
@@ -1758,7 +2057,7 @@ void Players::SendVehicleState(CVehicle* v) {
     // ours from the first frame at its wheel: past the limit below, the copy's next update put its owner's parked state
     // back on it (the engine off), and the car did not go till got into again (issue #43)
     if (driver) Vehicles::Instance().TakeOwnership(*nv);
-    // A car that brakes by itself (Hh hh, 27.10: "let go of the gas and it brakes"): what holds it, for the next report.
+    // A car that brakes by itself (27.10: "let go of the gas and it brakes"): what holds it, for the next report.
     // The game brakes a player's car for its script brakes or its controls taken (0x6ADDCC), pulls its handbrake when its
     // driver gets out or is dragged out, and brakes a car rolling backwards while the gas is held (0x6ADBF6): that one
     // filled the 28.10 logs with false alarms, as a helicopter did (it always brakes, 0x6C4D84). The pad is read through
@@ -1848,12 +2147,14 @@ void Players::KeepApart(RemotePlayer& rp) {
     // each game puts its own player there, and the two bodies stood in each other. The other one is hidden after a
     // second of it, until they part (a cutscene shows the partner its own way, ScenePartner).
     rp.overlapMs = inside ? (rp.overlapMs ? rp.overlapMs : NowMs()) : 0;
-    bool hide = ((inside && NowMs() - rp.overlapMs > 1000) || rp.goneInDoor) && !Ref<uint8_t>(0xB5F851);  // CCutsceneMgr::ms_running
+    // or at the wheel of a car that is not here for our player's school (Vehicles::SetApart)
+    bool lesson = other->InVehicle() && Vehicles::Instance().Apart(other->Vehicle());
+    bool hide = ((inside && NowMs() - rp.overlapMs > 1000) || rp.goneInDoor || lesson) && !Ref<uint8_t>(0xB5F851);  // CCutsceneMgr::ms_running
     if (hide != rp.hiddenOnSpot) {
         rp.hiddenOnSpot = hide;
         if (hide) other->Flags() &= ~0x80u;  // CEntity::m_bIsVisible
         else other->Flags() |= 0x80u;
-        LOGI("Remote player %d %s", rp.id, !hide ? "shown again" : rp.goneInDoor ? "gone in through the door" : "hidden on a shared spot");
+        LOGI("Remote player %d %s", rp.id, !hide ? "shown again" : rp.goneInDoor ? "gone in through the door" : lesson ? "at its own lesson" : "hidden on a shared spot");
     }
     // In a shop or a minigame (CTheScripts::bMiniGameInProgress) the script walks our player onto its spot: the other one
     // standing near it (on the marker at the same time) kept ours from it, and the shop waited, both stuck, until the
@@ -1867,7 +2168,7 @@ void Players::KeepApart(RemotePlayer& rp) {
 
 // A call's phone goes away only as phone_out passes 1.57 s of its 2 (CTaskComplexUseMobilePhone): cut before that (a
 // fight, a button), the phone stayed in the hand with no call, the gun not given back, in this game and on the copy
-// (Dr.BaldBall, 28.10). Put away as the task does; only that task puts model 330 in a hand.
+// (28.10). Put away as the task does; only that task puts model 330 in a hand.
 void Players::PutAwayStuckPhone(CPlayerPed* me) {
     if (Field<int32_t>(me, 0x740) != kCellphone || Field<int32_t>(me, 0x70C) == 55 || !me->Intelligence() ||  // m_nSavedWeapon
         CallMethod<0x681740, void*>((uint8_t*)me->Intelligence() + 4, 1600))  // FindActiveTaskByType: the phone task
@@ -1980,6 +2281,8 @@ void Players::OnPostProcess() {
     // copy of the other player's bike, pushed by his states into kerbs and cars, threw our player off while he rode on.
     // A rider that is never knocked off (CPed+0x474 bits 27-28, SET_CHAR_CAN_BE_KNOCKED_OFF_BIKE) stops it for both:
     // his game decides his crash (ApplyState). What a script had set on our player comes back once we are off.
+    static bool faceHeld = false;
+    HoldWayfarerFace(me, faceHeld);
     CVehicle* bike = me->InVehicle() ? me->Vehicle() : nullptr;
     NetVehicle* bnv = bike && bike->IsBike() && bike->Driver() != me ? Vehicles::Instance().Find(bike) : nullptr;
     bool keepOn = bnv && Vehicles::Instance().IsMirror(*bnv);
@@ -2011,6 +2314,7 @@ void Players::OnPostProcess() {
     YieldClaimedSeat(me);
     PutAwayStuckPhone(me);
     PassengerWeaponWheel(me);
+    PassengerShopCamera(me);
     if (me->InVehicle() && me->Vehicle() && me->Vehicle()->Driver() == me) m_lastCar = GetVehicleRef(me->Vehicle());
     if (me->InVehicle() && me->Vehicle() && !me->Vehicle()->IsTrain()) SendVehicleState(me->Vehicle());
     else SendLocalState();  // a train is not networked: the other game seats this player in its copy (RideTrain)
@@ -2029,7 +2333,7 @@ void Players::FollowHost() {
     CVector hpos = hp->GetPosition(), mpos = me->GetPosition();
     if (flow::IsFollower() && (hpos - mpos).Length() > 25.0f) {
         float h = hp->CurrentRotation();
-        CVector p = hpos + CVector{std::cos(h) * 1.5f, std::sin(h) * 1.5f, 0};  // at the host's right hand
+        CVector p = hpos + PartnerSide(h, Net().MyId(), 1.5f);
         int handle = GetPedRef(me);
         Cmd(0x04BB).I(hp->AreaCode()).Run();                      // SET_AREA_VISIBLE
         Cmd(0x0860).I(handle).I(hp->AreaCode()).Run();            // SET_CHAR_AREA_VISIBLE
@@ -2040,17 +2344,46 @@ void Players::FollowHost() {
         LOGI("Joined after the prologue: next to the host");
         return;
     }
+    // A story mission flies (0.3.3, the players' idea; Zero's and the desert's first, every mission since 04.11: the Hydra of
+    // "Vertical Bird"): the host in a plane or a helicopter with no seat for us, or with a jetpack on, and the partner had
+    // nothing to follow it with. It gets a jetpack of its own too, once for each one the host puts on (the aircraft: below,
+    // as a land vehicle).
+    std::string mission = HostMissionName();
+    bool flying = !mission.empty();
+    bool hostJetpack = (host->state.flags & OnFootState::F_JETPACK) != 0;
+    if (!hostJetpack) m_jetpackGiven = false;
+    if (flying && hostJetpack && !m_jetpackGiven && !HasJetpack(me) && (hpos - mpos).Length() < 150.0f &&
+        me->AreaCode() == hp->AreaCode()) {
+        m_followAt = NowMs();
+        if (!ModelReady(370)) return;  // the jetpack's model, in a frame or two
+        m_jetpackGiven = true;
+        Cmd(0x07A7).I(GetPedRef(me)).Run();  // TASK_JETPACK
+        ui::TheChat().AddSystem(TR("У вас тоже реактивный ранец. Летите за хостом.", "You have a jetpack too. Fly after the host."));
+        LOGI("The host flies with a jetpack (%s): one for the partner too", mission.c_str());
+        return;
+    }
     // No seat left for us in the host's vehicle: a bike, a forklift, Ryder's Picador with Ryder in it, Sweet's Greenwood
     // full of the gang, Smoke's bike with the host behind him. The partner gets one of its own to follow. A seat that a
     // copy of the host's people walks to is taken too: ours took Ryder's.
     CVehicle* hv = hp->InVehicle() ? hp->Vehicle() : nullptr;
     int model = hv ? hv->ModelIndex() : 0, type = hv ? hv->VehicleSubClass() : -1;
     bool land = type == VEHICLE_TYPE_AUTOMOBILE || type == VEHICLE_TYPE_MTRUCK || type == VEHICLE_TYPE_QUAD || (hv && hv->IsBike());
+    // the remote-controlled toys of Zero's missions are not for flying in
+    bool rc = model == 441 || model == 464 || model == 465 || model == 501 || model == 564 || model == 594;
+    bool air = flying && !rc && (type == VEHICLE_TYPE_PLANE || type == VEHICLE_TYPE_HELI) && hv->Driver() == hp;
     bool full = hv && hv->Driver();
     for (int i = 0; hv && i < hv->MaxPassengers() && i < 8; ++i) full = full && (hv->Passengers()[i] || Peds::Instance().SeatClaimed(hv, i));
-    if (!hv || GetVehicleRef(hv) == m_bikeFor || !land || !full) return;
+    if (!hv || GetVehicleRef(hv) == m_bikeFor || !(land || air) || !full) return;
     // within reach of the host: a partner the mission left farther comes by its moves (CS_FOLLOW) or /tp first
     if ((!flow::IsFollower() && !HostMissionRecent(20000)) || (hpos - mpos).Length() > 150.0f || me->AreaCode() != 0) return;
+    // It goes straight in, so not out of what
+    // holds it now: a script or a scene, its turret, a jetpack, the car it is walking to. It waits for the next try.
+    void* intel = me->Intelligence();
+    auto doing = [intel](int t) { return intel && CallMethod<0x681740, void*>((uint8_t*)intel + 4, t); };  // FindActiveTaskByType
+    if (me->Health() <= 0.0f || me->AttachedTo() || HasJetpack(me) || GetPad(0)->DisablePlayerControls || cam::WideScreenOn() ||
+        Ref<uint8_t>(0xA444A8) /* CTheScripts::bMiniGameInProgress */ || doing(TASK_ENTER_CAR_AS_DRIVER) ||
+        doing(TASK_ENTER_CAR_AS_PASSENGER) || doing(TASK_ENTER_CAR_AS_PASSENGER_TIMED))
+        return;
     m_followAt = NowMs();  // a try every second until the model is in and there is room
     int car = VehicleBeside(model);
     static int noRoomFor = -1;
@@ -2058,31 +2391,36 @@ void Players::FollowHost() {
         noRoomFor = GetVehicleRef(hv), LOGI("No room next to us for a vehicle like the host's (model %d) yet", model);
     if (car < 0) return;
     m_bikeFor = GetVehicleRef(hv);  // once it stands: a failed try (no room, the model loading) tries again
-    Cmd(0x01C3).I(car).Run();       // MARK_CAR_AS_NO_LONGER_NEEDED: an ordinary vehicle from now on
-    ui::TheChat().AddSystem(type == VEHICLE_TYPE_BMX ? TR("Рядом с вами велосипед. Садитесь и езжайте за хостом.",
-                                                          "There is a bicycle next to you. Get on and follow the host.")
-                            : hv->IsBike()           ? TR("Рядом с вами мотоцикл. Садитесь и езжайте за хостом.",
-                                                          "There is a motorbike next to you. Get on and follow the host.")
-                                                     : TR("Рядом с вами машина. Садитесь и езжайте за хостом.",
-                                                          "There is a vehicle next to you. Get in and follow the host."));
-    LOGI("The host is in a vehicle with no seat for us (model %d): one for the partner too", model);
+    Cmd(0x036A).I(GetPedRef(me)).I(car).Run();  // WARP_CHAR_INTO_CAR
+    Cmd(0x01C3).I(car).Run();                   // MARK_CAR_AS_NO_LONGER_NEEDED: an ordinary vehicle from now on
+    ui::TheChat().AddSystem(type == VEHICLE_TYPE_PLANE ? TR("У хоста нет места. Вот ваш самолёт.", "No seat with the host. Here is your plane.")
+                            : type == VEHICLE_TYPE_HELI ? TR("У хоста нет места. Вот ваш вертолёт.", "No seat with the host. Here is your helicopter.")
+                            : type == VEHICLE_TYPE_BMX ? TR("У хоста нет места. Вот ваш велосипед.", "No seat with the host. Here is your bicycle.")
+                            : hv->IsBike()           ? TR("У хоста нет места. Вот ваш мотоцикл.", "No seat with the host. Here is your motorbike.")
+                                                     : TR("У хоста нет места. Вот ваша машина.", "No seat with the host. Here is your vehicle."));
+    LOGI("The host is in a vehicle with no seat for us (model %d): one for the partner too, we sit in it", model);
 }
 
 // the point over rp's head the name tag hangs from (back buffer coordinates) and its fade with distance
 bool Players::TagAnchor(RemotePlayer& rp, float& sx, float& sy, float& alpha) {
     CPlayerPed* me = FindPlayerPed(0);
+    // over its remote-controlled toy while it flies one: which of the toys is the other player's, and from far off, as a
+    // toy is small (31.10)
+    CVehicle* toy = RemoteToy(rp);
     // and none in a scene with the bars up (a cutscene's or a mission's on the engine), as the game shows no HUD there
-    if (!rp.ped || !me || rp.ped->AreaCode() != me->AreaCode() || rp.hiddenOnSpot || cam::WideScreenOn()) return false;
-    CVector head = rp.ped->GetPosition() + CVector{0, 0, 0.95f};
-    float dist = (head - cam::Source()).Length();
-    if (dist > 70.0f) return false;
+    if (!rp.ped || !me || (toy ? toy->AreaCode() : rp.ped->AreaCode()) != me->AreaCode() || (!toy && rp.hiddenOnSpot) ||
+        cam::WideScreenOn())
+        return false;
+    CVector head = toy ? toy->GetPosition() + CVector{0, 0, 0.7f} : rp.ped->GetPosition() + CVector{0, 0, 0.95f};
+    float dist = (head - cam::Source()).Length(), range = toy ? 250.0f : 70.0f;
+    if (dist > range) return false;
     float depth;
     if (!WorldToScreen(head, sx, sy, depth)) return false;
     auto& g = ui::Gfx();
     // game screen space -> back buffer
     sx *= g.Width() / (float)std::max(1, ScreenWidth());
     sy *= g.Height() / (float)std::max(1, ScreenHeight());
-    alpha = dist > 50.0f ? 1.0f - (dist - 50.0f) / 20.0f : 1.0f;
+    alpha = dist > range - 20.0f ? 1.0f - (dist - (range - 20.0f)) / 20.0f : 1.0f;
     return true;
 }
 
@@ -2183,17 +2521,28 @@ bool Players::TeleportAllowed(const RemotePlayer& other, bool bring) {
                                   "You cannot bring your partner over while you are inside a building."));
         return false;
     }
+    if (bring && OwnCarFrozen()) {
+        ui::TheChat().AddError(TR("Сейчас позвать напарника к себе нельзя: миссия держит вас на месте.",
+                                  "You cannot bring your partner over now: the mission holds you in place."));
+        return false;
+    }
     return true;
 }
 
+bool OwnCarFrozen() {
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* v = me && me->InVehicle() ? me->Vehicle() : nullptr;
+    return v && (Field<uint32_t>(v, 0x40) & 0x2000);  // CPhysical: bDontApplySpeed, set by FREEZE_CAR_POSITION only
+}
+
 void Players::GoToPlayer(const RemotePlayer& other) {
-    GoTo(other, other.state.pos + CVector{1.0f, 0, 0});
+    GoTo(other, other.state.pos + CVector{1.0f, Net().Peers().size() > 1 ? (float)Net().MyId() : 0.0f, 0});  // two going at once
     ui::TheChat().AddSystem(Format(TR("Вы переместились к %s.", "You went over to %s."), Net().PeerName(other.id).c_str()));
 }
 
 void Players::Bring(uint8_t id) {
     CPlayerPed* me = FindPlayerPed(0);
-    CVector p = me->GetPosition() + CVector{1.0f, 0, 0};
+    CVector p = me->GetPosition() + CVector{1.0f, Net().Peers().size() > 1 ? (float)id : 0.0f, 0};
     Writer w(proto::G_TELEPORT);
     w.U8(id);
     w.F32(p.x);
@@ -2315,3 +2664,58 @@ Players::Ride Players::RideWith(const RemotePlayer& leader, bool asSeat) {
 }
 
 }  // namespace coop
+
+extern "C" __attribute__((used)) bool __cdecl CoopDriverDriveBy(game::CPed* ped) { return coop::DriverDriveBy(ped); }
+extern "C" __attribute__((used)) bool __cdecl CoopDriveByWeaponOk(void* info, game::CPed* ped) {
+    return coop::DriveByWeaponOk(info, ped);
+}
+
+// at 0x6446B6 for "mov al, [cheat]", with the driver (esi); the code after it tests al
+extern "C" __attribute__((naked)) void CoopDriverDriveByStub() {
+    __asm__ volatile(
+        "pushl %ecx\n\t"
+        "pushl %edx\n\t"
+        "pushl %esi\n\t"
+        "calll _CoopDriverDriveBy\n\t"
+        "addl $4, %esp\n\t"
+        "popl %edx\n\t"
+        "popl %ecx\n\t"
+        "ret\n\t");
+}
+
+// at 0x62D3DB for the gun test (eax: the gun's info, ebp: the ped): ZF set goes on, the jne after it ends the lean-out
+extern "C" __attribute__((naked)) void CoopDriveByWeaponStub() {
+    __asm__ volatile(
+        "pushl %eax\n\t"
+        "pushl %ecx\n\t"
+        "pushl %edx\n\t"
+        "pushl %ebp\n\t"
+        "pushl %eax\n\t"
+        "calll _CoopDriveByWeaponOk\n\t"
+        "addl $8, %esp\n\t"
+        "cmpb $1, %al\n\t"
+        "popl %edx\n\t"
+        "popl %ecx\n\t"
+        "popl %eax\n\t"
+        "ret\n\t");
+}
+
+// at 0x58E1C7 (eax: the gun in hand, cx: the camera's mode): 37 as before, and 35 or 36 aiming from a car (mode 0x37), go
+// on drawing the circle (0x58E1CC); the rest as before (0x58E1E1)
+extern "C" __attribute__((naked)) void CoopRocketCrossHairStub() {
+    __asm__ volatile(
+        "cmpl $0x25, %eax\n\t"
+        "je 1f\n\t"
+        "cmpw $0x37, %cx\n\t"
+        "jne 2f\n\t"
+        "cmpl $0x23, %eax\n\t"
+        "je 1f\n\t"
+        "cmpl $0x24, %eax\n\t"
+        "je 1f\n\t"
+        "2:\n\t"
+        "pushl $0x58E1E1\n\t"
+        "ret\n\t"
+        "1:\n\t"
+        "pushl $0x58E1CC\n\t"
+        "ret\n\t");
+}

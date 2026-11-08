@@ -1,7 +1,8 @@
 // coop-server.exe — SA:COOP relay server.
 //
 //   coop-server.exe [--port N] [--name "..."] [--password X] [--world <save file> | --new-game] [--host <nick>]
-//                   [--friendly-fire 0|1] [--partner-teleport 0|1] [--config server.ini] [--data <dir>]
+//                   [--friendly-fire 0|1] [--partner-teleport 0|1] [--shared-life 0|1] [--config server.ini]
+//                   [--data <dir>]
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -38,6 +39,7 @@ static void WriteDefaultConfig(const std::wstring& path) {
         "port = 7788\r\n"
         "; Оставьте пустым, если пароль не нужен.\r\n"
         "password =\r\n"
+        "; Сколько игроков в игре: от 2 до 4.\r\n"
         "max_players = 2\r\n"
         "; Ник игрока, который всегда будет хостом. Если пусто, хостом становится тот, кто зашёл первым.\r\n"
         "host =\r\n"
@@ -46,6 +48,8 @@ static void WriteDefaultConfig(const std::wstring& path) {
         "friendly_fire = 0\r\n"
         "; Поставьте 0, чтобы напарники не могли перемещаться командами /tp и /tphere.\r\n"
         "partner_teleport = 1\r\n"
+        "; Поставьте 1, чтобы гибель напарника проваливала сюжетную миссию хоста.\r\n"
+        "shared_life = 0\r\n"
         "; Игра через интернет (UPnP, код приглашения, пробивка NAT). Если поставить 0, останется только локальная сеть.\r\n"
         "internet = 1\r\n"
         "; Ретранслятор на случай, если друг не может подключиться по коду.\r\n"
@@ -142,6 +146,7 @@ int wmain(int argc, wchar_t** argv) {
     cfg.motd = ini.Get("server", "motd", cfg.motd);
     cfg.friendlyFire = ini.GetBool("server", "friendly_fire", false);
     cfg.partnerTeleport = ini.GetBool("server", "partner_teleport", true);
+    cfg.sharedLife = ini.GetBool("server", "shared_life", false);
     cfg.internet = ini.GetBool("server", "internet", true);
     cfg.turn = Trim(ini.Get("server", "turn", ""));
     cfg.dataDir = dataDir;
@@ -158,6 +163,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--new-game") cfg.newGame = true;
         else if (a == L"--friendly-fire") cfg.friendlyFire = next() == "1";
         else if (a == L"--partner-teleport") cfg.partnerTeleport = next() == "1";
+        else if (a == L"--shared-life") cfg.sharedLife = next() == "1";
         else if (a == L"--config" || a == L"--data") ++i;
     }
 

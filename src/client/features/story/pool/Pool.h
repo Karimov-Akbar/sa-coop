@@ -8,11 +8,19 @@
 
 namespace coop::pool {
 
-// owner: the other player said yes to its pool contest, and POOL2's bet screen takes it as the second pad (false: no
-// pool game of ours runs, or it is one for two already)
+// owner: the other player said yes to its pool contest, and POOL2's bet screen takes it as the second pad once our bet is
+// made (false: no pool game of ours runs, or it is one for two already)
 bool Ask(uint8_t partner);
 // owner: a game for two runs at our table
 bool Owning();
+// a game for two runs with us in it, at our table or at the other player's
+bool Playing();
+// owner: the other player said yes, and the bet screen waits for our bet: the game for two starts with it, and its
+// loser gives the stake to the winner
+bool Betting();
+// the second player: we said yes to that player's pool contest; until its game for two starts (or a minute and more
+// passes) our own table offers no game of ours
+void Expect(uint8_t owner);
 // that player's game shows us its table: its texts and help are ours to show (Missions' MissionSource)
 bool TextsFrom(uint8_t id);
 // Missions' command hook, after a command of any script: an answer to put in place of its own for the second pad and

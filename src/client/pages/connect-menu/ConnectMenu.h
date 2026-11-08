@@ -6,6 +6,8 @@ namespace coop::ui {
 // port, password, "Connect" and "Create server" (with save slot selection).
 void SetConnectMenuVisible(bool visible);
 bool IsConnectMenuVisible();
+// a key pressed while its keys page waits for one: taken as that action's key (true: the key is used up)
+bool ConnectMenuKey(int vk);
 void ProcessConnectMenu();  // per frame, before rendering
 void RenderConnectMenu();
 

@@ -1,0 +1,12 @@
+# Places of the partner chosen by hand, in coop.asi through coop.rc. A place:
+#   CUTSCENE x y z heading pose [animation]
+# The heading is in degrees. Pose: stand, lean (by a wall), sit or steps.
+# "CUTSCENE hidden" keeps the partner out of the whole cutscene.
+# A cutscene with places of its own uses only them and still checks them shot by shot.
+
+# DATE6B, the bar. The mod stood him behind the counter in one of the shots: only the customers' places here.
+DATE6B 499.52 -20.86 999.68 7.6 stand 1
+DATE6B 502.31 -14.17 999.68 145.9 stand 1
+
+# DATE6A, the start of the date in the club. CJ drinks alone and the camera hardly leaves him.
+DATE6A hidden

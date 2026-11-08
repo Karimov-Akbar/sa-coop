@@ -5,3 +5,5 @@
 package/** text eol=crlf
 *.png binary
 *.jpg binary
+# the animation packs: whole bytes, never line endings
+*.ifp binary

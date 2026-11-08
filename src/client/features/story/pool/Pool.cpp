@@ -15,6 +15,7 @@
 #include "common/lib/util/Util.h"
 #include "entities/mission/Mission.h"
 #include "entities/player/Players.h"
+#include "entities/profile/Profile.h"
 #include "entities/vehicle/VehicleState.h"
 #include "features/story/contest/Contest.h"
 #include "shared/api/net-session/Session.h"
@@ -33,7 +34,10 @@ using game::script::Cmd;
 using game::script::NextArg;
 using game::script::OutVar;
 
-enum : uint8_t { OP_START = 1, OP_END = 2, OP_FAIL = 3, OP_VIEW = 4, OP_OBJECTS = 5, OP_INPUT = 6, OP_RESULT = 7, OP_TABLE = 8 };
+enum : uint8_t {
+    OP_START = 1, OP_END = 2, OP_FAIL = 3, OP_VIEW = 4, OP_OBJECTS = 5, OP_INPUT = 6, OP_RESULT = 7, OP_TABLE = 8, OP_STAKE = 9,
+    OP_BUSY = 10
+};
 constexpr uintptr_t kMissionLocals = 0xA48960;   // CTheScripts::LocalVariablesForCurrentMission
 constexpr uintptr_t kMissionCleanUp = 0xA90850;  // CTheScripts::MissionCleanUp: 75 x {u8 type, i32 handle}
 constexpr uintptr_t kScriptParams = 0xA43C78;    // CTheScripts::ScriptParams: the last command's arguments
@@ -41,7 +45,25 @@ constexpr uintptr_t kMouse = 0xB73418;           // CPad::NewMouseControllerStat
 // POOL2's (mission 8) locals: our cue, the opponent's, the opponent (the second player's place), the mode for two, whose
 // pad it is
 constexpr int kOurCue = 106, kTheirCue = 107, kOpponent = 214, kTwoPlayers = 178, kTurn = 180, kTable = 163;
-constexpr uint64_t kAskMs = 3000, kViewMs = 50, kQuietMs = 10000, kGlideMs = 60, kTableMs = 1000, kTableQuietMs = 3000;
+// kAskMs: the owner's time to make its bet once the other player said yes
+constexpr uint64_t kAskMs = 60000, kViewMs = 50, kQuietMs = 10000, kGlideMs = 60, kTableMs = 1000, kTableQuietMs = 3000;
+constexpr int kBet = 155;   // POOL2's bet on its bet screen ($ 50..1000, no more than its player has)
+constexpr int kStage = 35;  // POOL2's stage: 3 its bet screen
+
+int32_t& Money() { return PlayerInfos()[0].money; }
+void SendStake(uint8_t to, int32_t stake) {
+    Writer w(proto::G_POOL);
+    w.U8(OP_STAKE), w.U8(to), w.I32(stake);
+    Net().Send(proto::CH_RELIABLE, w);
+}
+// the loser of a game for two gives the stake to the winner: each game pays or takes its own player's share
+void Settle(int32_t stake, bool won) {
+    if (stake <= 0) return;
+    Money() += won ? stake : -stake;
+    if (!Net().IsHost()) SaveProfileNow();  // a world reload puts the profile's money back
+    ui::TheChat().AddSystem(Format(won ? TR("Выигрыш: $%d.", "You win $%d.") : TR("Проигрыш: $%d.", "You lose $%d."), stake));
+    LOGI("Pool for two: %s $%d", won ? "won" : "lost", stake);
+}
 
 int32_t Local(int n) { return Ref<int32_t>(kMissionLocals + (uintptr_t)n * 4); }
 void* Pool2() {
@@ -68,6 +90,8 @@ struct Owner {
     bool on = false;
     bool alone = false;       // it left mid-game: our own pad plays its turns (POOL2 waited for the second pad for good)
     bool ballTold = false;    // a ball of ours logged once a game, to compare with the second player's
+    bool accepted = false;    // our bet made on the bet screen: the game for two starts with it
+    int32_t stake = 0;        // what the loser gives the winner
     CControllerState pad{};   // its buttons and sticks
     bool joypad = false;
     float mx = 0.0f, my = 0.0f;  // its mouse since the game last read it
@@ -87,9 +111,11 @@ void HandCue() {
     if (!rp || !rp->ped || rp->ped->InVehicle() || !GetObject(cue)) return;
     if (Cmd(0x0737).I(g_own.opponent).I(cue).Run()) Cmd(0x070B).I(g_own.opponent).I(0).Run();  // IS_CHAR_HOLDING_OBJECT, DROP_OBJECT
     Cmd(0x06AB).I(rp->pedHandle).I(1).Run();  // HIDE_CHAR_WEAPON_FOR_SCRIPTED_CUTSCENE, as POOL2 hides both players' weapons
-    // TASK_PICK_UP_OBJECT as POOL2 gives it: into the right hand, no animation
-    if (!Cmd(0x0737).I(rp->pedHandle).I(cue).Run())
+    // TASK_PICK_UP_OBJECT as POOL2 gives it: into the right hand, no animation (what the copy held dropped first)
+    if (!Cmd(0x0737).I(rp->pedHandle).I(cue).Run()) {
+        CallMethod<0x5E0360>(rp->ped, false);  // CPed::DropEntityThatThisPedIsHolding
         Cmd(0x070A).I(rp->pedHandle).I(cue).F(0.0f).F(0.0f).F(0.0f).I(6).I(16).S("NULL").S("NULL").I(1).Run();
+    }
     g_own.cue = cue;
 }
 
@@ -104,11 +130,17 @@ void CueBack() {
 
 void OwnerStart() {
     g_own.on = true, g_own.askUntil = 0;
+    // POOL2 gives the bet back when its second pad joins and pays nothing to either player: the game for money is ours
+    g_own.stake = g_own.accepted ? std::clamp(Local(kBet), 0, 1000) : 0;
     Send(OP_START, g_own.with);
+    if (g_own.stake > 0) SendStake(g_own.with, g_own.stake);
     contest::Drop();  // played together now: the game's winner is the result
     ui::TheChat().AddSystem(Format(TR("Партия вдвоём: %s играет вторым, удары по очереди.", "A game for two: %s plays second, turn by turn."),
                                    Name(g_own.with).c_str()));
-    LOGI("Pool for two with %s at our table", Name(g_own.with).c_str());
+    if (g_own.stake > 0)
+        ui::TheChat().AddSystem(Format(TR("Ставка $%d: проигравший отдаёт её победителю.", "The stake is $%d: the loser gives it to the winner."),
+                                       g_own.stake));
+    LOGI("Pool for two with %s at our table, stake $%d", Name(g_own.with).c_str(), g_own.stake);
 }
 
 void OwnerEnd() {
@@ -126,11 +158,13 @@ void OwnerEnd() {
 }
 
 // the second player gone mid-game: its turns are ours, and the bar's opponent stands there again
-void OwnerAlone() {
+void OwnerAlone(bool busy = false) {
     if (CPed* npc = GetPed(g_own.opponent)) npc->Flags() |= 0x80u;
     CueBack();
     g_own.alone = true;
-    ui::TheChat().AddSystem(Format(TR("%s нет в игре: удары второго игрока теперь ваши.", "%s is gone: the second player's shots are yours now."),
+    ui::TheChat().AddSystem(Format(busy ? TR("У игрока %s своя партия: удары второго игрока теперь ваши.",
+                                             "%s plays a game of their own: the second player's shots are yours now.")
+                                        : TR("%s нет в игре: удары второго игрока теперь ваши.", "%s is gone: the second player's shots are yours now."),
                                    Name(g_own.with).c_str()));
 }
 
@@ -139,6 +173,8 @@ void Won(uint8_t second) {
     ui::TheChat().AddSystem(second ? Format(TR("Партия: побеждает %s.", "The game: %s wins."), Name(g_own.with).c_str())
                                    : TR("Партия: побеждаете вы.", "The game: you win."));
     LOGI("Pool for two: %s won", second ? "the second player" : "we");
+    Settle(g_own.stake, !second);
+    g_own.stake = 0;
 }
 
 void SendView(CPed* npc) {
@@ -153,22 +189,23 @@ void SendView(CPed* npc) {
     CVector at = npc->GetPosition();
     void* a = anim::Main(npc->RwObject());
     int block = -1, idx = -1;
-    if (a) anim::Locate(anim::Hierarchy(a), block, idx);
+    if (!a || !anim::Locate(anim::Hierarchy(a), block, idx)) block = -1;  // Locate leaves an unknown block's number
     // the opponent's cue's own animation (POOL_*_O, in step with its holder's): the second player's hand holds its mirror
     CObject* cue = GetObject(Local(kTheirCue));
     auto* cc = cue ? (uint8_t*)cue->RwObject() : nullptr;
     void* ca = cc && cc[0] == 2 && Call<0x4D6760, bool>(cc) ? anim::Main(cc) : nullptr;  // an RpClump, RpAnimBlendClumpIsInitialized
     int cueBlock = -1, cueIdx = -1;
-    if (ca) anim::Locate(anim::Hierarchy(ca), cueBlock, cueIdx);
+    if (!ca || !anim::Locate(anim::Hierarchy(ca), cueBlock, cueIdx)) cueBlock = -1;
     Writer w(proto::G_POOL);
     w.U8(OP_VIEW), w.U8(g_own.with);
     w.Vec({src.x, src.y, src.z}), w.Vec({front.x, front.y, front.z}), w.F32(fov);
     w.Vec({at.x, at.y, at.z}), w.F32(npc->CurrentRotation());
-    w.I16((int16_t)block), w.I16((int16_t)idx);
+    w.U32(block >= 0 ? anim::BlockKey(block) : 0), w.U32(a ? anim::NameKey(anim::Hierarchy(a)) : 0);
     w.F32(a ? anim::CurrentTime(a) : 0.0f), w.F32(a ? Field<float>(a, 0x24) : 1.0f), w.U16(a ? anim::Flags(a) : 0);
     w.U8((uint8_t)g_own.turn);
     w.I8(npc->AreaCode());
-    w.I16((int16_t)cueBlock), w.I16((int16_t)cueIdx), w.F32(ca ? anim::CurrentTime(ca) : 0.0f), w.U16(ca ? anim::Flags(ca) : 0);
+    w.U32(cueBlock >= 0 ? anim::BlockKey(cueBlock) : 0), w.U32(ca ? anim::NameKey(anim::Hierarchy(ca)) : 0);
+    w.F32(ca ? anim::CurrentTime(ca) : 0.0f), w.U16(ca ? anim::Flags(ca) : 0);
     Net().Send(proto::CH_STATE, w);
 }
 
@@ -189,9 +226,12 @@ void SendObjects() {
         int h = Ref<int32_t>(e + 4);
         CObject* o = Ref<uint8_t>(e) == 3 ? GetObject(h) : nullptr;  // MISSION_CLEANUP_ENTITY_TYPE_OBJECT
         if (!o || h == ourCue) continue;
-        // shown as here: one with no model in place is not seen
+        // Shown as here. The aiming line's ten small cue balls (347@, SET_OBJECT_SCALE 0.3) are made anew each frame and
+        // have no model in place yet when sent: asked for one too, they went out hidden and the second player aimed
+        // with no line (30.10). Their size goes in bits 2-7 of the look, in 32nds (older games read bits 0-1).
+        int scale = std::clamp((int)std::lround(Field<float>(o, 0x15C) * 32.0f), 1, 63);  // CObject::m_fScale
         Entry x{(uint8_t)i, (uint16_t)o->ModelIndex(), o->GetPosition(), {0, 0, 0, 1},
-                (uint8_t)((o->IsVisible() && o->RwObject() ? 1 : 0) | (h == theirCue ? 2 : 0))};
+                (uint8_t)((o->IsVisible() ? 1 : 0) | (h == theirCue ? 2 : 0) | (scale << 2))};
         // its matrix (CPlaceable), as the other copies of objects go (Props, Objects). GET_OBJECT_QUATERNION read the
         // model's (CEntity::GetModellingMatrix), none while no model is in place: the owner's game crashed at the table's
         // start (0x0059C3E4)
@@ -271,13 +311,15 @@ struct Joined {
     uint64_t shownMs = 0;
     CVector at, start;        // the opponent's place now and at our first view (where our bar's own opponent waits)
     float heading = 0.0f;
-    int16_t block = -1, idx = -1;
+    int16_t block = -1;  // this game's IFP block of the opponent's animation, and its name's key
+    uint32_t key = 0;
     float time = 0.0f, speed = 1.0f;
     uint16_t flags = 0;
     int8_t area = 0;
     bool placed = false;      // brought to the owner's table (its interior's door used as a door)
     void* applied = nullptr;  // the animation our player plays of the opponent's
-    int16_t cueBlock = -1, cueIdx = -1;  // the opponent's cue's own animation there, at its time
+    int16_t cueBlock = -1;  // the opponent's cue's own animation there, at its time
+    uint32_t cueKey = 0;
     float cueTime = 0.0f;
     uint16_t cueFlags = 0;
     int cueSlot = -1;                    // its mirror's: in our player's hand here
@@ -287,6 +329,7 @@ struct Joined {
     uint64_t hideMs = 0;
     int told = -1;                      // the objects shown and hidden last logged (shown << 8 | hidden)
     bool ballTold = false;              // a ball's state here logged once a game (29.10: made, shown and not seen)
+    int32_t stake = 0;                  // what the loser gives the winner (ours: no more than we have)
 } g_join;
 
 void DeleteMirror(Mirror& m) {
@@ -308,7 +351,22 @@ void StopCamera() {
     Cmd(0x0373).Run();  // SET_CAMERA_BEHIND_PLAYER
 }
 
+// the second player: we said yes to that player's pool contest and its bet comes (Expect): our own table offers no game
+// meanwhile. With the owner betting (0.3.3) the second player started one at its own table, and the game for two then
+// put the owner's cue in its hand over its own POOL2's one, which went out of the world: its POOL2 crashed (31.10).
+uint8_t g_expectFrom = 0xFF;
+uint64_t g_expectUntil = 0;
+
 void JoinStart(uint8_t from) {
+    g_expectFrom = 0xFF;
+    if (Pool2()) {  // a game of our own runs all the same: the owner plays the second player's shots itself
+        Send(OP_BUSY, from);
+        ui::TheChat().AddSystem(Format(TR("У вас своя партия: за столом игрока %s удары второго игрока делает он сам.",
+                                          "You play a game of your own: at %s's table they take the second player's shots."),
+                                       Name(from).c_str()));
+        LOGI("Pool for two at %s's table refused: a POOL2 of our own runs", Name(from).c_str());
+        return;
+    }
     g_join = {};
     g_join.from = from;
     g_join.viewMs = NowMs();
@@ -356,12 +414,14 @@ void ReadView(Reader& r) {
     float fov = r.F32();
     Vec3 at = r.Vec();
     float heading = r.F32();
-    int16_t block = r.I16(), idx = r.I16();
+    int16_t block = (int16_t)anim::BlockByKey(r.U32());  // by names: each game's indices are its own
+    uint32_t key = r.U32();
     float time = r.F32(), speed = r.F32();
     uint16_t flags = r.U16();
     r.U8();  // whose turn: the owner's game decides it
     int8_t area = r.I8();
-    int16_t cueBlock = r.I16(), cueIdx = r.I16();
+    int16_t cueBlock = (int16_t)anim::BlockByKey(r.U32());
+    uint32_t cueKey = r.U32();
     float cueTime = r.F32();
     uint16_t cueFlags = r.U16();
     CVector front{f.x, f.y, f.z};
@@ -371,8 +431,8 @@ void ReadView(Reader& r) {
         return;
     g_join.src = {s.x, s.y, s.z}, g_join.front = front, g_join.fov = fov;
     g_join.at = {at.x, at.y, at.z}, g_join.heading = heading;
-    g_join.block = block, g_join.idx = idx, g_join.time = time, g_join.speed = std::clamp(speed, 0.0f, 10.0f), g_join.flags = flags;
-    g_join.cueBlock = cueBlock, g_join.cueIdx = cueIdx, g_join.cueTime = cueTime, g_join.cueFlags = cueFlags;
+    g_join.block = block, g_join.key = key, g_join.time = time, g_join.speed = std::clamp(speed, 0.0f, 10.0f), g_join.flags = flags;
+    g_join.cueBlock = cueBlock, g_join.cueKey = cueKey, g_join.cueTime = cueTime, g_join.cueFlags = cueFlags;
     g_join.area = area;
     g_join.viewMs = NowMs();
     if (!g_join.placed) {  // into the owner's bar, by its door
@@ -443,6 +503,7 @@ void ReadObjects(Reader& r) {
         for (float& f : q) f = r.F32();
         uint8_t look = r.U8();
         bool visible = look & 1, held = look & 2;  // held: the opponent's cue, in our hand (HoldCue)
+        float scale = (look >> 2) ? (look >> 2) / 32.0f : 1.0f;  // an older owner's game sends none
         if (!r.Ok() || !std::isfinite(p.x) || !std::isfinite(q[0])) return;
         if (held) g_join.cueSlot = slot;
         seen.insert(slot);
@@ -470,6 +531,7 @@ void ReadObjects(Reader& r) {
         // in the area our player is in, at the owner's table: the opponent's area the view brings can be the street's (a
         // script's person keeps area 0), and the balls were made, shown and never seen in the bar (28.10, twice)
         if (int area = Ref<int32_t>(0xB72914); o->AreaCode() != area) Cmd(0x0566).I(m.handle).I(area).Run();  // CGame::currArea, SET_OBJECT_AREA_VISIBLE
+        Field<float>(o, 0x15C) = scale;  // CObject::m_fScale, applied by CObject::PreRender
         if (held) continue;  // our hand places and shows it
         uint64_t now = NowMs();
         CVector at, to{p.x, p.y, p.z};
@@ -530,7 +592,7 @@ void Puppet() {
     SetEntityPosition(me, g_join.at);
     me->MoveSpeed() = CVector{};
     void* clump = me->RwObject();
-    void* h = g_join.block >= 0 ? anim::Resolve(g_join.block, g_join.idx) : nullptr;
+    void* h = g_join.block >= 0 ? anim::Find(g_join.block, g_join.key) : nullptr;
     if (!clump || !h) return;
     void* mine = nullptr;
     for (void* a = anim::First(clump); a; a = anim::Next(a))
@@ -553,11 +615,15 @@ void HoldCue() {
     CObject* o = cue >= 0 ? GetObject(cue) : nullptr;
     if (!g_join.placed || !me || me->InVehicle() || !o) return;
     int ref = GetPedRef(me);
-    // IS_CHAR_HOLDING_OBJECT; TASK_PICK_UP_OBJECT as POOL2 gives it: into the right hand, no animation
-    if (!Cmd(0x0737).I(ref).I(cue).Run()) Cmd(0x070A).I(ref).I(cue).F(0.0f).F(0.0f).F(0.0f).I(6).I(16).S("NULL").S("NULL").I(1).Run();
+    // IS_CHAR_HOLDING_OBJECT; TASK_PICK_UP_OBJECT as POOL2 gives it: into the right hand, no animation. Whatever else is
+    // in that hand is dropped first: a new hold task over it takes it out of the world (CTaskSimpleHoldEntity)
+    if (!Cmd(0x0737).I(ref).I(cue).Run()) {
+        CallMethod<0x5E0360>(me, false);  // CPed::DropEntityThatThisPedIsHolding
+        Cmd(0x070A).I(ref).I(cue).F(0.0f).F(0.0f).F(0.0f).I(6).I(16).S("NULL").S("NULL").I(1).Run();
+    }
     auto* clump = (uint8_t*)o->RwObject();
     if (!clump || clump[0] != 2) return;  // not built yet, or an atomic: nothing in it moves
-    void* h = g_join.cueBlock >= 0 ? anim::Resolve(g_join.cueBlock, g_join.cueIdx) : nullptr;
+    void* h = g_join.cueBlock >= 0 ? anim::Find(g_join.cueBlock, g_join.cueKey) : nullptr;
     if (!h && g_join.cueBlock >= 0) return;  // its IFP is being loaded
     if (!Call<0x4D6760, bool>(clump)) Call<0x4D6720>(clump);  // RpAnimBlendClumpIsInitialized, RpAnimBlendClumpInit
     void* mine = nullptr;
@@ -707,6 +773,10 @@ void ReadTable(uint8_t from, Reader& r) {
     }
     t.ms = NowMs();
     if ((o->GetPosition() - at).Length() <= 0.005f) return;
+    // Our own last game's balls: POOL2 leaves them on the table as temporary objects when it ends at the bet screen, and
+    // only its own next game clears them. Our table moved under them, and a racked triangle hung above the other
+    // game's balls until we left the bar (30.10). As POOL2's CLEAR_AREA at its start.
+    Call<0x5A1980>(o->GetPosition(), 2.0f);  // CObject::DeleteAllTempObjectsInArea
     LOGI("Pool table at %.2f,%.2f: height %.2f here, as in %s's game (%.2f here before)", at.x, at.y, at.z, Name(from).c_str(),
          o->GetPosition().z);
     Place(o, at, q);
@@ -780,7 +850,11 @@ void Handle(uint8_t from, Reader& r) {
         case OP_END:
             if (from == g_join.from) JoinEnd();
             break;
+        case OP_BUSY:  // the second player's own game runs, or (1) its world went: its shots are ours
+            if (from == g_own.with && g_own.on && !g_own.alone) OwnerAlone(r.U8() == 0);
+            break;
         case OP_FAIL: {
+            if (from == g_expectFrom) g_expectFrom = 0xFF;
             bool away = r.U8() != 0;
             ui::TheChat().AddSystem(Format(away ? TR("Игрок %s сейчас не за столом: сыграйте свою партию на деньги, сравнится выигрыш.",
                                                      "%s is not at the table now: play your own game for money, the winnings are compared.")
@@ -794,6 +868,27 @@ void Handle(uint8_t from, Reader& r) {
             if (!r.Ok() || from != g_join.from) return;
             ui::TheChat().AddSystem(second ? TR("Партия: побеждаете вы.", "The game: you win.")
                                            : Format(TR("Партия: побеждает %s.", "The game: %s wins."), Name(from).c_str()));
+            Settle(g_join.stake, second);
+            g_join.stake = 0;
+            break;
+        }
+        case OP_STAKE: {
+            int32_t stake = r.I32();
+            if (!r.Ok() || stake <= 0 || stake > 1000) return;
+            if (from == g_join.from) {  // the owner's bet: ours is no more than we have, and the owner is told so
+                g_join.stake = std::min(stake, std::max(Money(), 0));
+                if (g_join.stake < stake) SendStake(from, g_join.stake);
+                ui::TheChat().AddSystem(g_join.stake > 0 ? Format(TR("Ставка $%d: проигравший отдаёт её победителю.",
+                                                                     "The stake is $%d: the loser gives it to the winner."),
+                                                                  g_join.stake)
+                                                         : TR("У вас нет денег: партия без ставки.", "You have no money: the game has no stake."));
+                LOGI("Pool for two: the owner's stake $%d, ours $%d", stake, g_join.stake);
+            } else if (from == g_own.with && g_own.on && stake < g_own.stake) {
+                g_own.stake = stake;
+                ui::TheChat().AddSystem(Format(TR("У игрока %s только $%d: ставка теперь такая.", "%s has only $%d: that is the stake now."),
+                                               Name(from).c_str(), stake));
+                LOGI("Pool for two: the second player's stake is only $%d", stake);
+            }
             break;
         }
         case OP_VIEW:
@@ -826,17 +921,22 @@ public:
         if (id == g_own.with && g_own.on && !g_own.alone) OwnerAlone();
         else if (id == g_own.with && !g_own.on) g_own = {};
         if (id == g_join.from) JoinEnd();
+        if (id == g_expectFrom) g_expectFrom = 0xFF;
         if (auto it = g_tables.find(id); it != g_tables.end()) it->second.ms = 0;  // put back by TablesUpdate
     }
     void OnSessionEnd() override {
         if (g_own.on && !g_own.alone) OwnerAlone();
         else if (!g_own.on) g_own = {};
+        g_expectFrom = 0xFF;
         JoinEnd();
         if (!Pool2())
             for (auto& [id, t] : g_tables) PutTableBack(t);
         g_tables.clear();
     }
     void OnGameShutdown() override {  // the world goes: what was ours in it too
+        // still in the session, so the owner never heard of it: its POOL2 waited for our pad for good, and the host could
+        // only leave the game with what it had not saved (05.11)
+        if (g_join.from != 0xFF) Send(OP_BUSY, g_join.from, 1);
         g_own = {};
         g_join = {};
         g_tables.clear();
@@ -849,6 +949,8 @@ struct Reg {
     Reg() { core::RegisterModule(&g_module); }
 } g_reg;
 }  // namespace
+
+bool Playing() { return g_own.on || g_join.from != 0xFF; }
 
 bool Ask(uint8_t partner) {
     if (!Pool2() || Local(kTwoPlayers) == 1 || g_own.with != 0xFF) {
@@ -864,19 +966,35 @@ bool Ask(uint8_t partner) {
 
 bool Owning() { return g_own.with != 0xFF && g_own.on && !g_own.alone; }
 
+bool Betting() { return g_own.with != 0xFF && !g_own.on && g_own.askUntil != 0; }
+
+void Expect(uint8_t owner) {
+    g_expectFrom = owner;
+    g_expectUntil = NowMs() + kAskMs + 10000;
+    LOGI("Pool for two: waiting for %s's bet, our own table offers no game meanwhile", Name(owner).c_str());
+}
+
 bool TextsFrom(uint8_t id) { return g_join.from != 0xFF && id == g_join.from; }
 
 int Answer(void* script, uint16_t op) {
     // LOCATE_CHAR_ON_FOOT_CHAR_3D of the table's attractor (POOL, no mission): the second player stands at the owner's
     // table by its own bar's opponent, whose F started a game of its own over the owner's: a second POOL2 with its own
     // balls, camera and animations (28.10)
-    if (op == 0x0105 && g_join.from != 0xFF && !_strnicmp(Field<char[8]>(script, 0x08), "pool", 8)) return 0;
+    bool waiting = g_expectFrom != 0xFF && NowMs() < g_expectUntil;  // the owner's bet still to come
+    if (op == 0x0105 && (g_join.from != 0xFF || waiting) && !_strnicmp(Field<char[8]>(script, 0x08), "pool", 8)) return 0;
     if (g_own.with == 0xFF || !Field<uint8_t>(script, 0xDC) || script != Pool2()) return -1;
     const auto* p = (const int32_t*)kScriptParams;
     // IS_CHAR_HOLDING_OBJECT of the opponent and its cue: our copy of the second player holds it (HandCue)
     if (op == 0x0737 && g_own.cue >= 0 && p[0] == g_own.opponent && p[1] == g_own.cue) return 1;
+    // Our bet made on the bet screen (its accept, 0 16, would start a game with the bar's player): the second pad's START
+    // comes right after it in POOL2's loop, and the game for two starts with that bet (0.3.3, pool for money)
+    if (op == 0x00E1 && p[0] == 0 && p[1] == 16 && !g_own.on && g_own.askUntil && Local(kStage) == 3 &&
+        Button(GetPad(0)->NewState, 16)) {
+        g_own.accepted = true;
+        return 0;
+    }
     if (op == 0x00E1 && p[0] == 1) {  // IS_BUTTON_PRESSED on the second pad
-        if (!g_own.on) return g_own.askUntil && p[1] == 12 ? 1 : -1;  // START at the bet screen: the second player joins
+        if (!g_own.on) return g_own.accepted && p[1] == 12 ? 1 : -1;  // START at the bet screen: the second player joins
         const CControllerState& pad = g_own.alone ? GetPad(0)->NewState : g_own.pad;
         return Local(kTurn) == 1 && Button(pad, p[1]) != 0 ? 1 : 0;
     }

@@ -58,7 +58,8 @@ struct Prop {
     int8_t area = 0;
     bool visible = true;
     float scale = 1.0f;
-    int16_t animBlock = -1, animIdx = -1;  // its own animation (IFP block and index), -1: none
+    int16_t animBlock = -1;  // its own animation: this game's IFP block, -1: none, and its name's key (anim::NameKey)
+    uint32_t animKey = 0;
     uint16_t animFlags = 0;
     float animTime = 0;
     uint8_t animRev = 0;  // counts the owner's starts of an animation: the same one again is a restart
@@ -81,8 +82,8 @@ void Write(Writer& w, const Prop& p) {
     w.I8(p.area);
     w.U8(p.visible);
     w.F32(p.scale);
-    w.I16(p.animBlock);
-    w.I16(p.animIdx);
+    w.U32(p.animBlock >= 0 ? anim::BlockKey(p.animBlock) : 0);
+    w.U32(p.animKey);
     w.U16(p.animFlags);
     w.F32(p.animTime);
     w.U8(p.animRev);
@@ -106,8 +107,8 @@ void Read(Reader& r, Prop& p) {
     p.area = r.I8();
     p.visible = r.U8() != 0;
     p.scale = r.F32();
-    p.animBlock = r.I16();
-    p.animIdx = r.I16();
+    p.animBlock = (int16_t)anim::BlockByKey(r.U32());  // -1 too for an IFP this game has not
+    p.animKey = r.U32();
     p.animFlags = r.U16();
     p.animTime = r.F32();
     p.animRev = r.U8();
@@ -182,7 +183,8 @@ bool ReadLook(CObject* o, Prop& p) {
     p.area = o->AreaCode();
     p.visible = o->IsVisible();
     p.scale = Field<float>(o, 0x15C);  // CObject::m_fScale
-    p.animBlock = p.animIdx = -1;
+    p.animBlock = -1;
+    p.animKey = 0;
     auto* clump = (uint8_t*)o->RwObject();
     if (!clump) return false;
     if (clump[0] != 2 || !Call<0x4D6760, bool>(clump)) return true;  // RpClump, RpAnimBlendClumpIsInitialized
@@ -193,7 +195,7 @@ bool ReadLook(CObject* o, Prop& p) {
         if (best && anim::BlendAmount(a) <= anim::BlendAmount(best)) continue;
         best = a;
         p.animBlock = (int16_t)block;
-        p.animIdx = (int16_t)idx;
+        p.animKey = anim::NameKey(anim::Hierarchy(a));
     }
     if (best) {
         p.animFlags = anim::Flags(best);
@@ -219,13 +221,13 @@ void SendGone(uint16_t id) {
 
 void Update(uint16_t id, Owned& ow, Prop p) {
     const Prop& s = ow.sent;
-    bool other = p.animBlock != s.animBlock || p.animIdx != s.animIdx;
+    bool other = p.animBlock != s.animBlock || p.animKey != s.animKey;
     bool again = !other && p.animBlock >= 0 && !(p.animFlags & anim::F_LOOPED) && p.animTime + 0.25f < ow.animTime;
     ow.animTime = p.animTime;
     p.animRev = (uint8_t)(s.animRev + (other || again ? 1 : 0));
     if (other || again)
-        LOGD("Prop %04X animation %s/%d (flags %04X, %.2f s)", id, p.animBlock >= 0 ? (const char*)anim::Block(p.animBlock) : "-",
-             p.animIdx, p.animFlags, p.animTime);
+        LOGD("Prop %04X animation %s/%08X (flags %04X, %.2f s)", id, p.animBlock >= 0 ? (const char*)anim::Block(p.animBlock) : "-",
+             p.animKey, p.animFlags, p.animTime);
     if (!g_resend && !Differs(p, s)) return;
     SendState(id, p);
     ow.sent = p;
@@ -295,7 +297,10 @@ void Scan() {
                 bool ours = !roadblock && !activity.empty() &&
                             std::find(activity.begin(), activity.end(), GetObjectRef(o)) != activity.end() &&
                             std::none_of(found.begin(), found.end(), [o](const auto& x) { return x.first == o; });
-                int8_t area = o->AreaCode() == 13 ? 0 : o->AreaCode();  // 13: seen in every area (the roadblock's are)
+                // 13: seen in every area (the roadblock's are). A joint range round's targets have it too (SHRANGE sets
+                // none): measured in the street, they never went to the other player in the range's room, who shot at
+                // an empty booth (#92, 30.10). Those are where our player is.
+                int8_t area = o->AreaCode() == 13 ? (me && RangeTarget(o) ? me->AreaCode() : 0) : o->AreaCode();
                 if (!(roadblock || ours) || RemoteDistance(o->GetPosition(), area) > 150.0f) continue;
                 Prop p;
                 p.by = BY_PLAYER;
@@ -342,7 +347,7 @@ void Scan() {
         }
         if (!ReadLook(ow.obj, p)) {  // the animation as it was
             p.animBlock = ow.sent.animBlock;
-            p.animIdx = ow.sent.animIdx;
+            p.animKey = ow.sent.animKey;
             p.animFlags = ow.sent.animFlags;
             p.animTime = ow.animTime;
         }
@@ -408,6 +413,50 @@ CPed* HolderOf(const Copy& c) {
     CPed* ped = h >= 0 ? GetPed(h) : nullptr;
     NetPed* np = ped ? Peds::Instance().Find(ped) : nullptr;
     return np && np->owner != Net().MyId() ? ped : nullptr;
+}
+
+// The gym's weights are made by each game on its own bench and rack as its player comes near (the object brains GYMBENC
+// and GYMDUMB: CREATE_OBJECT, ATTACH_OBJECT_TO_OBJECT, then TASK_PICK_UP_OBJECT for the lift). The copy of the other
+// player's bar or dumbbells in its copy's hands and ours on the rack were two of each (08.11). Ours on the rack is hidden
+// while such a copy shows near it (HideOwnWeights), and a copy put back on the rack hides by ours there (Apply).
+constexpr int kGymWeights[] = {2913, 3071, 3072};  // KMB_BPRESS, KMB_DUMBBELL_R, KMB_DUMBBELL_L
+std::map<int, CObject*> g_hiddenOwn;               // our weights hidden for a copy: handle -> object
+
+bool GymWeight(int model) { return std::find(std::begin(kGymWeights), std::end(kGymWeights), model) != std::end(kGymWeights); }
+
+// our objects of this model within 3 m of `at`; resting: only those on their bench or rack (attached to an object)
+std::vector<int> OwnWeights(int model, const CVector& at, bool resting) {
+    std::vector<int> out;
+    CPoolHeader* pool = ObjectPool();
+    for (int i = 0; pool && i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        auto* o = (CObject*)(pool->objects + (size_t)i * kObjectPoolElemSize);
+        CPhysical* on = o->AttachedTo();
+        if (o->ModelIndex() == model && !IsCopy(o) && Near(o->GetPosition(), at, 3.0f) && (!resting || (on && on->IsObject())))
+            out.push_back(GetObjectRef(o));
+    }
+    return out;
+}
+
+void HideOwnWeights() {
+    std::vector<int> want;
+    for (auto& [k, c] : g_copies)
+        if (c.shown == 1 && GymWeight(c.p.model) && Alive(c.obj, c.handle))
+            for (int h : OwnWeights(c.p.model, c.obj->GetPosition(), true)) want.push_back(h);
+    for (int h : want)
+        if (CObject* o = GetObject(h); o && !g_hiddenOwn.count(h) && o->IsVisible()) {
+            Cmd(0x0750).I(h).I(0).Run();  // SET_OBJECT_VISIBLE
+            g_hiddenOwn[h] = o;
+        }
+    // shown again once no copy needs it, or off its rack: our player takes it (the script detaches it first)
+    for (auto it = g_hiddenOwn.begin(); it != g_hiddenOwn.end();) {
+        if (std::find(want.begin(), want.end(), it->first) != want.end()) {
+            ++it;
+            continue;
+        }
+        if (Alive(it->second, it->first)) Cmd(0x0750).I(it->first).I(1).Run();
+        it = g_hiddenOwn.erase(it);
+    }
 }
 
 void Detach(Copy& c) { Cmd(0x0682).I(c.handle).F(0.0f).F(0.0f).F(0.0f).I(0).Run(); }  // DETACH_OBJECT
@@ -509,7 +558,7 @@ void Animate(Copy& c) {
         return;
     }
     void* h = nullptr;
-    if (c.p.animBlock >= 0 && !(h = anim::Resolve(c.p.animBlock, c.p.animIdx))) return;
+    if (c.p.animBlock >= 0 && !(h = anim::Find(c.p.animBlock, c.p.animKey))) return;
     if (!Call<0x4D6760, bool>(clump)) Call<0x4D6720>(clump);  // RpAnimBlendClumpIsInitialized, RpAnimBlendClumpInit
     if (c.animApplied)
         for (void* a = anim::First(clump); a; a = anim::Next(a))
@@ -521,7 +570,7 @@ void Animate(Copy& c) {
         }
     c.animApplied = h;
     c.animRev = c.p.animRev;
-    LOGD("Player %d's prop animation %s/%d", c.from, c.p.animBlock >= 0 ? (const char*)anim::Block(c.p.animBlock) : "-", c.p.animIdx);
+    LOGD("Player %d's prop animation %s/%08X", c.from, c.p.animBlock >= 0 ? (const char*)anim::Block(c.p.animBlock) : "-", c.p.animKey);
 }
 
 void Apply(Copy& c) {
@@ -557,6 +606,8 @@ void Apply(Copy& c) {
         }
     }
     bool show = c.p.visible && (!holder || holder->IsVisible());  // a held one shows with its holder, as the task does
+    if (show && c.p.hang == HANG_LOOSE && GymWeight(c.p.model) && !OwnWeights(c.p.model, o->GetPosition(), false).empty())
+        show = false;  // put back on the rack: ours is there
     if (c.shown != (int8_t)show) {
         Cmd(0x0750).I(c.handle).I(show ? 1 : 0).Run();  // SET_OBJECT_VISIBLE
         c.shown = (int8_t)show;
@@ -634,6 +685,7 @@ public:
             Scan();
         }
         for (auto& [k, c] : g_copies) Apply(c);
+        HideOwnWeights();
     }
 
     void OnPeerResync(uint8_t id) override {  // its game started over: its props of before are gone there
@@ -643,11 +695,13 @@ public:
     void OnPeerLeave(uint8_t id) override { DeleteCopies(id); }
     void OnSessionEnd() override {
         DeleteCopies(-1);
+        HideOwnWeights();  // no copies: ours on the racks show again
         g_owned.clear();
     }
     void OnGameStarted() override {  // a new world: the objects of the old one are gone
         g_copies.clear();
         g_owned.clear();
+        g_hiddenOwn.clear();
     }
     void OnGameShutdown() override { OnGameStarted(); }  // nothing to touch while the world loads
 

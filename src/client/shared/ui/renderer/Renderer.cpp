@@ -350,11 +350,29 @@ void Renderer::Quad(float x, float y, float w, float h, float u0, float v0, floa
     m_verts.push_back(d);
 }
 
+void Renderer::Clip(float x, float y, float w, float h) {
+    Flush();
+    RECT r{(LONG)x, (LONG)y, (LONG)(x + w), (LONG)(y + h)};
+    m_dev->SetScissorRect(&r);
+    m_dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+}
+
+void Renderer::ClipEnd() {
+    Flush();
+    m_dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+}
+
 void Renderer::Rect(float x, float y, float w, float h, uint32_t argb) {
     if (!m_inFrame || (argb >> 24) == 0) return;
     Font& f = m_fonts[FONT_NORMAL];
     SetTexture(f.tex);
     Quad(x, y, w, h, f.whiteU, f.whiteV, f.whiteU, f.whiteV, argb);
+}
+
+void Renderer::Image(void* texture, float x, float y, float w, float h, uint32_t argb) {
+    if (!m_inFrame || !texture) return;
+    SetTexture((IDirect3DTexture9*)texture);
+    Quad(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, argb);
 }
 
 void Renderer::RectOutline(float x, float y, float w, float h, uint32_t argb, float t) {

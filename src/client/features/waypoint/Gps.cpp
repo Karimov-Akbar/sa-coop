@@ -157,7 +157,7 @@ float OffRoute(CVector2D p) {
 }
 
 // The player's own map waypoint (Waypoints reads it the same way), else the other player's it shows: a red route. With
-// neither, the mission's destination (a plain coordinate blip on the radar, the nearest): a yellow one (Thomas, 28.10:
+// neither, the mission's destination (a plain coordinate blip on the radar, the nearest): a yellow one (28.10:
 // "для целей желтый а для метки красная").
 bool g_mission = false;  // the target is a mission's destination
 bool g_routeMission = false;  // the route found goes to one
@@ -276,7 +276,7 @@ void gps::DrawRoute(const std::map<uint8_t, game::CVector2D>& remote) {
     CVector2D at;
     size_t i = Beside(Ref<CVector2D>(0xBAA248), at);  // CRadar::vec2DRadarOrigin: the player
     float w = ScreenHeight() / 448.0f * 1.2f;        // 5-6 pixels across at 1080p
-    // red to a waypoint, yellow to a mission's destination (Thomas, 28.10)
+    // red to a waypoint, yellow to a mission's destination (28.10)
     const CRGBA colour = g_routeMission ? CRGBA{240, 200, 40, 255} : CRGBA{225, 45, 45, 255};
     for (CVector2D a = ToRadar(at); i + 1 < g_route.size(); ++i) {
         CVector2D b = ToRadar(g_route[i + 1]);

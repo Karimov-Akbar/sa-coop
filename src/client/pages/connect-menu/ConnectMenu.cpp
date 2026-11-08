@@ -28,6 +28,8 @@ constexpr uint32_t kGold = 0xFFE2C063;  // the game's mission-title cream
 bool g_visible = false;
 bool g_autoShown = false;
 int g_tab = 0;  // 0 "connect", 1 "create"
+bool g_keysPage = false;  // the mod's keys and the microphone instead of the rest
+int g_capture = -1;       // the key of that action is being chosen (the next key pressed)
 std::wstring g_nick, g_addr, g_port, g_password;
 std::string g_formError;
 int g_slotIndex = 0;  // index into the slot list
@@ -96,11 +98,59 @@ uint16_t PortValue() {
     if (p <= 0 || p > 65535) p = 7788;
     return (uint16_t)p;
 }
+
+// the keys of the keys page, in its order
+int* const* BoundKeys() {
+    static int* const keys[] = {&Cfg().chatKey, &Cfg().passengerKey, &Cfg().playerListKey, &Cfg().voiceKey};
+    return keys;
+}
+constexpr int kBoundKeys = 4;
+
+// a letter or a digit as on the key cap whatever the layout ("Е" for T in a Russian one), the rest by Windows' names
+std::string KeyName(int vk) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::string(1, (char)vk);
+    UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
+    switch (vk) {  // the extended ones, else Windows names the numpad's
+        case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN: case VK_PRIOR: case VK_NEXT: case VK_END: case VK_HOME:
+        case VK_INSERT: case VK_DELETE: case VK_DIVIDE: case VK_RCONTROL: case VK_RMENU: sc |= 0x100;
+    }
+    wchar_t name[64];
+    if (sc && GetKeyNameTextW((LONG)(sc << 16), name, 64) > 0) return Narrow(name);
+    return Format("#%d", vk);
+}
+
+// a key in a box: true when clicked
+bool KeyField(float x, float y, float w, float h, const std::string& text, bool waiting) {
+    auto& g = Gfx();
+    auto& st = In().State();
+    bool hover = st.mouseX >= x && st.mouseX < x + w && st.mouseY >= y && st.mouseY < y + h;
+    g.Rect(x, y, w, h, waiting ? 0xFF16202A : 0xFF0C1117);
+    g.RectOutline(x, y, w, h, waiting || hover ? kSaBlue : kSaLine, std::max(1.0f, g.Scale()));
+    g.Text(FONT_NORMAL, x + w * 0.5f, y + (h - g.LineHeight(FONT_NORMAL)) * 0.5f, text, waiting ? kSaBlue : 0xFFFFFFFF,
+           TEXT_CENTER | TEXT_SHADOW);
+    return hover && st.lmbPressed;
+}
 }  // namespace
+
+bool ConnectMenuKey(int vk) {
+    if (!g_visible || g_capture < 0) return false;
+    if (vk == VK_ESCAPE) return g_capture = -1, true;
+    // F9 opens this window, Alt and Windows' keys belong to Windows
+    if (vk == VK_F9 || vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN) return true;
+    int* const* keys = BoundKeys();
+    for (int i = 0; i < kBoundKeys; ++i)
+        if (i != g_capture && *keys[i] == vk) *keys[i] = *keys[g_capture];  // the action that had it takes the old one
+    *keys[g_capture] = vk;
+    g_capture = -1;
+    flow::SaveConnectSettings();
+    return true;
+}
 
 void SetConnectMenuVisible(bool visible) {
     if (visible == g_visible) return;
     g_visible = visible;
+    g_keysPage = false;
+    g_capture = -1;
     if (visible) {
         LoadFields();
         if (TheChat().IsOpen()) TheChat().Close();
@@ -140,7 +190,7 @@ void RenderConnectMenu() {
     float W = 820 * s, H = 690 * s;
     float x = (g.Width() - W) * 0.5f, y = (g.Height() - H) * 0.5f;
     float cx = x + 52 * s, cw = W - 104 * s;
-    float room = mh * 1.6f;  // space for the pointer left of a menu item
+    float room = mh * 1.6f;  // the space beside a menu item's name
 
     float by = y + H - 20 * s - rowH;     // footer items
     float bodyBottom = by - 12 * s;
@@ -150,7 +200,7 @@ void RenderConnectMenu() {
     float cy = w::Panel(x, y, W, H, "SA:COOP") + 8 * s;
     float vx = x + W - 52 * s;
     g.Text(FONT_MENU_SMALL, vx, y + 36 * s, "v" COOP_VERSION_STR, kSaSlate, TEXT_RIGHT);
-    // the language switch left of the version, the pointer at the active one; the choice is saved at once
+    // the language switch left of the version, the active one lit; the choice is saved at once
     float lx = vx - g.TextWidth(FONT_MENU_SMALL, "v" COOP_VERSION_STR) - 34 * s;
     for (int en = 1; en >= 0; --en) {
         const char* label = en ? "EN" : "RU";
@@ -161,7 +211,7 @@ void RenderConnectMenu() {
             flow::SaveConnectSettings();
             RefreshSlots();
         }
-        lx -= 52 * s;  // room for the pointer of EN
+        lx -= 52 * s;  // the space before EN
     }
 
     auto caption = [&](float px, const std::string& text) { g.Text(FONT_MENU_SMALL, px, cy, text, kSaMuted); };
@@ -172,12 +222,42 @@ void RenderConnectMenu() {
             cy += g.LineHeight(f);
         }
     };
-    // a menu item whose text starts at px (the pointer hangs to the left of it)
+    // a menu item whose text starts at px
     auto item = [&](const char* id, float px, float py, const std::string& label, bool enabled = true, bool lit = false) {
         return w::Button(id, px - room, py, g.TextWidth(FONT_MENU, label) + 2 * room, rowH, label, enabled, lit);
     };
 
-    if (online) {
+    if (g_keysPage) {
+        // ---- the mod's keys and the microphone, saved in coop.ini at once
+        g.Text(FONT_BIG, cx, cy, TR("Клавиши", "Keys"), kSaBlue, TEXT_SHADOW);
+        cy += bh + 22 * s;
+        const char* labels[kBoundKeys] = {TR("Чат", "Chat"), TR("Сесть пассажиром", "Enter as a passenger"),
+                                          TR("Список игроков", "Player list"), TR("Микрофон", "Microphone")};
+        float kx = cx + cw * 0.55f;
+        for (int i = 0; i < kBoundKeys; ++i) {
+            g.Text(FONT_NORMAL, cx, cy + (rowH - lh) * 0.5f, labels[i], kText, TEXT_SHADOW);
+            bool waiting = g_capture == i;
+            if (KeyField(kx, cy, cx + cw - kx, rowH, waiting ? TR("нажмите клавишу", "press a key") : KeyName(*BoundKeys()[i]), waiting))
+                g_capture = waiting ? -1 : i;
+            cy += rowH + 10 * s;
+        }
+        cy += 14 * s;
+        caption(cx, TR("Голосовая связь", "Voice chat"));
+        cy += ch + 6 * s;
+        auto& cfg = Cfg();
+        int mode = !cfg.voiceEnabled ? 3 : cfg.voiceAlwaysOn ? 2 : cfg.voiceToggle ? 1 : 0;
+        const char* modes[] = {TR("пока клавиша зажата", "while the key is held"),
+                               TR("нажатие включает и выключает", "a press turns it on and off"), TR("всегда включена", "always on"),
+                               TR("выключена", "off")};
+        if (int d = w::Selector("voice", cx, cy, cw, rowH, modes[mode])) {
+            mode = (mode + d + 4) % 4;
+            cfg.voiceEnabled = mode != 3;
+            cfg.voiceAlwaysOn = mode == 2;
+            cfg.voiceToggle = mode == 1;
+            flow::SaveConnectSettings();
+        }
+        cy += rowH;
+    } else if (online) {
         // ---- in a session: who we are, the code for the friend, the players
         bool host = net.IsHost();
         g.Text(FONT_BIG, cx, cy, host ? TR("Сервер запущен", "Server running") : TR("Вы в игре", "Connected"), kSaBlue,
@@ -204,7 +284,8 @@ void RenderConnectMenu() {
             }
             cy += 20 * s;
         }
-        caption(cx, Format(TR("Игроки: %d", "Players: %d"), 1 + (int)net.Peers().size()));
+        caption(cx, host ? Format(TR("Игроки: %d из %d", "Players: %d of %d"), 1 + (int)net.Peers().size(), Cfg().maxPlayers)
+                         : Format(TR("Игроки: %d", "Players: %d"), 1 + (int)net.Peers().size()));
         cy += ch + 8 * s;
         auto row = [&](const std::string& name, bool isHost, uint32_t ping, bool me) {
             float rh = lh + 14 * s;
@@ -258,7 +339,7 @@ void RenderConnectMenu() {
             para(TR("Хост сохраняет мир. Скоро он загрузится у вас.", "The host is saving the world. It will load for you soon."),
                  kSaMuted, FONT_SMALL, true);
     } else {
-        // ---- the form: the tabs are menu items, the active one carries the pointer
+        // ---- the form: the tabs are menu items, the active one lit
         float tx = cx;
         for (int t = 0; t < 2; ++t) {
             const char* label = t ? TR("Создать игру", "Host a game") : TR("Подключиться", "Join a game");
@@ -306,12 +387,21 @@ void RenderConnectMenu() {
 
         caption(cx, TR("Порт", "Port"));
         caption(cx + 170 * s, TR("Пароль", "Password"));
+        float playersW = g_tab == 1 ? 170 * s : 0.0f;  // beside the password, for the host: the window keeps its height
+        if (g_tab == 1) caption(cx + cw - playersW, TR("Игроков", "Players"));
         cy += ch + 6 * s;
         enter |= w::TextBox("port", cx, cy, 150 * s, rowH, g_port, 5, false, true);
-        enter |= w::TextBox("pass", cx + 170 * s, cy, cw - 170 * s, rowH, g_password, 32, true, false, TR("необязательно", "optional"));
+        enter |= w::TextBox("pass", cx + 170 * s, cy, cw - 170 * s - (g_tab == 1 ? playersW + 20 * s : 0.0f), rowH, g_password, 32, true, false,
+                            TR("необязательно", "optional"));
+        if (g_tab == 1) {
+            int& players = Cfg().maxPlayers;
+            if (int d = w::Selector("players", cx + cw - playersW, cy, playersW, rowH, std::to_string(players)))
+                players = 2 + (players - 2 + d + proto::kMaxPlayers - 1) % (proto::kMaxPlayers - 1);
+        }
         cy += rowH + 22 * s;
         if (g_tab == 1) {  // the host decides for the whole game; saved with the other settings when the server starts
             w::Checkbox("ff", cx, cy, TR("Урон по напарнику", "Friendly fire"), Cfg().friendlyFire);
+            w::Checkbox("life", cx + cw * 0.5f, cy, TR("Общая жизнь", "Shared life"), Cfg().sharedLife);
             cy += lh * 0.8f + 22 * s;
             bool noTeleport = !Cfg().partnerTeleport;
             if (w::Checkbox("tp", cx, cy, TR("Запретить напарникам /tp и /tphere", "No /tp and /tphere for partners"), noTeleport))
@@ -346,9 +436,13 @@ void RenderConnectMenu() {
 
     // ---- footer: like "Back" on the game's pages
     g.Rect(cx, bodyBottom, cw, std::max(1.0f, s), kSaLine);
+    float fx = cx;
     if (online || busy) {
-        if (item("leave", cx, by, online ? TR("Отключиться", "Disconnect") : TR("Отмена", "Cancel"))) flow::Leave();
+        const char* leave = online ? TR("Отключиться", "Disconnect") : TR("Отмена", "Cancel");
+        if (item("leave", fx, by, leave)) flow::Leave();
+        fx += g.TextWidth(FONT_MENU, leave) + room * 2.2f;
     }
+    if (item("keys", fx, by, g_keysPage ? TR("Назад", "Back") : TR("Клавиши", "Keys"))) g_keysPage = !g_keysPage, g_capture = -1;
     std::string close = online || busy || inGame ? TR("Закрыть", "Close") : TR("Одиночная игра", "Single player");
     if (item("close", cx + cw - g.TextWidth(FONT_MENU, close), by, close)) SetConnectMenuVisible(false);
     w::EndFrame();

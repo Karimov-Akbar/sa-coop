@@ -130,6 +130,10 @@ public:
 
     void OnPostProcess() override {
         if (!Net().Online()) return;
+        if (bool want = Cfg().voiceEnabled && !m_testTone; want != m_wantMic) {  // switched on the F9 window's keys page
+            m_wantMic = want;
+            if (want) StartAudioThread();
+        }
         if (m_audioOk < 0 && !m_audioOffTold) {
             m_audioOffTold = true;
             ui::TheChat().AddError(TR("Голосовой чат выключен: звуковой драйвер Windows падает при открытии микрофона. Обновите драйвер звука.",
@@ -346,10 +350,15 @@ private:
     }
 
     // ---- the game's thread
-    bool PushToTalk() const {
+    bool PushToTalk() {
         if (Cfg().voiceAlwaysOn || m_testTone) return true;
         // only while our window is active and nobody types in the chat
-        return game::IsForeground() && !ui::TheChat().IsOpen() && (GetAsyncKeyState(Cfg().voiceKey) & 0x8000);
+        bool down = game::IsForeground() && !ui::TheChat().IsOpen() && (GetAsyncKeyState(Cfg().voiceKey) & 0x8000);
+        bool pressed = down && !m_keyWasDown;
+        m_keyWasDown = down;
+        if (!Cfg().voiceToggle) return m_toggledOn = false, down;
+        if (pressed) m_toggledOn = !m_toggledOn;
+        return m_toggledOn;
     }
 
     void PumpCapture() {
@@ -475,6 +484,7 @@ private:
     adpcm::State m_enc;
     uint16_t m_seq = 0;
     bool m_transmitting = false;
+    bool m_keyWasDown = false, m_toggledOn = false;  // the key's press turns it on and off (toggle mode)
     std::map<uint8_t, Heard> m_heard;
     bool m_testTone = false;
     unsigned m_tonePhase = 0;

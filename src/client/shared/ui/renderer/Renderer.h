@@ -42,8 +42,13 @@ public:
     bool Begin();
     void End();
 
+    // what is drawn until ClipEnd stays inside the rectangle
+    void Clip(float x, float y, float w, float h);
+    void ClipEnd();
     void Rect(float x, float y, float w, float h, uint32_t argb);
     void RectOutline(float x, float y, float w, float h, uint32_t argb, float t = 1.0f);
+    // a picture of the game's (an IDirect3DTexture9*: a RenderWare raster's texture), stretched over the rectangle
+    void Image(void* texture, float x, float y, float w, float h, uint32_t argb = 0xFFFFFFFF);
     // Text in UTF-8. Supports inline colour codes {RRGGBB}.
     void Text(FontId f, float x, float y, std::string_view utf8, uint32_t argb, uint32_t flags = TEXT_SHADOW);
     void TextW(FontId f, float x, float y, std::wstring_view text, uint32_t argb, uint32_t flags = TEXT_SHADOW);

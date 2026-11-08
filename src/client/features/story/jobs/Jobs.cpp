@@ -38,11 +38,12 @@ float Float(int i) {
 }
 bool Named(void* script, const char* name) { return !_strnicmp(Field<char[8]>(script, 0x08), name, 8); }
 
-// the copy of who joined our job
-CPed* Helper() {
-    uint8_t id = SideHelper();
-    RemotePlayer* rp = id != 0xFF ? Players::Instance().Get(id) : nullptr;
-    return rp && rp->ped && IsPedValid(rp->ped) ? rp->ped : nullptr;
+// the copies of who joined our job
+std::vector<CPed*> Helpers() {
+    std::vector<CPed*> out;
+    for (uint8_t id : SideHelpers())
+        if (RemotePlayer* rp = Players::Instance().Get(id); rp && rp->ped && IsPedValid(rp->ped)) out.push_back(rp->ped);
+    return out;
 }
 CVehicle* CarOf(CPed* p) { return p->InVehicle() ? p->Vehicle() : nullptr; }
 
@@ -424,23 +425,50 @@ bool Noise(CPlayerPed* me) {
 // houses are open in both games; their hours come back after it. The ways out (the linked exits) have their hours.
 constexpr uintptr_t kEnexPool = 0x96A7D8;  // CEntryExitManager::mp_poolEntryExits, CEntryExit 0x3C bytes
 bool g_allOpen = false;
-std::vector<int> g_opened;  // the entrances given hours here
+struct Opened {
+    int slot;
+    float x, y;  // its door's middle: a slot streamed out takes another door later
+};
+std::vector<Opened> g_opened;  // the entrances given hours here
+uint64_t g_openScanMs = 0;
 uint8_t* Hours(CPoolHeader* pool, int i) { return (uint8_t*)pool->objects + (uintptr_t)i * 0x3C + 0x34; }  // m_nTimeOn, m_nTimeOff
+void DoorMiddle(CPoolHeader* pool, int i, float& x, float& y) {
+    const float* r = (const float*)((uint8_t*)pool->objects + (uintptr_t)i * 0x3C + 0x08);  // m_recEntrance
+    x = (r[0] + r[2]) * 0.5f, y = (r[1] + r[3]) * 0.5f;
+}
 void OpenAllHouses(bool on) {
     CPoolHeader* pool = Ref<CPoolHeader*>(kEnexPool);
-    if (on == g_allOpen || !pool) return;
-    g_allOpen = on;
+    if (!pool) return;
     if (!on) {
-        for (int i : g_opened)
-            if (i < pool->size && pool->byteMap[i] >= 0 && Hours(pool, i)[1] == 24) Hours(pool, i)[1] = 0;
+        if (!g_allOpen) return;
+        g_allOpen = false;
+        for (const Opened& o : g_opened) {
+            float x, y;
+            if (o.slot >= pool->size || pool->byteMap[o.slot] < 0 || Hours(pool, o.slot)[1] != 24) continue;
+            DoorMiddle(pool, o.slot, x, y);
+            if (std::fabs(x - o.x) < 1.0f && std::fabs(y - o.y) < 1.0f) Hours(pool, o.slot)[1] = 0;
+        }
         g_opened.clear();
         return;
     }
+    // A door comes and goes with its house's building (CEntity::CreateEffects, RemoveEffects), rolled anew each time.
+    // Opened once at the start, the next street's houses, and the street's after one was robbed, were shut again with no
+    // markers (30.10): looked over twice a second meanwhile.
+    if (g_allOpen && NowMs() - g_openScanMs < 500) return;
+    bool first = !g_allOpen;
+    g_allOpen = true;
+    g_openScanMs = NowMs();
+    size_t was = g_opened.size();
     for (int i = 0; i < pool->size; ++i) {
         uint8_t* h = Hours(pool, i);
-        if (pool->byteMap[i] >= 0 && (*(uint16_t*)(h - 4) & 0x1000) && h[0] == 0 && h[1] == 0) h[1] = 24, g_opened.push_back(i);
+        if (pool->byteMap[i] < 0 || !(*(uint16_t*)(h - 4) & 0x1000) || h[0] != 0 || h[1] != 0) continue;
+        h[1] = 24;
+        Opened o{i, 0.0f, 0.0f};
+        DoorMiddle(pool, i, o.x, o.y);
+        g_opened.push_back(o);
     }
-    LOGI("Joint burglary: %zu burglary houses shut in this game are open too", g_opened.size());
+    if (first || g_opened.size() != was)
+        LOGI("Joint burglary: %zu burglary houses shut in this game are open too", g_opened.size() - (first ? 0 : was));
 }
 
 // joined: what the door of a burglary house by our player holds, as the game checks it before it shows its marker and
@@ -498,7 +526,7 @@ int g_rangeGun = 0;              // joined: the owner's gun we were given
 std::pair<int, int> g_rangeOwn;  // and ours of its slot before it (type, ammo)
 
 int RangeLane(void* o) {  // owner: the lane of a target part of our joint round, -1 none
-    void* s = o && SideLeading() && Helper() ? RunningMission() : nullptr;
+    void* s = o && SideLeading() && !Helpers().empty() ? RunningMission() : nullptr;
     if (!s || !Named(s, "shrange")) return -1;
     int h = GetObjectRef((CObject*)o);
     for (int i = 0; i < 24; ++i)
@@ -648,17 +676,19 @@ void WorldLoaded() {  // the entrances were made anew with hours of their own: n
 
 int32_t* BeforeCommand(void* script, uint16_t op, const uint8_t* ip, int32_t& was) {
     if (op != 0x01E9 && op != 0x01EA && op != 0x05CA && op != 0x05E2) return nullptr;
-    CPed* helper = SideLeading() ? Helper() : nullptr;
     CPlayerPed* me = FindPlayerPed(0);
-    if (!helper || !me) return nullptr;
-    int32_t* var = nullptr;
-    int32_t now = 0;
-    if (Named(script, "ambulan") && (var = AmbulanceBefore(op, ip, helper))) now = g_taken[Local(kPatient)];
-    else if (Named(script, "copcar") && (var = PoliceBefore(op, ip, me, helper))) now = GetPedRef(helper);
-    if (!var) return nullptr;
-    was = *var;
-    *var = now;
-    return var;
+    if (!me || !SideLeading()) return nullptr;
+    for (CPed* helper : Helpers()) {
+        int32_t* var = nullptr;
+        int32_t now = 0;
+        if (Named(script, "ambulan") && (var = AmbulanceBefore(op, ip, helper))) now = g_taken[Local(kPatient)];
+        else if (Named(script, "copcar") && (var = PoliceBefore(op, ip, me, helper))) now = GetPedRef(helper);
+        if (!var) continue;
+        was = *var;
+        *var = now;
+        return var;
+    }
+    return nullptr;
 }
 
 // BURGJB's lockup: it opens with its player within 20 m of it and the van there (LOCATE_CHAR_ANY_MEANS_3D, once in the
@@ -668,13 +698,7 @@ int Burglary(uint16_t op, CPlayerPed* me, CPed* helper) {
     if ((op != 0x00FE && op != 0x0100) || Int(0) != GetPedRef(me) || (op == 0x0100 && !CarOf(helper))) return -1;
     return Within(helper->GetPosition(), {Float(1), Float(2), Float(3)}, Float(4), Float(5), Float(6)) ? 1 : -1;
 }
-int Answer(void* script, uint16_t op) {
-    if (op != 0x0106 && op != 0x00F4 && op != 0x0103 && op != 0x00F2 && op != 0x0202 && op != 0x0205 && op != 0x0100 && op != 0x00FE &&
-        op != 0x00DD && op != 0x0021 && op != 0x0023 && op != 0x02E0 && op != 0x00DB && op != 0x0104)
-        return -1;
-    CPed* helper = SideLeading() ? Helper() : nullptr;
-    CPlayerPed* me = FindPlayerPed(0);
-    if (!helper || !me) return -1;
+int AnswerFor(void* script, uint16_t op, CPlayerPed* me, CPed* helper) {
     if (Named(script, "ambulan")) return Ambulance(op, me, helper);
     if (Named(script, "copcar")) return Police(op, me, helper);
     if (Named(script, "firetru")) return Fire(op, me, helper);
@@ -686,6 +710,21 @@ int Answer(void* script, uint16_t op) {
     if (Named(script, "shrange")) return op == 0x02E0 ? RangeShooting(me) : -1;
     if (Named(script, "pimp")) return Pimp(op, me, helper);
     return -1;
+}
+
+int Answer(void* script, uint16_t op) {
+    if (op != 0x0106 && op != 0x00F4 && op != 0x0103 && op != 0x00F2 && op != 0x0202 && op != 0x0205 && op != 0x0100 && op != 0x00FE &&
+        op != 0x00DD && op != 0x0021 && op != 0x0023 && op != 0x02E0 && op != 0x00DB && op != 0x0104)
+        return -1;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!me || !SideLeading()) return -1;
+    int answer = -1;  // yes from any of them, else no from any
+    for (CPed* helper : Helpers()) {
+        int a = AnswerFor(script, op, me, helper);
+        if (a > 0) return a;
+        if (a == 0) answer = 0;
+    }
+    return answer;
 }
 
 // ---------------------------------------------------------------- the valet's shift for two
@@ -701,26 +740,27 @@ void* ValetShift() {
 }
 void ValetAfter(uint16_t op, const uint8_t* ip) {
     if (op != 0x046C && op != 0x0811) return;
-    CPed* helper = Helper();
     CPlayerPed* me = FindPlayerPed(0);
     int32_t first = 0;
     int32_t* out = game::script::OutVar(game::script::NextArg(ip + 2));  // valet.scm's are globals
-    if (!helper || !me || !out || !game::script::ArgValue(ip + 2, first)) return;
-    // GET_DRIVER_OF_CAR of the guest's car: the other player drives it for us (a "stolen" car otherwise, dropped)
-    if (op == 0x046C && first == Global(kValetCar) && *out == GetPedRef(helper)) *out = GetPedRef(me);
-    // GET_CAR_CHAR_IS_USING $PLAYER_ACTOR: its valets keep off the car the other player takes too
-    else if (op == 0x0811 && first == GetPedRef(me) && *out == -1)
-        Cmd(0x0811).I(GetPedRef(helper)).Out(out).Run();
+    if (!me || !out || !game::script::ArgValue(ip + 2, first)) return;
+    for (CPed* helper : Helpers()) {
+        // GET_DRIVER_OF_CAR of the guest's car: the other player drives it for us (a "stolen" car otherwise, dropped)
+        if (op == 0x046C && first == Global(kValetCar) && *out == GetPedRef(helper)) *out = GetPedRef(me);
+        // GET_CAR_CHAR_IS_USING $PLAYER_ACTOR: its valets keep off the car the other player takes too
+        else if (op == 0x0811 && first == GetPedRef(me) && *out == -1)
+            Cmd(0x0811).I(GetPedRef(helper)).Out(out).Run();
+    }
 }
 // IS_CHAR_IN_CAR and LOCATE_CHAR_ANY_MEANS_CAR_3D of $PLAYER_ACTOR: its clean-up of cars in the way spares the other's
 int ValetAnswer(uint16_t op) {
     if (op != 0x00DB && op != 0x0205) return -1;
-    CPed* helper = Helper();
     CPlayerPed* me = FindPlayerPed(0);
     CVehicle* v = GetVehicle(Int(1));
-    if (!helper || !me || !v || Int(0) != GetPedRef(me)) return -1;
-    if (op == 0x00DB) return CarOf(helper) == v ? 1 : -1;
-    return Within(helper->GetPosition(), v->GetPosition(), Float(2), Float(3), Float(4)) ? 1 : -1;
+    if (!me || !v || Int(0) != GetPedRef(me)) return -1;
+    for (CPed* helper : Helpers())
+        if (op == 0x00DB ? CarOf(helper) == v : Within(helper->GetPosition(), v->GetPosition(), Float(2), Float(3), Float(4))) return 1;
+    return -1;
 }
 
 }  // namespace coop::jobs
@@ -730,7 +770,10 @@ namespace coop {
 bool RangeTarget(void* object) { return jobs::RangeLane(object) >= 0; }
 
 void RangeHit(uint8_t from, void* object, float damage, int weapon) {  // the middle lane is our player's
-    if (from != SideHelper() || jobs::RangeLane(object) != 1 || !(damage > 0.0f && damage < 1e6f) || weapon > 58) return;
+    std::vector<uint8_t> helpers = SideHelpers();
+    if (std::find(helpers.begin(), helpers.end(), from) == helpers.end() || jobs::RangeLane(object) != 1 ||
+        !(damage > 0.0f && damage < 1e6f) || weapon > 58)
+        return;
     auto* o = (game::CObject*)object;
     bool shown = o->IsVisible();
     game::CVector at = o->GetPosition(), up{0.0f, 0.0f, 1.0f};

@@ -20,6 +20,7 @@
 #include "entities/mission/Mission.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
+#include "shared/game/Script.h"
 #include "shared/lib/core/Core.h"
 #include "shared/lib/memory/Memory.h"
 
@@ -115,6 +116,36 @@ void __cdecl HookPictureTaken() {
         if (Type(Pickup(i)) != PU_SNAPSHOT) SendEvent(EV_PHOTOGRAPHED, (uintptr_t)bytes.data(), PU_SNAPSHOT);
 }
 
+// "Tagging Up Turf" wipes each pair of its tags as it gets to them (SET_TAG_STATUS_IN_AREA 0), and wiped what the
+// partner had sprayed there already: one player sprayed the next tags while the host's mission was still at the first,
+// and the tag was gone again, the tags' count one less (a player's comment, 02.11). A tag the partner sprays while the
+// host's story mission runs stays sprayed through the mission's wipes, in both games, until that mission ends.
+std::vector<CVector> g_partnerTags;
+bool HostStoryRuns() {
+    if (!Net().Online()) return false;
+    if (!Net().IsHost()) return !HostMissionName().empty();
+    void* mission = RunningMission();
+    return mission && StoryMission(mission);
+}
+void KeepPartnerTags() {
+    int kept = 0;
+    for (int i = 0, n = std::min(Ref<int32_t>(kNumTags), 150); i < n; ++i) {
+        auto* tag = Ref<CEntity*>(kTags + (uintptr_t)i * 8);
+        uint8_t& alpha = Ref<uint8_t>(kTags + (uintptr_t)i * 8 + 4);
+        if (!tag || alpha > 228) continue;
+        for (const CVector& v : g_partnerTags)
+            if ((tag->GetPosition() - v).Length() < 1.0f) {
+                if (void* atomic = tag->RwObject()) Call<0x49CD30>(atomic, (uint8_t)255);  // CTagManager::SetAlpha(RpAtomic*): quietly
+                alpha = 255;
+                ++kept;
+                break;
+            }
+    }
+    if (!kept) return;
+    Call<0x49CDE0>();  // CTagManager::UpdateNumTagged
+    LOGI("The mission's wipe left %d tag(s) the partner had sprayed", kept);
+}
+
 // a tag painted here (CWorld::SprayPaintWorld's call of CTagManager::SetAlpha)
 using SetAlphaFn = void(__cdecl*)(CEntity*, uint8_t);
 // the game's own until redirected: a site another mod changed is left alone, and this is still called
@@ -131,6 +162,7 @@ void __cdecl HookSprayTag(CEntity* tag, uint8_t alpha) {
     g_origSetAlpha(tag, alpha);
     if (!flow::InSharedWorld() || g_applying || !tag || was > 228 || alpha <= 228) return;  // counts as sprayed above 228
     CVector pos = tag->GetPosition();
+    if (!Net().IsHost() && HostStoryRuns()) g_partnerTags.push_back(pos);
     Writer w(proto::G_PICKUP_EVENT);
     w.U8(EV_TAG);
     w.Vec({pos.x, pos.y, pos.z});
@@ -297,7 +329,9 @@ using AlphaInAreaFn = void(__cdecl*)(const float*, uint8_t);
 AlphaInAreaFn g_origAlphaInArea = nullptr;
 void __cdecl HookSetAlphaInArea(const float* rect, uint8_t alpha) {
     g_origAlphaInArea(rect, alpha);
-    if (!Net().Online() || !Net().IsHost() || !HostReplicating() || !StoryMission(CurrentScript())) return;
+    if (!Net().Online() || !Net().IsHost() || !StoryMission(CurrentScript())) return;
+    if (!alpha && !g_partnerTags.empty()) KeepPartnerTags();
+    if (!HostReplicating()) return;
     Writer w(proto::G_PICKUP_EVENT);
     w.U8(EV_TAG_AREA);
     for (int k = 0; k < 4; ++k) w.F32(rect[k]);
@@ -317,6 +351,7 @@ void HandleEvent(uint8_t from, Reader& r) {
         if (!r.Ok() || !g_origAlphaInArea) return;
         g_origAlphaInArea(rect, alpha);
         LOGI("The host's mission set the tags in %.0f,%.0f .. %.0f,%.0f to %u: here too", rect[0], rect[1], rect[2], rect[3], alpha);
+        if (!alpha) KeepPartnerTags();
         return;
     }
     if (what == EV_GONE) {
@@ -343,6 +378,7 @@ void HandleEvent(uint8_t from, Reader& r) {
         for (int i = 0; i < n; ++i) {
             auto* tag = Ref<CEntity*>(kTags + (uintptr_t)i * 8);
             if (!tag || (tag->GetPosition() - CVector{v.x, v.y, v.z}).Length() > 1.0f) continue;
+            if (Net().IsHost() && HostStoryRuns()) g_partnerTags.push_back(tag->GetPosition());
             if (Ref<uint8_t>(kTags + (uintptr_t)i * 8 + 4) <= 228) {
                 g_applying = true;
                 g_origSetAlpha(tag, 255);  // shows "tags x of 100" as here
@@ -368,7 +404,16 @@ void HandleEvent(uint8_t from, Reader& r) {
         CallMethod<0x4556C0>((void*)p);  // CPickup::Remove
         Call<0x55C180>((uint16_t)231, 1.0f);  // CStats::IncrementStat: snapshots taken
     } else {
-        Take(i, Type(p));
+        uint8_t kind = Type(p);
+        int ammo = Ref<int32_t>(p + 8);
+        Take(i, kind);
+        // A one-off weapon of the host's mission goes to both: the plane of "Stowaway" has one parachute, "Burning Desire" one
+        // extinguisher, "Snail Trail" one rifle, and those missions go on to ask whether the host has it. Taken by the partner,
+        // the host fell without one (found 04.11). Melee and the parachute take any count.
+        CPlayerPed* me = FindPlayerPed(0);
+        int weapon = kind == PU_ONCE ? Call<0x454AE0, int>(model) : 0;  // CPickups::WeaponForModel
+        if (weapon > 0 && weapon <= 46 && me && HostStoryRuns() && LoadModelNow(model))
+            script::Cmd(0x01B2).I(GetPedRef(me)).I(weapon).I(ammo > 0 ? ammo : 100).Run();  // GIVE_WEAPON_TO_CHAR
     }
     g_applying = false;
     LOGI("Pickup %d (model %d) taken by player %d", i, model, from);
@@ -408,8 +453,14 @@ public:
         Net().SetHandler(proto::G_PICKUP_EVENT, &HandleEvent);
         Net().SetHandler(proto::G_PICKUP_CREATE, &HandleCreate);
     }
-    void OnSessionEnd() override { g_announced.clear(); }
+    void OnSessionEnd() override {
+        g_announced.clear();
+        g_partnerTags.clear();
+    }
     void OnGameStarted() override { g_announced.clear(); }
+    void OnPreProcess() override {  // the host's mission ended: a wipe of its next run (a retry) wipes them all again
+        if (!g_partnerTags.empty() && !HostStoryRuns()) g_partnerTags.clear();
+    }
     void OnPeerResync(uint8_t) override {
         if (Net().IsHost() && flow::InSharedWorld()) SendState();
         // a restarted game lost what was announced to it: what is still here goes again

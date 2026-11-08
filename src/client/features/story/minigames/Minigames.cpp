@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 
 #include "common/api/protocol/Protocol.h"
@@ -67,11 +68,15 @@ std::string ScriptName(void* script) {
 }
 
 // ---------------------------------------------------------------- host
+struct Taking {  // a partner who plays along
+    int32_t lastBeat = -1, danceTotal = 0;
+    bool done = false;
+};
 struct Host {
     uint8_t kind = 0;
     bool joined = false, done = false;
     uint64_t holdUntil = 0;  // the minigame's end held for the partner's last points
-    int32_t lastBeat = -1, danceTotal = 0;
+    std::map<uint8_t, Taking> took;
 } g_host;
 
 void SendBeat(uint8_t op, const std::function<void(Writer&)>& more = nullptr) {
@@ -108,17 +113,21 @@ void HandleScore(uint8_t from, Reader& r) {
     uint8_t op = r.U8(), kind = r.U8();
     int32_t beat = r.I32(), points = r.I32();
     if (!r.Ok() || !Net().IsHost() || from == Net().MyId() || kind != g_host.kind || !g_host.kind) return;
+    Taking& t = g_host.took[from];
     if (op == SCORE_JOIN) {
         g_host.joined = true;
         LOGI("Minigame %u: player %u plays along", kind, from);
     } else if (op == SCORE_POINTS && kind == KIND_LOWRIDER) {
-        if (beat <= g_host.lastBeat) return;  // each beat once
-        g_host.lastBeat = beat;
+        if (beat <= t.lastBeat) return;  // each beat once
+        t.lastBeat = beat;
         Var(kLowScore) += std::clamp(points, 0, 500);
     } else if (op == SCORE_POINTS && kind == KIND_DANCE) {
-        if (points > g_host.danceTotal) Var(kDanceScore) += std::min(points - g_host.danceTotal, 200);
-        g_host.danceTotal = std::max(g_host.danceTotal, points);  // a quit zeroes only the partner's own run
+        if (points > t.danceTotal) Var(kDanceScore) += std::min(points - t.danceTotal, 200);
+        t.danceTotal = std::max(t.danceTotal, points);  // a quit zeroes only the partner's own run
     } else if (op == SCORE_DONE) {
+        t.done = true;
+        for (auto& [id, other] : g_host.took)  // the end waits for the last of those who play along
+            if (!other.done) return;
         g_host.done = true;
         ReleaseHold();
     }
@@ -352,8 +361,8 @@ void FinishLowrider() {
 void StartLowrider(int16_t track, const CVector& hostCar, float heading) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!Eligible(hostCar, 60.0f)) return;
-    CVector right{std::cos(heading), std::sin(heading), 0.0f};
-    CVector at = hostCar + right * 4.5f;  // beside the host's car, the same way
+    CVector right = PartnerSide(heading, Net().MyId(), 4.5f);
+    CVector at = hostCar + right;  // beside the host's car, the same way
     int car = -1;
     bool loaner = false;
     if (CVehicle* v = me->InVehicle() ? me->Vehicle() : nullptr; v && v->Driver() == me && Cmd(0x0803).I(GetVehicleRef(v)).Run())
@@ -446,13 +455,13 @@ void PlayLowrider() {
 void StartDance(uint8_t index, const CVector& at, float heading, int16_t track, const float* cams) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!Eligible(at, 40.0f)) return;
-    CVector right{std::cos(heading * 0.0174533f), std::sin(heading * 0.0174533f), 0.0f};
+    CVector right = PartnerSide(heading * 0.0174533f, Net().MyId(), 1.8f);
     g_part = {};
     g_part.kind = KIND_DANCE, g_part.stage = 1, g_part.index = index, g_part.track = track, g_part.heading = heading;
-    g_part.at = at + right * 1.8f;  // beside the host, out of its CLEAR_AREA
+    g_part.at = at + right;  // beside the host, out of its CLEAR_AREA
     g_part.since = NowMs();
     for (int i = 0; i < kDanceCamFloats; ++i)  // the host's cameras moved over to our spot: the x and y arrays
-        g_part.cams[i] = cams[i] + (i / 5 % 3 == 0 ? right.x * 1.8f : i / 5 % 3 == 1 ? right.y * 1.8f : 0.0f);
+        g_part.cams[i] = cams[i] + (i / 5 % 3 == 0 ? right.x : i / 5 % 3 == 1 ? right.y : 0.0f);
     if (me->InVehicle()) {  // out where it is (the spot's z is -100, the ground the dance finds)
         CVector p = me->GetPosition();
         Cmd(0x0362).I(GetPedRef(me)).F(p.x).F(p.y).F(p.z + 1.0f).Run();  // WARP_CHAR_FROM_CAR_TO_COORD
@@ -573,9 +582,10 @@ public:
         g_host = {}, g_part = {}, g_clock = {};
     }
     void OnGameStarted() override { g_host = {}, g_part = {}, g_clock = {}; }
-    void OnPeerLeave(uint8_t) override {
-        g_host.joined = false;
-        ReleaseHold();
+    void OnPeerLeave(uint8_t id) override {
+        g_host.took.erase(id);
+        g_host.joined = !g_host.took.empty();
+        if (!g_host.joined) ReleaseHold();
     }
 
     static Minigames& Instance() {

@@ -360,7 +360,9 @@ struct CObject : CPhysical {};
 
 struct CPlayerInfo {
     CPlayerPed* ped;  // 0x00
-    uint8_t _pad04[0xB8 - 0x04];
+    uint8_t _pad04[0xB0 - 0x04];
+    CVehicle* remoteVehicle;  // 0xB0: the remote-controlled toy the player drives (CRemote), or null
+    uint8_t _padB4[0xB8 - 0xB4];
     int32_t money;         // 0xB8
     int32_t displayMoney;  // 0xBC
     uint8_t _padC0[0xDC - 0xC0];
@@ -480,10 +482,12 @@ constexpr int kKeepPeds = 12, kKeepVehicles = 10, kKeepObjects = 20;
 bool HasRoom(CPoolHeader* pool, int keep, const char* what);  // more than keep slots free, or a warning now and then
 
 void RequestModel(int model, int flags = 2 /* STREAMING_GAME_REQUIRED: MarkModelNotNeeded clears it */);
+void RequestCopyModel(int model, bool mission);  // for a copy of the other game's person or car
 void LoadAllRequestedModels(bool onlyPriority = false);
 bool IsModelLoaded(int model);
 int ModelLoadState(int model);  // 0 not asked for, 1 in memory, 2 asked for, 3 being read, 4 finishing; -1 no such model
 bool LoadModelNow(int model);  // request + blocking load
+int8_t TrueArea(CEntity* e);   // its area, with a door's fade seen through
 void MarkModelNotNeeded(int model);
 bool IsValidModel(int model);
 bool IsVehicleModel(int model);

@@ -85,7 +85,11 @@ std::string KindName(uint8_t kind, int32_t variant) {
 // what the one who said yes is to do
 std::string HowTo(uint8_t kind, const std::string& caller) {
     switch (kind) {
-        case BASKET: return TR("Начните испытание на очки на любой баскетбольной площадке.", "Start the points challenge on any basketball court.");
+        // BBALL starts BBCHAL by PED_LOOKBEHIND with the ball in hand (BB_09, script button 19): the partner played
+        // free throws for 3 minutes and the contest was called off (01.11). Pressed for it now (Answer).
+        case BASKET:
+            return TR("Возьмите мяч на баскетбольной площадке: испытание на очки начнётся само.",
+                      "Take the ball on a basketball court: the points challenge starts by itself.");
         case POOL: return TR("Сыграйте партию на деньги за другим столом.", "Play a game for money at another table.");
         case BLACKJACK: case ROULETTE: case WHEEL:
             return TR("Сядьте за такой же стол в казино: считается выигрыш или проигрыш за столом.",
@@ -150,7 +154,7 @@ bool StoryRuns() {
 }
 
 std::string Who(uint8_t id) { return Net().PeerName(id); }
-// "игрока Женя" with one other player, "других игроков" with more
+// "игрока %s" with one other player, "других игроков" with more
 std::string Others() {
     if (Net().Peers().size() == 1) return Format(TR("игрока %s", "%s"), Who(Net().Peers().begin()->first).c_str());
     return TR("других игроков", "the other players");
@@ -382,20 +386,30 @@ void Answer(bool yes) {
     // caller's dance spot, where the club starts our own dance as we stand on its marker (the other one dances at our
     // right hand, Players' DanceSide), or beside it at its court
     std::string how = HowTo(g_c.kind, name);
-    if ((g_c.kind == DANCE || g_c.kind == BASKET) && g_run.kind != g_c.kind)
-        if (const RemotePlayer* rp = Players::Instance().Get(from); rp && rp->ped && rp->hasState) {
+    // not one at that court already: the partner taken over with the ball in hand dropped out of the court's script
+    // (01.11)
+    const RemotePlayer* caller = Players::Instance().Get(from);
+    CPlayerPed* me = FindPlayerPed(0);
+    bool there = caller && caller->ped && me && me->AreaCode() == caller->ped->AreaCode() &&
+                 (me->GetPosition() - caller->ped->GetPosition()).Length() < 25.0f;
+    if ((g_c.kind == DANCE || g_c.kind == BASKET) && g_run.kind != g_c.kind && !there)
+        if (const RemotePlayer* rp = caller; rp && rp->ped && rp->hasState) {
             float h = rp->ped->CurrentRotation(), side = g_c.kind == DANCE ? 0.0f : 1.5f;
             Players::Instance().GoTo(*rp, rp->state.pos + CVector{std::cos(h) * side, std::sin(h) * side, 0.0f}, true);
             how = g_c.kind == DANCE ? Format(TR("Вы на танцполе рядом с игроком %s: постойте на маркере, и начнётся танец. Считаются очки.",
                                                 "You are on the dance floor next to %s: stand on the marker and the dance starts. The points count."),
                                              name.c_str())
-                                    : Format(TR("Вы на площадке рядом с игроком %s: возьмите мяч и начните испытание на очки.",
-                                                "You are on the court next to %s: take the ball and start the points challenge."),
+                                    : Format(TR("Вы на площадке рядом с игроком %s. Возьмите мяч: испытание на очки начнётся само.",
+                                                "You are on the court next to %s. Take the ball: the points challenge starts by itself."),
                                              name.c_str());
             LOGI("Over to %s for the contest", name.c_str());
         }
-    if (g_c.kind == POOL)  // a game for two at the caller's table while its bet screen is up (Pool.cpp); if not, OP_FAIL says
-        how = Format(TR("Сейчас начнётся партия вдвоём за столом игрока %s.", "A game for two at %s's table starts now."), name.c_str());
+    if (g_c.kind == POOL) {  // a game for two at the caller's table once its bet is made (Pool.cpp); if not, OP_FAIL says
+        how = Format(TR("Партия вдвоём за столом игрока %s начнётся, когда он сделает ставку.",
+                        "A game for two at %s's table starts once they make the bet."),
+                     name.c_str());
+        pool::Expect(g_c.with);  // no game of our own at our table meanwhile
+    }
     ui::TheChat().AddSystem(Format(TR("Вы приняли вызов: %s. %s На начало игры есть 3 минуты.",
                                       "You took the challenge: %s. %s You have 3 minutes to start."),
                                    kind.c_str(), how.c_str()));
@@ -533,12 +547,17 @@ std::string Text(std::string& hint) {
         return Format(TR("%s вызывает вас на соревнование: %s", "%s challenges you: %s"), Who(g_c.with).c_str(),
                       KindName(g_c.kind, g_c.variant).c_str());
     }
-    // pool: the bet screen takes the other player as its second player (Pool.cpp), a bet made first starts the game alone
+    // pool: the bet screen takes the other player as its second player once our bet is made (Pool.cpp), a bet made
+    // before the answer starts the game alone
     if (g_c.phase == Phase::CALLING)
-        return Format(g_c.kind == POOL ? TR("Ждём ответа %s. Не делайте ставку: партия будет вдвоём.",
-                                            "Waiting for %s to answer. Make no bet: the game is for two.")
+        return Format(g_c.kind == POOL ? TR("Ждём ответа %s. Ставку сделайте после ответа: партия будет вдвоём.",
+                                            "Waiting for %s to answer. Bet after the answer: the game is for two.")
                                        : TR("Ждём ответа %s", "Waiting for %s to answer"),
                       Others().c_str());
+    if (g_c.phase == Phase::ON && g_c.kind == POOL && pool::Betting())
+        return Format(TR("%s принимает вызов. Сделайте ставку: проигравший отдаст её победителю.",
+                         "%s takes the challenge. Make your bet: the loser gives it to the winner."),
+                      Who(g_c.with).c_str());
     if (CanCall() && !SideCallOpen()) {  // with a call to play together it is in that box
         hint = TR("U - вызвать", "U: challenge");
         if (g_run.kind == POOL)
@@ -621,6 +640,24 @@ void Drop() {
     Reset();
 }
 
+// A basketball court's script (BBALL, near its player):
+//  * It makes its ball only while the ball's spot is off the screen (NOT IS_POINT_ON_SCREEN), not to show it pop up. A
+//    player watching the other one play at the same hoop had no ball until he looked away (03.11: "мяча нету",
+//    20 s). In a session the spot counts as off the screen.
+//  * Who took a basketball challenge starts the points challenge as soon as the ball is in his hands (the user's word,
+//    03.11: the partner did not know he had to press Look Behind). BBALL asks for Look Behind then (IS_BUTTON_PRESSED 0
+//    19, its BB_09) and starts BBCHAL; our run of it binds the contest.
+int Answer(void* script, uint16_t op) {
+    if ((op != 0x00C2 && op != 0x00E1) || Field<uint8_t>(script, 0xDC) || !Named(script, "bball")) return -1;
+    if (op == 0x00C2) return 0;
+    const auto* p = (const int32_t*)0xA43C78;  // CTheScripts::ScriptParams, as the command read them
+    bool start = g_c.phase == Phase::ON && g_c.kind == BASKET && g_c.me.state == WAITING && !g_run.kind && NowMs() < g_c.until;
+    if (p[0] != 0 || p[1] != 19 || !start) return -1;
+    static uint64_t toldMs = 0;
+    if (NowMs() - toldMs > 5000) toldMs = NowMs(), LOGI("Contest: the ball in hand, the points challenge starts by itself");
+    return 1;
+}
+
 void AfterCommand(void* script, uint16_t op, const uint8_t* ip) {
     if (op != 0x0394 && op != 0x00BC && op != 0x014E) return;  // PLAY_MISSION_PASSED_TUNE, PRINT_NOW, DISPLAY_ONSCREEN_TIMER
     if (!g_run.kind || g_run.finished || !script || !Field<uint8_t>(script, 0xDC)) return;  // our side mission's
@@ -638,3 +675,7 @@ void AfterCommand(void* script, uint16_t op, const uint8_t* ip) {
 }
 
 }  // namespace coop::contest
+
+namespace coop {
+bool ContestActivity() { return contest::g_run.kind != 0 || contest::g_c.phase != contest::Phase::OFF || pool::Playing(); }
+}  // namespace coop

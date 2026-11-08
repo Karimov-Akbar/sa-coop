@@ -146,7 +146,8 @@ void Scan() {
         bool script = Ref<uint8_t>(f) & 2;  // bCreatedByScript
         // a script's fire on the ground: the host's story mission's, or the joint side activity's this game leads
         if (target ? !Describe(target, kind, entityId) : !(script && ((Net().IsHost() && HostReplicating()) || SideLeading()))) continue;
-        uint16_t id = g_nextId++;
+        // the owner in its top bits, as a vehicle's: the copies of two players' fires are kept by the id alone
+        uint16_t id = (uint16_t)(((Net().MyId() + 1) << 12) | (g_nextId++ & 0x0FFF));
         g_sent[f] = {id, target};
         CVector pos = Ref<CVector>(f + 0x04);
         Writer w(proto::G_FIRE);
@@ -254,6 +255,7 @@ void PutOutOwn(uint16_t id) {
         if (it->second.id == id) {
             if (Active(it->first)) CallMethod<0x5393F0>((void*)it->first);  // CFire::Extinguish
             g_sent.erase(it);
+            SendStop(id);  // its copies in the other games
             LOGI("Fire %04X put out by the other player", id);
             return;
         }

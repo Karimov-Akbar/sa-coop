@@ -65,6 +65,21 @@ void CheckScripts() {
     g_scriptsFull = full;
 }
 
+// The pool of col models ran out once (05.11, see Patches.cpp), and nothing told how near it was or whether it only grows:
+// the log has its use as it climbs.
+uint64_t g_colCheckMs = 0;
+int g_colTold = 0;
+void CheckColModels() {
+    if (NowMs() - g_colCheckMs < 10000) return;
+    g_colCheckMs = NowMs();
+    auto* pool = game::Ref<game::CPoolHeader*>(0xB744A4);  // CPools::ms_pColModelPool
+    int used = 0;
+    for (int i = 0; pool && i < pool->size; ++i) used += pool->byteMap[i] >= 0;
+    if (used < g_colTold + 50) return;
+    g_colTold = used;
+    LOGI("Col models: %d of %d", used, pool->size);
+}
+
 // A cutscene starts only when every one of its models is in memory (CCutsceneMgr::LoadCutsceneData_loading looks each
 // frame and waits). A model that never comes holds the mission on its black screen for good while the game runs (27.10:
 // a host's cutscenes stayed black, and its pause map and the range's marker, which wait for models too, never came).
@@ -95,6 +110,28 @@ void CheckCutsceneLoad() {
          game::Ref<int32_t>(0x8E4A60 + 0x80), game::Ref<int32_t>(0x8E4A60 + 0x98 + 0x80), game::Ref<uint8_t>(0x9654B0) ? ", streaming off" : "");
 }
 
+// The pause menu (FrontEndMenuManager.m_bMenuActive): Esc does not close it while a radio retune is heard
+// (CMenuManager::CheckForMenuClosing asks CAudioEngine::IsRadioRetuneInProgress), and the world is not drawn while the
+// screen is faded out (Idle). The host saw no game after closing the menu, only flashes (03.11): the log tells what the
+// radio and the fade did then.
+bool g_menuWas = false, g_retuneWas = false;
+uint64_t g_menuClosedMs = 0;
+void CheckPauseMenu() {
+    bool on = game::Ref<uint8_t>(0xBA67A4) != 0;
+    bool retune = game::CallMethod<0x506FF0, bool>((void*)0xB6BC90);  // CAudioEngine::IsRadioRetuneInProgress
+    float fade = game::Ref<float>(0xB6F028 + 0xBFC);                  // TheCamera's fade (255: the screen black)
+    if (on != g_menuWas) {
+        LOGI("Pause menu %s: radio retune %d, fade %.0f", on ? "opened" : "closed", retune, fade);
+        g_menuClosedMs = on ? 0 : NowMs();
+    } else if (on && retune != g_retuneWas) {
+        LOGI("Pause menu: radio retune %s", retune ? "heard (Esc waits for it)" : "over");
+    } else if (g_menuClosedMs && NowMs() - g_menuClosedMs > 1500) {
+        if (fade > 0.0f) LOGW("Pause menu closed 1.5 s ago, the screen is still faded (%.0f)", fade);
+        g_menuClosedMs = 0;
+    }
+    g_menuWas = on, g_retuneWas = retune;
+}
+
 class DiagModule : public Module {
 public:
     const char* Name() const override { return "Diagnostics"; }
@@ -106,7 +143,9 @@ public:
     void OnPostProcess() override {
         if (!core::IsPlayerReady()) return;
         CheckScripts();
+        CheckColModels();
         CheckCutsceneLoad();
+        CheckPauseMenu();
     }
 };
 

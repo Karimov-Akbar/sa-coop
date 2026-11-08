@@ -5,3 +5,7 @@
 
 // the voice chat's microphone icon (Font Awesome Free, CC BY 4.0), drawn by the renderer as a character of its fonts
 MICROPHONE RCDATA "features/voice/ui/microphone.svg"
+
+// the partner in the cutscenes: his ways, worked out from the game's files, and the places chosen by hand. A new text needs a new protocol
+CUTSCENE_WAYS RCDATA "features/story/cutscene-partner/cutscene_ways.txt"
+CUTSCENE_PLACES RCDATA "features/story/cutscene-partner/cutscenes.txt"

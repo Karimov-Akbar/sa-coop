@@ -45,7 +45,7 @@ void* Engine() { return (void*)kAudioEngine; }
 
 // a script of the host's story mission (or a thread it started: AUDIOL says the lines of "Cesar Vialpando"'s scenes), or
 // a story phone call between missions (main.scm's MOB_LA1, MOB_SF and the others raise the mission flag, no mission runs:
-// the partner heard nothing of the call, Dr.BaldBall 28.10; MOB_RAN's are side calls, not replicated), with a partner to
+// the partner heard nothing of the call, 28.10; MOB_RAN's are side calls, not replicated), with a partner to
 // hear it
 bool Sharing() {
     void* s = CurrentScript();
@@ -157,6 +157,13 @@ void Handle(uint8_t from, Reader& r) {
             if (void* intel = FindPlayerPed(0)->Intelligence(); intel && CallMethod<0x681740, void*>((uint8_t*)intel + 4, 1600)) {
                 s = Slot{};
                 return;
+            }
+            // The host's last line in this slot still plays here (it started here later): CAudioEngine::PreloadMissionAudio
+            // leaves a playing slot as it is, and the host's next play of it said the old line again, a car talk going
+            // round in circles (30.10)
+            if (s.loaded && !CallMethod<0x5072C0, bool>(Engine(), (uint8_t)slot)) {  // CAudioEngine::IsMissionAudioSampleFinished
+                LOGD("Mission speech: slot %d still says its last line: cut for %d", slot, sample);
+                g_origClear(Engine(), nullptr, slot);
             }
             g_origPreload(Engine(), nullptr, slot, sample);
             s = Slot{};

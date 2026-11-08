@@ -1,10 +1,11 @@
 // Separate progression and looks.
 //  * the host progresses in its own save; the partner keeps a profile on the server (money, every stat:
-//    fat, muscle, stamina, lung capacity, weapon/driving skills..., clothes with haircut and tattoos,
-//    weapons, fighting style, max health/armour and the rewards of side missions: no tiring, fast reload,
+//    fat, muscle, stamina, lung capacity, weapon/driving skills..., clothes with haircut and tattoos, what it
+//    bought (the wardrobe's list), weapons, fighting style, max health/armour and the rewards of side missions: no tiring, fast reload,
 //    fireproof, free jail and hospital). It is applied over the host's world after each world load and saved back
 //    when it changes, and at once when the host saves its game. A partner without a profile starts from what the
-//    world gave him; a new game of the host starts every profile over (the server keeps the old ones aside);
+//    world gave him. Each game of the host has the profiles of its own: a new game starts them over, a save of an
+//    older game brings that game's back;
 //  * both players broadcast their look (clothes description incl. fat/muscle) and their stats block: the
 //    other game rebuilds the remote ped's clothes and uses those stats while processing it;
 //  * each player has a look of its own: a partner brings the CJ of its own game into the host's world (the game it
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <random>
 #include <tuple>
 #include <vector>
 
@@ -40,8 +42,9 @@ using namespace game;
 using game::script::Cmd;
 
 constexpr uint32_t kProfileMagic = 0x46504353;  // "SCPF"
-constexpr uint16_t kProfileVersion = 5;  // 2: the rewards of side missions (CPlayerInfo +0x14C..+0x152); 3: whose look;
-                                         // 4: the gym's moves (CPed::m_nAllowedAttackMoves); 5: side activities (SideProgress)
+constexpr uint16_t kProfileVersion = 6;  // 2: the rewards of side missions (CPlayerInfo +0x14C..+0x152); 3: whose look;
+                                         // 4: the gym's moves (CPed::m_nAllowedAttackMoves); 5: side activities (SideProgress);
+                                         // 6: what was bought (CShopping::ms_bHasBought)
 constexpr uintptr_t kStatsBlock = 0xB79000;  // CStats::StatTypesInt + StatTypesFloat
 constexpr size_t kStatsSize = 0x4C8;
 // stats the world owns, not the player (CStats::StatTypesInt, id - 120): the profile keeps the values of the world it was
@@ -50,8 +53,9 @@ constexpr size_t kStatsSize = 0x4C8;
 // The collectibles' counts too (snapshots 231, horseshoes 241, oysters 243; the tags are counted on the map itself): what
 // is left to pick up is the world's, and a partner's own count ran apart from it for good once the host's world rolled
 // back to its last save (50 of 50 against 20 of 50, #4)
-constexpr int kWorldStats[][2] = {{146, 148}, {180, 181}, {231, 231}, {241, 241}, {243, 243},
-                                  {302, 342}};  // missions tried, passed, in game; no more hurricanes, city; collectibles; story
+constexpr int kWorldStats[][2] = {{146, 148}, {180, 181}, {213, 213}, {231, 231}, {241, 241}, {243, 243},
+                                  {302, 342}};  // missions tried, passed, in game; no more hurricanes, city; cars exported;
+                                                // collectibles; story
 // and the story's progress (CStats::StatTypesFloat at +0x380: STAT_PROGRESS_MADE, STAT_TOTAL_PROGRESS): the menu's per cent
 // stood where the partner's profile began (3.21% for a whole story played together, issue #59)
 constexpr size_t kFloatStats = 0x380;
@@ -74,6 +78,42 @@ std::wstring OwnLookPath() {
     return dir.empty() ? std::wstring() : dir + L"coop_own_look.bin";
 }
 bool g_foreignGame = false;      // the game was started as a partner: a host's world, kept after leaving it too
+
+// The game the host plays: the server keeps the partners' profiles per game. A new game moved the old profiles aside,
+// and the partner who came back to an older save with the host found nothing of it (01.11). The game of each save
+// slot is in coop_games.ini next to the saves, a new game takes a new id.
+uint32_t g_gameId = 0;      // 0: a save never saved with the mod (made before 0.3.3), the profiles kept before
+bool g_newGame = false;     // this game's prologue was seen
+uint64_t g_gameStartMs = 0;
+uint32_t g_gameSent = 0;
+bool g_gameSentOk = false;  // g_gameSent went to this session's server
+
+int SlotOfSave(const char* path) {  // "...\GTASAsf3.b" -> 3, else 0
+    std::string s(path, strnlen(path, 260));
+    size_t at = s.rfind("GTASAsf");
+    if (at == std::string::npos || s.size() != at + 10 || s.compare(at + 8, 2, ".b") != 0) return 0;
+    int slot = s[at + 7] - '0';
+    return slot >= 1 && slot <= 8 ? slot : 0;
+}
+std::wstring GamesPath() {
+    std::wstring dir = core::UserFilesDir();
+    return dir.empty() ? std::wstring() : dir + L"coop_games.ini";
+}
+uint32_t GameOfSlot(int slot) {
+    wchar_t v[16] = L"";
+    std::wstring path = GamesPath();
+    if (slot && !path.empty())
+        GetPrivateProfileStringW(L"games", (L"slot" + std::to_wstring(slot)).c_str(), L"", v, 16, path.c_str());
+    return wcstoul(v, nullptr, 16);
+}
+void NoteSavedGame() {
+    int slot = SlotOfSave((const char*)0xC16DB8);  // CGenericGameStorage::ms_SaveFileName
+    std::wstring path = GamesPath();
+    if (!slot || path.empty()) return;
+    wchar_t v[16];
+    swprintf(v, 16, L"%08X", g_gameId);
+    WritePrivateProfileStringW(L"games", (L"slot" + std::to_wstring(slot)).c_str(), v, path.c_str());
+}
 
 bool LookIsOwn() { return g_lookOwn || memcmp(FindPlayerPed(0)->ClothesDesc(), g_givenKeys, sizeof g_givenKeys) != 0; }
 
@@ -107,20 +147,26 @@ bool LookFromSave(const std::wstring& path, std::vector<uint8_t>& look) {
     return false;
 }
 
+std::wstring NewestSave() {
+    std::wstring newest;
+    FILETIME newestTime{};
+    for (int slot = 1; slot <= 8; ++slot) {
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        std::wstring path = core::SlotPath(slot);
+        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a) &&
+            (newest.empty() || CompareFileTime(&a.ftLastWriteTime, &newestTime) > 0))
+            newest = path, newestTime = a.ftLastWriteTime;
+    }
+    return newest;
+}
+
 // Puts the player's own CJ on: with its body on a first visit (later the body is that of the profile's stats)
 bool WearOwnLook(bool body) {
     std::vector<uint8_t> look = g_ownLook;
     std::wstring newest;
     if (look.empty() && (!ReadFileBytes(OwnLookPath(), look) || look.size() != kClothesSize)) look.clear();
     if (look.empty()) {
-        FILETIME newestTime{};
-        for (int slot = 1; slot <= 8; ++slot) {
-            WIN32_FILE_ATTRIBUTE_DATA a;
-            std::wstring path = core::SlotPath(slot);
-            if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a) &&
-                (newest.empty() || CompareFileTime(&a.ftLastWriteTime, &newestTime) > 0))
-                newest = path, newestTime = a.ftLastWriteTime;
-        }
+        newest = NewestSave();
         if (newest.empty() || !LookFromSave(newest, look)) return false;
     }
     const auto* desc = (const CPedClothesDesc*)look.data();
@@ -137,7 +183,72 @@ bool WearOwnLook(bool body) {
     return true;
 }
 
-// The side activities keep their progress in main.scm globals of the world (schools, jobs, the gym, exports, burglary),
+// What was bought is the list the wardrobe goes by (wardrobe.scm: HAS_PLAYER_BOUGHT_ITEM over each shop's stock; clothes.scm
+// marks what is owned). It is in the save, so each load of the host's world put the host's list here: the partner's
+// wardrobe held the host's clothes and none of its own (04.11). The profile keeps it by key: shopping.dat is each game's.
+constexpr uintptr_t kShopBought = 0xA972A0;  // CShopping::ms_bHasBought: a byte per item
+constexpr uintptr_t kShopKeys = 0xA97D90;    // CShopping::ms_keys
+constexpr uintptr_t kShopItems = 0xA9A310;   // CShopping::ms_numBuyableItems
+constexpr uint32_t kShopMax = 560;           // the size of both (GetItemIndex, 0x49AB10)
+uint32_t ShopItems() { return std::min(Ref<uint32_t>(kShopItems), kShopMax); }
+uint32_t ShopKey(uint32_t i) { return Ref<uint32_t>(kShopKeys + (uintptr_t)i * 4); }
+uint8_t& Bought(uint32_t i) { return Ref<uint8_t>(kShopBought + i); }
+
+std::vector<uint32_t> BoughtKeys() {
+    std::vector<uint32_t> keys;
+    for (uint32_t i = 0; i < ShopItems(); ++i)
+        if (Bought(i)) keys.push_back(ShopKey(i));
+    return keys;
+}
+void SetBought(const std::vector<uint32_t>& keys) {
+    for (uint32_t i = 0; i < ShopItems(); ++i) Bought(i) = std::find(keys.begin(), keys.end(), ShopKey(i)) != keys.end();
+}
+
+// The list of the last game of its own, kept on disk as its look is
+std::vector<uint32_t> g_ownBought;
+std::wstring OwnBoughtPath() {
+    std::wstring dir = core::UserFilesDir();
+    return dir.empty() ? std::wstring() : dir + L"coop_own_bought.bin";
+}
+
+// A save's list (block 22, CShopping::Save): price modifiers, the items' count, a byte per item, the next block's tag. Known
+// by that layout, the tags being no sure count: another count of items is another shopping.dat, and its bytes mean nothing here.
+void BoughtFromSave(const std::wstring& path, std::vector<uint32_t>& keys) {
+    std::vector<uint8_t> b;
+    uint32_t items = ShopItems();
+    if (!ReadFileBytes(path, b)) return;
+    for (size_t i = 0; i + 13 <= b.size(); ++i) {
+        if (memcmp(&b[i], "BLOCK", 5)) continue;
+        uint32_t mods = *(const uint32_t*)&b[i + 5];
+        size_t at = i + 9 + (size_t)mods * 8;
+        if (mods > 20 || at + 4 + items + 5 > b.size() || *(const uint32_t*)&b[at] != items ||
+            memcmp(&b[at + 4 + items], "BLOCK", 5))
+            continue;
+        for (uint32_t k = 0; k < items; ++k)
+            if (b[at + 4 + k]) keys.push_back(ShopKey(k));
+        return;
+    }
+}
+
+// A first visit, or a profile older than the list: what it bought in its own game comes along with its CJ. With no game of
+// its own to go by the world's list stays, the clothes it came with. What it wears is its own in any case: the wardrobe
+// would not take it back to them, and nothing else knows what it bought in the host's world before the profile kept it.
+void BringOwnBought() {
+    std::vector<uint32_t> keys = g_ownBought;
+    std::vector<uint8_t> file;
+    if (keys.empty() && ReadFileBytes(OwnBoughtPath(), file) && !file.empty() && file.size() % 4 == 0) {
+        keys.resize(file.size() / 4);
+        memcpy(keys.data(), file.data(), file.size());
+    }
+    if (keys.empty()) BoughtFromSave(NewestSave(), keys);
+    if (!keys.empty()) SetBought(keys);
+    const uint32_t* worn = FindPlayerPed(0)->ClothesDesc()->textureKeys;
+    for (uint32_t i = 0; i < ShopItems(); ++i)
+        if (std::find(worn, worn + 18, ShopKey(i)) != worn + 18) Bought(i) = 1;
+    LOGI("Bought items: %zu from its own game, %zu with what it wears", keys.size(), BoughtKeys().size());
+}
+
+// The side activities keep their progress in main.scm globals of the world (schools, jobs, the gym, burglary),
 // and the host's world brought its own at every load: the partner's lessons, levels and medals started over, and the
 // unique stunt jumps paid again. The profile keeps them and puts them back, with what is engine state: the jumps, the
 // reward cars' generators and the assets' revenue pickups. Story globals, handles, the "running" flags and the
@@ -151,7 +262,7 @@ constexpr GlobalRange kSideGlobals[] = {
     {8159, 8159}, {8171, 8171}, {8174, 8180},                            // trucking, quarry
     {1487, 1493}, {180, 180}, {163, 163}, {8239, 8240}, {1900, 1900}, {1991, 1994},  // jobs done, taxi, freight, valet, ...
     {8153, 8158}, {5347, 5349},                                          // gym: trainers beaten, styles, today's workout
-    {1049, 1049}, {1060, 1069}, {1076, 1117}, {1184, 1184}, {1790, 1791},  // exports, burglary
+    {1790, 1791},                                                        // burglary
 };
 // the flight school's, only in a world whose story has passed "Learning to Fly" ($87): before that the school is the story's
 constexpr GlobalRange kFlightGlobals[] = {{1942, 1952}, {1954, 1955}, {1959, 1961}};
@@ -240,6 +351,12 @@ constexpr DoneFlag kDoneFlags[] = {
     {2795, RW_NONE, true, false, true},        {2796, RW_NONE, true, false, true},       {1801, RW_NONE, true, true, true},
 };  // the last six: Kickstart, Blood Bowl, the triathlons, the BMX and NRG-500 challenges, the Chiliad Challenge
 std::map<uint16_t, int32_t> g_doneSeen;  // the flags as this game last saw them (a change of ours goes out)
+// The missions passed of trucking ($32636, global 8159) and of the quarry ($32684, 8171): the next one goes by it and the
+// reward comes at all of them (8, 7). Each game counted its own, and two players doing half each never got it. The
+// passes of either count for both (the players' choice, 02.11): what ours added goes out in G_SIDE_DONE, the other's is
+// added here. The one who gets to the end first gets the reward, its flag gives it to the other player.
+constexpr uint16_t kSharedCounters[] = {8159, 8171};
+std::map<uint16_t, int32_t> g_counterSeen;
 
 const DoneFlag* DoneFlagOf(uint16_t global) {
     for (const DoneFlag& d : kDoneFlags)
@@ -289,8 +406,14 @@ void HandleDone(uint8_t from, Reader& r) {
     std::vector<std::pair<uint16_t, int32_t>> done(r.U8());
     for (auto& [g, v] : done) g = r.U16(), v = r.I32();
     if (!r.Ok() || from == Net().MyId() || !core::IsPlayerReady() || !flow::InSharedWorld()) return;
-    for (auto [g, v] : done)
+    for (auto [g, v] : done) {
         if (const DoneFlag* d = DoneFlagOf(g); d && v > 0 && v < 256) TakeDone(*d, v);
+        if (Listed(kSharedCounters, g) && v > 0 && v < 20) {  // the passes the other player's game added
+            Global(g) += v;
+            g_counterSeen[g] += v;
+            LOGI("The other player's side job passes: global %u +%d (now %d)", g, v, Global(g));
+        }
+    }
 }
 
 // every second: a flag of ours newly up goes to the other player
@@ -299,6 +422,11 @@ void WatchDone(bool rebase) {
     for (const DoneFlag& d : kDoneFlags) {
         int32_t v = Global(d.global), &seen = g_doneSeen[d.global];
         if (!rebase && v > 0 && seen == 0) up.push_back({d.global, v});
+        seen = v;
+    }
+    for (uint16_t c : kSharedCounters) {  // a pass of ours; a drop is the script starting over, no pass
+        int32_t v = Global(c), &seen = g_counterSeen[c];
+        if (!rebase && v > seen) up.push_back({c, v - seen});
         seen = v;
     }
     SendDone(up);
@@ -346,7 +474,7 @@ constexpr StatRange kSharedStats[] = {
     {48, 49, R_MIN},     {172, 172, R_MIN},   {202, 202, R_MIN},   {212, 212, R_MIN},   {219, 222, R_MIN},  // best times
     {246, 250, R_MIN},   {258, 301, R_MIN},
     {0, 1, R_SET},       {146, 148, R_SET},   {180, 181, R_SET},   {302, 342, R_SET},  // the world's, host -> partner
-    {231, 231, R_SET},   {241, 241, R_SET},   {243, 243, R_SET},  // and its collectibles' counts (kWorldStats)
+    {213, 213, R_SET},   {231, 231, R_SET},   {241, 241, R_SET},   {243, 243, R_SET},  // its exports and collectibles (kWorldStats)
 };
 uint8_t RuleOf(uint16_t id) {
     for (const StatRange& r : kSharedStats)
@@ -460,6 +588,14 @@ void StatTick(bool ready) {
     // many at once is a world or a profile nobody announced: taken as it is
     if (out.size() > 40) LOGI("Shared stats: %zu changed at once, taken as they are", out.size());
     else SendStats(0, out);
+    // The taxi job counts its fares twice, in $720 (global 180) and the stats tab (stat 150), and gives the nitro once
+    // $720 is past 49 at a fare's end. The tab is both players' now, $720 was each game's own: two players at 50 fares
+    // together never got the nitro (02.11). $720 goes by the tab: the next fare gives it, the flag (1491)
+    // gives it to the other player too.
+    if (int32_t fares = (int32_t)StatBits(150); Global(180) < fares) Global(180) = fares;
+    // So the burglary's $10000: $7160 (global 1790) and stat 41 (a float) both add up each haul's value, the stat for both
+    // players, $7160 for its own game's
+    if (int32_t loot = (int32_t)StatNum(41, StatBits(41)); Global(1790) < loot) Global(1790) = loot;
     WatchDone(false);
 }
 
@@ -565,7 +701,7 @@ std::vector<uint8_t> CaptureProfile() {
         w.I32(ammo);
         if (type > 0) guns += " " + std::to_string(type) + "x" + std::to_string(ammo);
     }
-    // a partner left with no weapons after a load (Holder, 29.10): what the profile holds, said when it changes
+    // a partner left with no weapons after a load (29.10): what the profile holds, said when it changes
     static std::string lastGuns = "-";
     if (guns != lastGuns) LOGI("Profile weapons:%s", guns.empty() ? " none" : guns.c_str()), lastGuns = guns;
     w.U8(me->FightingStyle());
@@ -580,10 +716,49 @@ std::vector<uint8_t> CaptureProfile() {
     w.U8(LookIsOwn());
     w.U8(Field<uint8_t>(me, 0x72E));  // CPed::m_nAllowedAttackMoves
     WriteSideProgress(w);
+    std::vector<uint32_t> bought = BoughtKeys();
+    w.U16((uint16_t)bought.size());
+    for (uint32_t key : bought) w.U32(key);
     return w.Buffer();
 }
 
-bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
+struct Slot {
+    uint8_t type;
+    int32_t ammo;
+};
+
+void GiveWeapons(int h, const Slot* slots) {
+    Cmd(0x048F).I(h).Run();  // REMOVE_ALL_CHAR_WEAPONS
+    std::string guns;
+    for (int i = 0; i < NUM_WEAPON_SLOTS; ++i) {
+        const Slot& s = slots[i];
+        if (s.type == 0 || s.type > 46) continue;  // eWeaponType ends with the parachute
+        int model = -1;
+        Cmd(0x0781).I(s.type).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
+        if (model > 0) LoadModelNow(model);
+        Cmd(0x01B2).I(h).I(s.type).I(std::max(s.ammo, 1)).Run();  // GIVE_WEAPON_TO_CHAR
+        guns += " " + std::to_string(s.type) + "x" + std::to_string(s.ammo);
+    }
+    LOGI("Profile weapons given:%s", guns.empty() ? " none" : guns.c_str());
+    Cmd(0x01B9).I(h).I(0).Run();  // fists in hand
+}
+
+// What the partner carried when the host last saved. The profile is the partner's latest state and no save's: died after
+// the save, it had nothing when the host loaded it, the host having its guns back (11c). The user's word, 04.11:
+// only the weapons go back. On the partner's disk: the load may come days later. load: the host's load of that save.
+constexpr uint32_t kSavedGunsMagic = 0x4E554753;  // "SGUN"
+struct SavedGuns {
+    uint32_t magic, game, load;
+    Slot slots[NUM_WEAPON_SLOTS];
+};
+std::wstring SavedGunsPath() {
+    std::wstring dir = core::UserFilesDir();
+    return dir.empty() ? std::wstring() : dir + L"coop_saved_guns.bin";
+}
+uint32_t g_hostLoad = 0, g_hostLoadSent = 0;  // host: this load of its game, a new number each time
+uint64_t g_hostLoadSentMs = 0;
+
+bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn, bool& boughtOwn) {
     Reader r(blob.data(), blob.size());
     if (r.U32() != kProfileMagic) return false;
     uint16_t version = r.U16();
@@ -592,10 +767,7 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
     std::vector<uint8_t> stats = r.Bytes(kStatsSize);
     std::vector<uint8_t> clothes = r.Bytes(kClothesSize);
     uint8_t n = r.U8();
-    struct Slot {
-        uint8_t type;
-        int32_t ammo;
-    } slots[NUM_WEAPON_SLOTS] = {};
+    Slot slots[NUM_WEAPON_SLOTS] = {};
     for (int i = 0; i < n && i < NUM_WEAPON_SLOTS; ++i) slots[i] = {r.U8(), r.I32()};
     uint8_t fight = r.U8(), maxHealth = r.U8(), maxArmour = r.U8();
     uint8_t perks[5] = {};
@@ -605,8 +777,13 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
     uint8_t moves = version >= 4 ? r.U8() : 0;
     SideProgress side;
     if (version >= 5) ReadSideProgress(r, side);
+    std::vector<uint32_t> bought;
+    uint32_t boughtCount = version >= 6 ? r.U16() : 0;
+    if (boughtCount > kShopMax) return false;
+    for (uint32_t i = 0; i < boughtCount; ++i) bought.push_back(r.U32());
     if (!r.Ok() || stats.size() != kStatsSize || clothes.size() != kClothesSize) return false;
     lookOwn = own != 0;
+    boughtOwn = version >= 6;
 
     CPlayerPed* me = FindPlayerPed(0);
     CPlayerInfo& info = PlayerInfos()[0];
@@ -621,18 +798,7 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
         Ref<int32_t>(kStatsBlock + kFloatStats + (uintptr_t)id * 4) = world[kFloatStats / 4 + id];  // the floats' bits
     memcpy(me->ClothesDesc(), clothes.data(), kClothesSize);
     RebuildPlayer(me, false);  // body from the profile's fat/muscle stats
-    Cmd(0x048F).I(h).Run();    // REMOVE_ALL_CHAR_WEAPONS
-    std::string guns;
-    for (const Slot& s : slots) {
-        if (s.type == 0 || s.type > 46) continue;  // eWeaponType ends with the parachute
-        int model = -1;
-        Cmd(0x0781).I(s.type).Out(&model).Run();  // GET_WEAPONTYPE_MODEL
-        if (model > 0) LoadModelNow(model);
-        Cmd(0x01B2).I(h).I(s.type).I(std::max(s.ammo, 1)).Run();  // GIVE_WEAPON_TO_CHAR
-        guns += " " + std::to_string(s.type) + "x" + std::to_string(s.ammo);
-    }
-    LOGI("Profile weapons given:%s", guns.empty() ? " none" : guns.c_str());
-    Cmd(0x01B9).I(h).I(0).Run();  // fists in hand
+    GiveWeapons(h, slots);
     me->FightingStyle() = fight;
     if (version >= 4) Field<uint8_t>(me, 0x72E) = moves;
     info.maxHealth = maxHealth;
@@ -642,6 +808,7 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn) {
         own[0] = perks[0], own[1] = perks[1], own[2] = perks[2], own[5] = perks[3], own[6] = perks[4];
     }
     if (version >= 5) ApplySideProgress(side);
+    if (boughtOwn) SetBought(bought);
     return true;
 }
 
@@ -702,6 +869,7 @@ GenericSaveFn g_origMenuSave = nullptr;
 void PartnerSaved();
 bool __cdecl HookMenuSave(int file) {
     bool ok = g_origMenuSave(file);
+    if (ok && (!Net().Online() || Net().IsHost())) NoteSavedGame();  // a partner's save is the host's game
     if (ok && Net().Online() && Net().IsHost()) {
         Net().Send(proto::CH_RELIABLE, Writer(proto::G_HOST_SAVED));
         flow::RequestFreshWorld();  // the server keeps the world as saved
@@ -718,8 +886,9 @@ public:
 
     void OnInstallHooks() override {
         mem::RedirectCallFn(0x619081, &HookMenuSave, &g_origMenuSave);  // C_PcSave::SaveSlot -> GenericSave
-        Net().onProfile = [](const std::vector<uint8_t>& blob) {
+        Net().onProfile = [](const std::vector<uint8_t>& blob, uint32_t game) {
             Progress& p = Instance();
+            p.m_profileGame = game;
             // an empty profile after a real one, or during a prologue, in the same session (the first one of a session
             // is the newcomer's): the host began a new game, which this game is not in yet
             if (blob.empty() && p.m_profileReceived && (!p.m_profile.empty() || !flow::InHostWorld())) p.m_resetPending = true;
@@ -731,66 +900,120 @@ public:
         Net().SetHandler(proto::G_PLAYER_STATS, &HandleStats);
         Net().SetHandler(proto::G_STAT_SYNC, &HandleStatSync);
         Net().SetHandler(proto::G_SIDE_DONE, &HandleDone);
+        Net().SetHandler(proto::G_HOST_LOADED, [](uint8_t from, Reader& r) {
+            uint32_t load = r.U32();
+            if (r.Ok() && from == Net().HostId() && !Net().IsHost()) Instance().m_hostLoad = load;
+        });
         Net().SetHandler(proto::G_HOST_SAVED, [](uint8_t from, Reader&) {
             if (from != Net().HostId() || Net().IsHost() || !Instance().m_applied || !core::IsPlayerReady()) return;
             Instance().SaveNow(true);
+            Instance().KeepWeaponsOfSave();
             ui::TheChat().AddSystem(TR("Хост сохранил игру. Ваши деньги, навыки и внешность тоже сохранены.",
                                        "The host saved the game. Your money, skills and look are saved too."));
         });
     }
 
     void OnSessionEnd() override {
+        m_hostLoad = m_loadChecked = 0;
+        g_hostLoadSent = 0;
         m_profileReceived = m_applied = m_resetPending = m_reset = false;
         m_profile.clear();
         g_looks.clear();
         g_statBased = false;
         g_statQueue.clear();
     }
-    void OnSessionStart() override { g_statBased = false; }
+    void OnSessionStart() override {
+        g_statBased = false;
+        g_gameSentOk = false;
+    }
     void OnPeerJoin(uint8_t) override { g_statBased = false; }  // the newcomer gets our records and skills
     void OnGameStarted() override {  // a new world: the partner's profile goes on top again
         m_applied = false;
+        std::random_device load;
+        do g_hostLoad = load();
+        while (!g_hostLoad);
         g_statBased = false;
         g_foreignGame = Net().Online() && !Net().IsHost();
+        g_gameId = GameOfSlot(SlotOfSave((const char*)0xC15FC8));  // CGenericGameStorage::ms_LoadFileName: the save loaded
+        g_newGame = false;
+        g_gameStartMs = NowMs();
         if (m_resetPending && flow::InHostWorld()) m_reset = true, m_resetPending = false;  // the new game's world
     }
 
     void OnPostProcess() override {
+        // a new game runs its prologue from its first frames (the file the menu read last is no save of it)
+        if (!g_newGame && NowMs() - g_gameStartMs < 10000 && core::IsPlayerReady() && core::InPrologue()) {
+            g_newGame = true;
+            std::random_device rd;
+            do g_gameId = rd();
+            while (!g_gameId);
+            LOGI("A new game: game %08X", g_gameId);
+        }
         if (core::IsPlayerReady() && !g_foreignGame) {  // a game of its own: the look it brings along
             const auto* d = (const uint8_t*)FindPlayerPed(0)->ClothesDesc();
             bool clothes = g_ownLook.size() != kClothesSize || memcmp(g_ownLook.data(), d, sizeof g_givenKeys);
             g_ownLook.assign(d, d + kClothesSize);
             if (clothes) WriteFileBytes(OwnLookPath(), d, kClothesSize);  // on a change of clothes (fat and muscle drift)
+            if (std::vector<uint32_t> bought = BoughtKeys(); bought != g_ownBought) {
+                g_ownBought = std::move(bought);
+                WriteFileBytes(OwnBoughtPath(), g_ownBought.data(), g_ownBought.size() * 4);
+            }
         }
         if (!Net().Online() || !core::IsPlayerReady()) return;
         CPlayerPed* me = FindPlayerPed(0);
         uint64_t now = NowMs();
+        if (Net().IsHost() && (g_newGame || now - g_gameStartMs > 5000) && (!g_gameSentOk || g_gameSent != g_gameId)) {
+            Writer w(proto::C_GAME_ID);
+            w.U32(g_gameId);
+            Net().Send(proto::CH_RELIABLE, w);
+            g_gameSent = g_gameId;
+            g_gameSentOk = true;
+            LOGI("The host plays game %08X: the partners get its profiles", g_gameId);
+        }
+        // again now and then: a partner who came later has it
+        if (Net().IsHost() && !Net().Peers().empty() && (g_hostLoadSent != g_hostLoad || now - g_hostLoadSentMs >= 15000)) {
+            Writer w(proto::G_HOST_LOADED);
+            w.U32(g_hostLoad);
+            Net().Send(proto::CH_RELIABLE, w);
+            g_hostLoadSent = g_hostLoad;
+            g_hostLoadSentMs = now;
+        }
 
         // only in the host's world: a game of its own (joined from single player, waiting) or an old world during a
         // new game's prologue is no profile, it would have gone to the server as one
         bool hostWorld = flow::InHostWorld();
         if (!Net().IsHost() && hostWorld && m_profileReceived && !m_applied && !m_resetPending) {
             m_applied = true;
-            bool own = false;
+            bool own = false, boughtOwn = false;
+            // The host's new game: a new CJ for the partner too, in the clothes and body the game starts with. The look of
+            // its own single player game went on as on a first visit, and the old CJ came into the new game (31.10).
+            bool fresh = m_profile.empty() && (m_reset || flow::IsFollower());
             if (m_profile.empty()) {
-                ui::TheChat().AddSystem(m_reset ? TR("Хост начал новую игру. Деньги, оружие и навыки у вас тоже начинаются заново.",
-                                                     "The host started a new game. Your money, weapons and skills start over too.")
-                                                : TR("Вы здесь впервые. Дальше деньги, навыки и внешность у вас будут свои.",
-                                                     "You are here for the first time. From now on your money, skills and look "
-                                                     "are your own."));
+                ui::TheChat().AddSystem(fresh ? TR("Хост начал новую игру. Деньги, оружие, навыки и внешность у вас тоже начинаются заново.",
+                                                   "The host started a new game. Your money, weapons, skills and look start over too.")
+                                              : TR("Вы здесь впервые. Дальше деньги, навыки и внешность у вас будут свои.",
+                                                   "You are here for the first time. From now on your money, skills and look "
+                                                   "are your own."));
                 m_reset = false;
-            } else if (ApplyProfile(m_profile, own)) {
+            } else if (ApplyProfile(m_profile, own, boughtOwn)) {
                 LOGI("Profile applied (%zu bytes)", m_profile.size());
                 m_quietUntil = now + 5000;
                 ui::TheChat().AddSystem(TR("Загружены ваши деньги, навыки и внешность.", "Your money, skills and look are loaded."));
             } else {
                 LOGW("Profile rejected (bad format), starting from the world's state");
             }
-            g_lookOwn = own || WearOwnLook(m_profile.empty());
+            g_lookOwn = own || (!fresh && WearOwnLook(m_profile.empty()));
             if (!g_lookOwn) memcpy(g_givenKeys, me->ClothesDesc(), sizeof g_givenKeys);
+            if (!boughtOwn && !fresh) BringOwnBought();
             m_saved = m_profile;
             m_lastSaveMs = now;
             g_statBased = false;  // the profile's stats are ours: the shared ones start from them
+        }
+
+        if (!Net().IsHost() && hostWorld && m_applied && m_hostLoad != m_loadChecked && !me->InVehicle() && me->Health() > 0.0f &&
+            !HostMissionRecent(0)) {
+            m_loadChecked = m_hostLoad;
+            BackToWeaponsOfSave();
         }
 
         if (m_quietUntil && Ref<uint8_t>(0xB5F851)) m_quietUntil = std::max(m_quietUntil, now + 3000);  // a cutscene: later
@@ -856,7 +1079,14 @@ public:
                 Players::SetModel(rp->ped, 0);
                 memcpy(rp->ped->ClothesDesc(), l.desc.data(), kClothesSize);
                 MuscleFrom muscle(rp->ped->ClothesDesc());
+                // In focus for it, as when it is processed: Cheat Menu replaces the call of ConstructPedModel in RebuildPlayer
+                // (0x5A834D) with one that builds FindPlayerPed()'s clothes, and each player saw the other in its own (#106,
+                // found 04.11). Skins go another way and showed.
+                int8_t focus = PlayerInFocus();
+                CPlayerPed* slot = PlayerInfo(1)->ped;
+                PlayerInFocus() = 1, PlayerInfo(1)->ped = rp->ped;
                 RebuildPlayer(rp->ped, true);  // fat/muscle from the description, not from our stats
+                PlayerInFocus() = focus, PlayerInfo(1)->ped = slot;
             }
             l.appliedTo = rp->pedHandle;
             rp->lookStale = false;
@@ -870,6 +1100,39 @@ public:
         if ((now - m_lastSaveMs >= 30000 || lookToSave) && hostWorld) SaveNow();
     }
 
+    // the host saved: what we carry now is what its load brings back. Dead, we carry nothing we had: the last save's stay.
+    void KeepWeaponsOfSave() {
+        CPlayerPed* me = FindPlayerPed(0);
+        std::wstring path = SavedGunsPath();
+        if (!me || me->Health() <= 0.0f || path.empty()) return;
+        SavedGuns s{kSavedGunsMagic, m_profileGame, m_hostLoad, {}};
+        for (int i = 0; i < NUM_WEAPON_SLOTS; ++i) {
+            int type = me->Weapons()[i].type, ammo = me->Weapons()[i].ammoTotal;
+            MissionWeaponUnder(type, ammo);  // a gun the host's mission gave is not the player's own
+            s.slots[i] = {(uint8_t)type, ammo};
+        }
+        WriteFileBytes(path, &s, sizeof s);
+    }
+
+    // the host's game was loaded anew since that save (reconnecting to the same load changes nothing)
+    void BackToWeaponsOfSave() {
+        std::wstring path = SavedGunsPath();
+        std::vector<uint8_t> bytes;
+        SavedGuns s;
+        bool read = !path.empty() && ReadFileBytes(path, bytes) && bytes.size() == sizeof s;
+        if (read) memcpy(&s, bytes.data(), sizeof s);
+        // No save of the host seen in this game (it saved before we came): what we came with is the nearest to it. With
+        // nothing kept a death and the host's load gave nothing back.
+        if (!read || s.magic != kSavedGunsMagic || s.game != m_profileGame) return KeepWeaponsOfSave();
+        if (s.load == m_hostLoad) return;
+        s.load = m_hostLoad;
+        WriteFileBytes(path, &s, sizeof s);
+        GiveWeapons(GetPedRef(FindPlayerPed(0)), s.slots);
+        SaveNow(true);
+        ui::TheChat().AddSystem(TR("Хост загрузил игру. Ваше оружие снова как при его сохранении.",
+                                   "The host loaded a game. Your weapons are back as they were at that save."));
+    }
+
     void SaveNow(bool always = false) {
         if (!Net().Online() || Net().IsHost() || !m_applied || !core::IsPlayerReady() || !flow::InHostWorld()) return;
         m_lastSaveMs = NowMs();
@@ -877,6 +1140,7 @@ public:
         if (blob == m_saved && !always) return;
         Writer w(proto::C_PROFILE_SAVE);
         w.Bytes(blob.data(), blob.size());
+        w.U32(m_profileGame);
         Net().Send(proto::CH_RELIABLE, w);
         m_saved = std::move(blob);
         m_profile = m_saved;  // a reload of the world re-applies the latest state
@@ -894,6 +1158,8 @@ private:
     uint16_t m_sentFight = 0;
     bool m_profileReceived = false, m_applied = false;
     bool m_resetPending = false, m_reset = false;  // a new game emptied the profile: applied in the next world
+    uint32_t m_profileGame = 0;  // the host's game the profile is of: the server drops a save made for another
+    uint32_t m_hostLoad = 0, m_loadChecked = 0;  // the host's load of its game (G_HOST_LOADED), and the one looked at
     uint64_t m_lastSaveMs = 0, m_lastLookMs = 0, m_lookSentMs = 0, m_statsSentMs = 0, m_quietUntil = 0;
     uint64_t m_lookChangedMs = 0;  // our look last changed
 };
