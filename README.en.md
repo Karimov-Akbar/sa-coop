@@ -14,9 +14,9 @@
 
 <p align="center"><a href="README.md">Русский</a> · <b>English</b></p>
 
-SA:COOP is a mod for GTA San Andreas that lets two players go through the story together over the network. One
-player is the host: the game runs on their save, and they start the missions. The other player connects to them
-and plays in the same world as a character of their own, with their own money, skills and look.
+SA:COOP is a mod for GTA San Andreas that lets two, three or four players go through the story together over the
+network. One player is the host: the game runs on their save, and they start the missions. The others connect to them
+and play in the same world as characters of their own, with their own money, skills and look.
 
 ![The host and the partner on Grove Street](docs/images/en/street-host.jpg)
 
@@ -28,13 +28,13 @@ The host starts a mission, but it only begins once both players stand in the mar
 marker first, the host gets an invitation and presses Y to be there at once. The partner sees the same
 texts, subtitles, radar blips, markers, race checkpoints and timers, and the texts come in the language of the
 partner's own game. The partner also hears the lines characters say during missions outside cutscenes. Weapons
-the mission gives CJ go to the partner as well. Both players get the mission reward. Enemies attack both of them,
-and either player can hurt them. If the mission moves CJ somewhere else after a cutscene, the partner ends up next
-to the host. The mission's limits on the wanted level apply to both players, and the gates and buildings a mission
-opens or changes change for the partner too, as do the parts of the map a mission adds, such as the weed field
+the mission gives CJ go to the partner as well. When the story takes all of CJ's weapons, a partner near the host
+loses theirs too. Both players get the mission reward. Enemies attack both of them, and either player can hurt them. If the mission moves CJ somewhere else after a cutscene, the partner ends up next
+to the host. The mission's limits on the wanted level apply to a partner near the host, away from the host the wanted level works as usual, the stars a mission gives CJ go to a
+partner near the host too, and the gates and buildings a mission opens or changes change for the partner too, as do the parts of the map a mission adds, such as the weed field
 in "Are You Going To San Fierro?". The partner can also take the photos a mission asks for. A partner
 killed during a mission comes back next to the host. If the host gets on a bike or into a vehicle with no seat
-left, the same kind of vehicle appears next to the partner. The partner watches a mission's in-engine scenes
+left, the partner is put straight into the same kind of vehicle. The partner watches a mission's in-engine scenes
 through the same camera as the host. In the lowrider contest and the beach dance the partner plays next to the
 host, and their points go into the shared score. Either player can carry the crates in the house robbery with Ryder
 and load them into the van.
@@ -45,8 +45,8 @@ and load them into the van.
 
 ### Cutscenes
 
-Cutscenes play for both players at the same time, and the partner's character is next to CJ in them: standing, or
-riding with him in the car during drives. The character listens to the conversation, shifts their weight, nods
+Cutscenes play for both players at the same time, and the partner's character is next to CJ in them: standing at
+his side, or riding with him in the car during drives. The character listens to the conversation, shifts their weight, nods
 and looks at whoever is talking, and when CJ walks, keeps a little behind him and to the side. These movements
 come from the animations of the cutscenes themselves. A cutscene can only be skipped by both players: one presses
 Enter, and the other agrees with Enter or refuses with Esc.
@@ -78,11 +78,14 @@ Pool balls, shooting range targets and other activity objects are seen by both.
 ### Cars
 
 Each player drives on their own or rides as a passenger with the other. A passenger can shoot from the window: the
-right mouse button leans out with the gun, the left one fires. Tuning and damage are visible to the other player.
+right mouse button leans out with the gun, the left one fires. A passenger fires the RPG and the heat-seeking
+launcher that way too, only without the lock-on. The driver also aims and fires anywhere while holding the right
+mouse button, on a motorbike as well. Both players in a car hear one radio: the driver changes the station, and
+the passenger hears the same song from the same point. Tuning and damage are visible to the other player.
 Plane landing gear and nozzles, tank and fire truck turrets, hydraulics, the horn, the police helicopter's
 searchlight, trailers, the tow truck and the airport tug all work. Explosions, rockets, grenades, tank shells,
 fire truck water, NPC drive-bys, trains and RC toys are seen by both players. Either player can leave a car in the
-garage at a safe house, and the host's world keeps it.
+garage at a safe house or take one out, and the host's world keeps them.
 
 ![The partner rides as a passenger in the host's car](docs/images/car.jpg)
 
@@ -90,7 +93,7 @@ garage at a safe house, and the host's world keeps it.
 
 Food and the gym, weapon skills, clothes, haircuts, tattoos and money are separate for each player. Driving,
 motorbike, cycling and flying skills are shared: both players have the better of the two. The stats in the menu are
-shared too. A side job or challenge completed by one player counts for both, reward included. What a player does at a diner, the gym, a barber's or a tattoo parlour, the other player sees as
+shared too. A side job or challenge completed by one player counts for both, reward included. The export list at the docks is shared: a car one player delivers is crossed out for both, and both get the money. What a player does at a diner, the gym, a barber's or a tattoo parlour, the other player sees as
 well, along with a tray of food, a cigarette, a phone at the ear, a parachute jump, a fighting style learned at the
 gym, crouching with its rolls, reloading and walking in through shop doors. If a player changes their character model, for example with a skin selector, the other player sees the new
 model too. The friend comes into the host's world as their own CJ, in the clothes and with the tattoos their CJ
@@ -108,6 +111,9 @@ loaded again.
 Before creating the game, the host can allow friendly fire with a checkbox in the F9 window. Then the players can
 hurt and kill each other with bullets, fists, explosions, fire and cars. Without the checkbox they cannot harm
 each other, and a stealth kill with a knife from behind does not work either. A player knocked down falls and gets up on both screens.
+Next to it is the "Shared life" checkbox: with it, either player's death fails the host's story mission. Without
+it, a host who dies gets up next to the partner a couple of seconds later and the mission goes on. It fails only when
+both die.
 
 | | |
 |---|---|
@@ -125,19 +131,36 @@ F9 window, and each player picks their own: the host can play in Russian while t
 ### Everything else
 
 Side jobs (taxi, paramedic, firefighter, vigilante, pimp), races, schools, the shooting range, trucking and the
-quarry are played by each player in their own game. A side job, a race, a stadium event, the quarry, a valet shift or
-a shooting range round can be played together: within 20 seconds of its start press Y, and the other player gets an invitation (Y: yes, N: no). Whoever accepts sees its markers,
+quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a race, a stadium event, the quarry, a valet shift or
+a shooting range round can be played together: within 20 seconds of its start press Y, and the other players get an invitation (Y: yes, N: no). Whoever accepts sees its markers,
 checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
 gets the same money at its end. The job's levels stay with the player who started it, and the reward for
-completing the job goes to both. There is text chat and voice chat, and the farther away the
+completing the job goes to both. Taxi fares, stolen goods, trucking runs and quarry jobs count together for the
+reward. In a joint race, a story race too, the second player races as well, with their own
+checkpoints and their own place on the screen. Pool for two is played for money: the loser gives the stake to the
+winner. If the host reaches a mission's objective while the partner is still on the way, the mission waits for the
+partner up to 45 seconds. In Toreno's missions the partner gets a plane or a helicopter of their own when there is
+no seat for them with the host, and a jetpack of their own, and in Zero's missions a minigun of their own next
+to the host's turret or an RC toy of their own: one with a gun or, in "New Model Army", with a magnet. A partner far from Zero's shop gets the toy at its door. When the host is a gunner on a helicopter or a car, as in
+"The Da Nang Thang", the partner shoots beside them from the other side. Whoever rides with a racer sees the racer's place. There is text chat and voice chat, and the farther away the
 partner is, the quieter they sound. A waypoint one player sets on the map shows up on the other player's radar,
 and a house one player buys appears for both. Above the partner's head you see their health, armour, weapon and
-wanted stars. Turf wars near the host are the host's, and both players' kills of rival gang members provoke
+wanted stars, shown over their RC toy while they fly one. Turf wars near the host are the host's, and both players' kills of rival gang members provoke
 them. A partner more than 100 m from the host can start a war of their own, and the host sees in the chat which
 district it is for and how it ended. Cheats
 for the weather, traffic, pedestrians and game speed work for both players, while weapon, money and health cheats
 only work for the player who typed them. Theme cheats such as the beach party change the pedestrians for both,
 but only the player who typed the code gets the outfit and the katana.
+Two players can be at one school at once: during a lesson the other player's car is not shown and does not get in the way.
+
+The U key opens the animations window: emotions, poses, actions, dances and animations for two with your partner
+(handshakes, gang greetings, a hand on the shoulder, a deal, an argument). The tabs hold the main animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. The chosen animation shows at once in the
+window on a copy of your CJ, and the other player sees it on your character. Your partner accepts an animation for two
+with Y, and their CJ steps in front of yours. Poses, stances, dances and sitting last until you press Space or F. A
+short animation stops at any movement. Your own animations from .ifp files go
+into the `coop/anims` folder: the other player sees them if they have the same file. The Packs tab holds animations
+by other authors that the mod brings along: dances, tricks and gestures. They load on their own and replace nothing
+in the game.
 
 ![Chat, voice and the player list on the partner's screen](docs/images/en/chat-voice.jpg)
 
@@ -158,10 +181,10 @@ The archive also contains a detailed player guide in Russian, `Инструкц�
 ## How to play
 
 The host presses F9, opens the "Host a game" tab, picks a save and clicks "Start the server". If the host is
-already in the game, the server is created from the current game. The "Friendly fire" checkbox above the button
-lets the players hurt each other. A couple of seconds later the window shows a code like `XXXX-XXXX-XXXX`, which
-the host sends to the friend. The code contains the host's external IP address, so only send it to the person you
-play with.
+already in the game, the server is created from the current game. Beside the password the host chooses how many will
+play: 2, 3 or 4. The "Friendly fire" checkbox above the button lets the players hurt each other. A couple of seconds
+later the window shows a code like `XXXX-XXXX-XXXX`, which the host sends to the friends. The code contains the host's
+external IP address, so only send it to the people you play with.
 
 The friend opens the "Join a game" tab, pastes the code and clicks "Connect". After that, the host's world loads
 on the friend's side.
@@ -170,7 +193,9 @@ on the friend's side.
 
 You can also start the story from the very beginning: the last item in the save list is "New game". The host
 plays the prologue alone, while the friend connects right away and waits. When CJ gets on the bike, the friend
-appears next to him, and there is a bike for the friend too.
+appears next to him, and there is a bike for the friend too. The friend's money, weapons, skills and look start
+over in a new game too. When the host goes back to an older save, the friend has everything they had in that game.
+When the host loads a save, the friend's weapons become what they were at that save.
 
 You don't need Hamachi or Radmin. The server opens its port through UPnP or punches through NAT. If neither works
 with your internet providers, the host can turn on a relay with the `turn` line in `coop\server.ini`, as the
@@ -187,20 +212,24 @@ sees "The server does not answer", even on a home network. If an antivirus remov
 |---|---|
 | F9 | the SA:COOP window |
 | T | chat: Enter sends a message, Esc closes the chat |
-| B | voice chat while the key is held |
-| G | get into the nearest car as a passenger |
+| B | voice chat while the key is held (the mode is set in the F9 window) |
+| G | get into the nearest car as a passenger, by the nearest door |
 | Triangle (hold) | on a gamepad: get in as a passenger |
-| Right mouse button | as a passenger: lean out of the window with the gun, fire with the left button |
-| F2 | the players: money and giving money |
+| Right mouse button | in a vehicle with a gun: lean out and aim, fire with the left button |
+| F2 | the players: money, giving money and weapons, and with more than two players their numbers and /tp and /tphere by a click |
+| U | animations: emotions, poses, actions, dances, animations for two and your own |
+| F7 | hide the interface and bring it back |
 | Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
 The chat supports the `/help`, `/players`, `/tp` (go to your partner unless they are inside a building) and `/tphere`
-(bring your partner over) commands. Your partner answers `/tp` and `/tphere` with Y or N. The host can kick a player
+(bring your partner over) commands. With more than two players the command takes the player's number: `/tp 2`,
+`/tphere 3`. The F2 window shows the numbers. Your partner answers `/tp` and `/tphere` with Y or N. The host can kick a player
 with `/kick <nickname> [reason]` and, creating the game, turn `/tp` and `/tphere` off for partners.
+The `/anims` command opens the animations window, and `/anims` with a number plays that animation at once.
 
-The chat, passenger and player list keys can be changed in `coop\coop.ini`, in the `[keys]` section (the `chat`,
-`enter_as_passenger` and `player_list` lines take a Windows key code, for example `chat = 0x75` for F6). The `[game]`
-section there can also hide the partner's radar mark (`partner_blip = 0`) and the name tag over their head
+The chat, passenger, player list and voice keys can be changed in the F9 window, the "Keys" button. The microphone's
+mode is picked there too: while the key is held, a press turns it on and off, always on or off. The `[game]` section
+of `coop\coop.ini` can hide the partner's radar mark (`partner_blip = 0`) and the name tag over their head
 (`name_tags = 0`), for a shoot-out where you have to find each other. `gps = 0` there turns off the road route to
 the map waypoint or the mission's destination that the radar shows in a vehicle. Change the keys if, say, T gets in the way of typing cheat
 codes.
@@ -215,6 +244,8 @@ section clears everything the mod draws: the chat, the names over the players an
 - The partner's girlfriend progress is not kept: it comes from the host's world. The income of the partner's
   businesses lies in the shared world, and either player can pick it up, as with the host's.
 - Story missions and Cesar's races run in the host's game: a mission does not begin without the host in the marker.
+  With three or four players it begins once they all stand in the marker.
+- Pool and contests are for two. The others meanwhile do something of their own or watch.
 - During the host's story mission the partner cannot get into the host's trains. Outside missions either player can
   get into a train the other player is not driving and drive it.
 - The partner gets story progress (new areas, gyms) by loading the host's world. This happens in the next
@@ -228,6 +259,8 @@ section clears everything the mod draws: the chat, the names over the players an
   everything back, as in the normal game.
 - If both players are behind a "symmetric" NAT (common with mobile internet), the invite code cannot connect them
   without a relay. Then you need `turn` or port 7788/UDP forwarded to the host's computer.
+- Each player hears their own User Track Player. When the driver plays their own music, the passenger hears
+  their own, or the radio is off for them if they have none.
 - Only `gta_sa.exe` version 1.0 US is supported. The players' builds may differ, but mods that change the story or
   the saves are needed on both sides. If the partner's `data\script\main.scm` differs from the host's, the host's
   world does not load for them, and the mod says so in the chat.
@@ -274,7 +307,7 @@ src/
 │   ├── features/  story and cutscenes, progress, garages, voice, weather and more
 │   ├── entities/  session, player, vehicle, ped, mission, profile
 │   └── shared/    engine wrappers, network, drawing and input, config
-├── server/        coop-server.exe, the server for two players
+├── server/        coop-server.exe, the server for 2 to 4 players
 ├── loader/        vorbisFile.dll, the ASI loader for a clean game
 └── common/        protocol, network, log and utilities for all three
 ```
@@ -289,6 +322,19 @@ inside and why it is built this way is described in [docs/ARCHITECTURE.md](docs/
 - [Font Awesome Free](https://fontawesome.com) (CC BY 4.0 license): the voice chat's microphone icon,
   `src/client/features/voice/ui/microphone.svg`.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw): the compiler, downloaded during the build.
+- The Packs tab's animations (`package/coop/packs`) come from other authors' mods, only the new animations of each:
+  Salute by KOT33 ([LibertyCity](https://libertycity.net/files/gta-san-andreas/94399-salute.html)), the GTA V greeting by Alexander (Skone Modding)
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/98406-military-greeting-mod-gta-v-to-sa.html)), rap by Aleksey_Move
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/79275-animation-rapping.html)), poses by Androsz and mrandres5555
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132610-new-static-animations.html)), poses on the ground by Ruslan Konorov
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132637-static-animations.html)), idle actions from GTA LCS converted by Mystertv and Junior_Djjr
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/140391-new-idle-animations-from-gta-lcs.html)), disco dances by GRAF MC
+  ([1](https://libertycity.net/files/gta-san-andreas/119882-anim-dance.html), [2](https://libertycity.net/files/gta-san-andreas/127294-anim-dance-v2.html)), Fortnite dances by Sergio Persson
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/168251-dances-from-fortnite-music-v.2.html)), party dances by ATField02_GR
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/242533-new-dance-animations.html)), breakdance and tricks by Arch
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/26294-new-moves-breakdance-somersaults-and-more.html)), acrobatics by Spirit
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/34680-acrostreet-and-tricking-mod-v1.html)), parkour by Paul_Cortez
+  ([MTA wiki](https://wiki.multitheftauto.com/wiki/EngineLoadIFP)).
 - Engine addresses and structures were checked against [gta-reversed](https://github.com/gta-reversed/gta-reversed)
   and [plugin-sdk](https://github.com/DK22Pac/plugin-sdk).
 

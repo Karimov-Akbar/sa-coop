@@ -1,121 +1,113 @@
-Мод для GTA San Andreas 1.0 US, с которым сюжет можно пройти вдвоём по сети.
+Мод для GTA San Andreas 1.0 US, с которым сюжет можно пройти вдвоём, втроём или вчетвером по сети.
 
 ## Что нового
 
-- **Бильярд вдвоём.** В баре на экране ставки нажмите U, и второй игрок сядет играть за ваш стол. Удары идут по очереди: второй смотрит на стол через вашу камеру, бьёт своими кнопками и держит кий в руке, а победителя называет сама игра.
-- **Соревнования.** Баскетбол, бильярд, блэкджек, рулетку, колесо фортуны, танцы в клубе, встречу лоурайдеров, стадионы, гонки и триатлон можно пройти наперегонки: нажмите U в первые 20 секунд. Каждый играет у себя, а табло вверху экрана показывает счёт обоих, отсчёт до начала и крупно итог.
-- **Подработки вдвоём по-настоящему.** В такси каждый возит своих пассажиров. В скорой, у пожарных и в полиции напарник получает свою машину и работает наравне с хостом. При ограблении домов оба выносят вещи в один фургон, а в работе сутенёра девушку может забрать любой из двоих.
-- **Новые занятия на двоих.** Вдвоём теперь проходятся стадионы (Kickstart, Blood Ring, гонки на аренах), карьер, смена парковщика, тир Ammu-Nation (второй стреляет из соседней кабинки), кольца на BMX и NRG и курьер Биг Смоука, за мешки которого деньги получают оба.
-- **Окно игроков F2.** В нём видны деньги каждого игрока, и отсюда же можно перевести деньги другому. `/tp` и `/tphere` теперь просьбы: второй игрок отвечает Y или N. При создании игры хост может запретить напарникам эти команды.
-- **Стрелка на радаре.** Другой игрок виден на радаре стрелкой, которая показывает, куда он смотрит. Цвет своей метки у второго игрока каждый выбирает сам в F9 или командой `/blip`.
-- **Маршрут на радаре.** В машине на радаре рисуется путь по дорогам до метки на карте (красный) или до цели миссии (жёлтый), в том числе у пассажира. Выключается настройкой `gps = 0`.
-- **Оружие пассажира.** Высунувшись из окна, пассажир стреляет из любого огнестрельного оружия, а не только из пистолетов-пулемётов, и меняет его колесом мыши или крестовиной геймпада.
-- **Попутчики.** Бойцы вашей банды садятся с вами, когда вы едете пассажиром в машине второго игрока.
-- **Значок микрофона.** Кто сейчас говорит, видно по красному значку микрофона над головой и в списке игроков.
-- **Названия сохранений.** В списке слотов в «Создать игру» теперь видны названия сохранений.
-- **Стрельба из машин из другого мода.** Если у игрока стоит мод на стрельбу из машины, второй игрок видит эти выстрелы (#76).
+- **Трое и четверо.** Хост выбирает число игроков в окне F9 рядом с паролем: 2, 3 или 4. Сюжетная миссия начинается, когда в маркере стоят все, а подработки и гонки идут со всеми, кто согласился. Бильярд и соревнования остаются на двоих (#110).
+- **Напарник в катсценах ходит вместе с CJ.** Для 130 катсцен его путь рассчитан заранее по карте игры: он идёт за CJ шагом, не перескакивает с места на место и поворачивается к тому, кто говорит. У второго и третьего напарника свои пути.
+- **Окно анимаций, клавиша U.** В нём 250 анимаций: эмоции, позы, действия и танцы из игры, 16 анимаций вдвоём (рукопожатия, приветствия банды, рука на плечо, сделка, подарок, спор, поцелуй) и 88 анимаций из паков других авторов, среди них танцы из Fortnite, брейк и паркур. Выбранная анимация сразу видна в окне на копии вашего CJ, а другие игроки видят её на вашем персонаже. Свои файлы .ifp кладутся в папку `coop\anims`, и другой игрок видит такую анимацию, если у него лежит тот же файл.
+- **Миссии Зеро.** У напарника свой пулемёт рядом с турелью хоста или своя игрушка на радиоуправлении, а в «New Model Army» игрушка с магнитом.
+- **Второй стрелок.** В «The Da Nang Thang» и «Reuniting the Families» напарник стреляет с другой стороны вертолёта или машины.
+- **Напарник участвует в миссиях.** Он ставит заряды в «Dam and Blast» и жучок в «Amphibious Assault», везёт мотоцикл на фуру в «Cop Wheels» и бросает ящики с поезда в «Catalyst». Он видит дым, лучи прожекторов и искры миссий, а от его выстрелов поднимается тревога.
+- **Свой транспорт.** Если у хоста нет свободного места, напарник сразу садится в такой же транспорт. В сюжетных миссиях он получает свой самолёт или вертолёт, например Hydra в «Vertical Bird», а в миссиях Торено ещё и свой реактивный ранец.
+- **Миссия ждёт напарника.** Если хост дошёл до цели, а напарник ещё в пути, миссия ждёт его до 45 секунд.
+- **Общая жизнь.** С этой галочкой при создании игры гибель любого игрока проваливает миссию хоста. Без неё погибший хост через пару секунд встаёт рядом с напарником, и миссия идёт дальше.
+- **Гонки вдвоём.** В совместной гонке, в том числе сюжетной, у второго свои чекпоинты и своё место на экране. Кто едет с гонщиком, видит его место.
+- **Бильярд на деньги.** Проигравший отдаёт ставку победителю.
+- **Вместе вне миссий.** В школу можно идти вдвоём одновременно. Машину в гараже у дома оставляет и забирает любой игрок. Список экспорта в порту общий, и деньги за сданную машину получают оба. Поездки такси, украденное, рейсы грузовиков и задания карьера для наград считаются общими.
+- **Стрельба из машины.** Водитель целится и стреляет куда угодно, пока держит правую кнопку мыши, на мотоцикле тоже. Пассажир стреляет и из РПГ и самонаводящейся ракетницы, только без наведения на цель (#94).
+- **Одно радио в машине.** Станцию переключает водитель, а пассажир слышит ту же песню с того же места.
+- **Окна и клавиши.** В окне F2 можно передать другому игроку деньги и оружие, а если игроков больше двух, там же их номера и кнопки `/tp` и `/tphere`. Кнопка «Клавиши» в окне F9 меняет клавиши и режим микрофона. F7 прячет весь интерфейс. G сажает пассажиром через ближайшую дверь.
+- **Свой прогресс в каждой игре.** В новой игре деньги, оружие, навыки и внешность напарника начинаются с нуля. Когда хост вернётся к старому сохранению, у напарника будет всё, что он там набрал, а оружие станет таким, каким было при этом сохранении.
+- **Розыск в миссиях.** Звёзды, которые миссия даёт CJ, получает и напарник рядом с хостом, а вдали от хоста розыск у него свой. Если сюжет отбирает у CJ оружие, напарник рядом тоже его теряет.
 
 ## Исправления
 
-- Напарник больше не вылетает в начале катсцены (#72).
-- Игра больше не зависает на чёрном экране при загрузке катсцены или мира (#86, #87).
-- Геймпад через GInput больше не отключается после сворачивания игры (#74).
-- Если голосовой чат не может открыть звуковую карту, игра больше не вылетает при входе: голос в этот раз просто выключается (#80).
-- С модами, которые расширяют лимиты игры, у обоих снова видны машины, люди и предметы другого игрока (#82).
-- `install.bat` больше не ломает загрузчик ASI из Widescreen Fix (ошибка «This library isn't supported»).
-- Люди хоста у напарника не только целятся, но и стреляют. Выстрелы игроков пешком видны у обоих, у копии видны трассеры, а очереди полицейского вертолёта и бортовых пулемётов видит и напарник. Громкоговоритель вертолёта он тоже слышит.
-- Ближний бой идёт у обоих одинаково: удары и реакции на них совпадают.
-- Голова, отрубленная катаной, возвращается после возрождения.
-- Машины и люди миссий хоста больше не пропадают у напарника на минуту и дольше. Так пропадали Вагос в «Running Dog» и фургон Майка Торено.
-- В миссиях с турелью («The Da Nang Thang», «Reuniting the Families») напарник больше не получает прицел и пулемёт хоста.
-- Шары на бильярдном столе другого игрока теперь видны: раньше они лежали внутри стола.
-- Машины в гараже у дома больше не теряются и не двоятся, и напарник забирает из гаража только свои. Ворота гаража открываются и для второго игрока.
-- В поезд теперь может сесть и напарник.
-- Ворота аэропорта Сан-Фиерро в миссиях Джиззи открыты у обоих.
-- Метка точки сдачи груза в грузоперевозках больше не остаётся на карте навсегда.
-- Замедление на уникальных прыжках больше не сбивается.
-- Посадку второго игрока в машину другой видит такой, какой она была, в том числе угон катящейся машины.
-- Машины и прохожие после столкновения с копией больше не становятся «каменными».
-- Полицейский вертолёт над хостом виден напарнику.
-- В «Sweet's Girl» напарник не пропадает из машины, а в «Tagging Up Turf» выходит из неё вместе с хостом.
-- Дверь примерочной в Binco, соперник на ринге в спортзале и двери спортзалов у напарника работают так же, как у хоста.
-- Второй CJ в катсценах стоит в кадре на одном месте и не прыгает между планами.
-- Звонки по телефону между миссиями слышат оба, и телефон больше не застревает в руке.
-- Двойной кассир в пиццерии Райдера и двойные машины на штрафстоянке пропали.
-- Фонари и светофоры больше не ломаются сами по себе.
-- Маркер дома при ограблении больше не пропадает, когда в дом вошёл другой игрок.
-- Коктейль Молотова больше не взрывается в руке у копии.
-- Музыка пройденной миссии играет и у напарника.
-- Пока открыт чат, персонаж стоит на месте: Shift, Alt и пробел в сообщении больше не заставляют его прыгать.
-- F1 (повтор последних секунд) в совместной игре отключён: раньше он ронял игру.
-- При посадке в машину пистолет-пулемёт снова оказывается в руке, как в обычной игре, а винтовку пассажира видно, когда он высовывается из окна (#83).
+- Игра больше не вылетает в «Small Town Bank» (#93), в Энджел Пайне и когда двое едут в одной машине (#99), при загрузке сохранения (#97) и в спортзале у сборок с модами.
+- Убран вылет напарника, когда он садится за пулемёт на машине или вертолёте.
+- С модами, которые расширяют лимиты игры, особые персонажи вроде Свита и Смоука снова видны напарнику (#105).
+- После «Air Raid» у напарника больше не остаётся бесконечный миниган (#102).
+- За угон машины другого игрока больше не дают звезду розыска (#92).
+- «Stowaway» и «Black Project» проходятся вдвоём (#106).
+- Головные уборы в катсценах на месте (#111).
+- После миссий хоста на улицах снова есть машины и люди.
+- Солдаты в «Robbing Uncle Sam», спецназ, ФБР, армия и вертолёты в миссиях хоста видны напарнику, а ящики на фургоне в этой миссии больше не висят в воздухе.
+- В «Vertical Bird» охрана авианосца замечает и напарника, а сирену слышат оба.
+- Машина у двери в помещение больше не раздваивается.
+- Пустая машина там, где у другого игрока нет земли, больше не проваливается под карту.
+- Камера водителя, который целится из машины, больше не уходит сама вперёд.
+- Копия водителя больше не стреляет из окна пустой рукой (#107).
+- У пассажира Wayfarer больше не перекашивает лицо.
+- Радио поездки не переходит в следующую машину и не сбивается у пассажира.
+- У каждого игрока своя подружка, в том числе в машине.
+- Посреди партии в бильярд или чужой подработки мир больше не загружается заново.
+- В баскетболе мяч появляется на экране, а состязание начинается само.
+- Гантели и штанга в качалке больше не двоятся.
+- В подработке полиции машина с убитым водителем больше не едет дальше: она тормозит, и тело водителя выпадает.
+- В Skimmer и Sea Sparrow на воде можно сесть вдвоём прямо из воды.
+- Кнопка, отпущенная после закрытия окна, больше не бьёт кулаком.
 
 ## Установка
 
 Распакуйте `SA-COOP.zip` в папку игры, чтобы `coop.asi`, `install.bat` и папка `coop` оказались рядом с `gta_sa.exe`, и запустите `install.bat`. Подробная инструкция лежит в архиве в файле `Инструкция.txt`, а описание мода в README репозитория.
 
-Чтобы обновиться с прошлой версии, распакуйте архив поверх старых файлов. Настройки и прогресс напарника останутся, а `install.bat` запускать второй раз не нужно.
+Чтобы обновиться с прошлой версии, распакуйте архив поверх старых файлов. Настройки и прогресс напарника останутся, а `install.bat` запускать второй раз не нужно. Файл `coop\cutscenes.txt` от прошлой версии больше не нужен, и его можно удалить.
 
-Версии 0.3.1 и 0.3.2 друг к другу не подключаются, поэтому обновиться нужно и хосту, и напарнику.
+Версии 0.3.2 и 0.3.3 друг к другу не подключаются, поэтому обновиться нужно всем игрокам.
 
 ## In English
 
-A mod for GTA San Andreas 1.0 US that lets two players go through the story together over the network.
+A mod for GTA San Andreas 1.0 US that lets two, three or four players go through the story together over the network.
 
 ### What's new
 
-- **Pool for two.** Press U on the bet screen in a bar, and the other player comes over to play at your table. You take turns: the second player watches the table through your camera, shoots with their own buttons and holds the cue, and the game itself names the winner.
-- **Contests.** Basketball, pool, blackjack, roulette, the wheel of fortune, club dancing, the lowrider meet, stadium events, races and the triathlon can be played against each other: press U in the first 20 seconds. Each player plays in their own game, and a board at the top of the screen shows both scores, the countdown to the start and the result in big letters.
-- **Odd jobs truly for two.** In the taxi each player drives their own fares. In the ambulance, fire truck and vigilante jobs the partner gets their own vehicle and works on a par with the host. In burglary both carry loot into one van, and in the pimping job either player can pick up the girl.
-- **New activities for two.** Stadium events (Kickstart, Blood Ring, arena races), the quarry, the valet shift, the Ammu-Nation shooting range (the second player shoots from the next booth), the BMX and NRG rings and Big Smoke's courier can now be done together, and both get the money for the courier's bags.
-- **Players window, F2.** It shows each player's money, and you can send money to the other player from it. `/tp` and `/tphere` are requests now: the other player answers Y or N. When creating a game, the host can forbid these commands for partners.
-- **Radar arrow.** The other player shows on the radar as an arrow pointing where they look. Each player picks the colour of their own mark for the other player in F9 or with `/blip`.
-- **Route on the radar.** In a vehicle the radar shows the road route to the map waypoint (red) or to the mission target (yellow), for passengers too. `gps = 0` turns it off.
-- **Passenger weapons.** A passenger leaning out of the window can fire any firearm, not only submachine guns, and switches weapons with the mouse wheel or the gamepad's d-pad.
-- **Followers.** Your gang members get in with you when you ride as a passenger in the other player's car.
-- **Microphone icon.** A red microphone icon above the head and in the players list shows who is talking.
-- **Save names.** The slot list in "Create game" now shows the saves' names.
-- **Shooting from cars with another mod.** If a player has a mod for shooting from vehicles, the other player sees those shots (#76).
+- **Three and four players.** The host picks the number of players in the F9 window next to the password: 2, 3 or 4. A story mission starts once everyone stands in its marker, and odd jobs and races run with everyone who joined. Pool and contests stay for two (#110).
+- **The partner walks with CJ in cutscenes.** For 130 cutscenes the partner's path is worked out in advance from the game's map: they follow CJ at a walk, no longer jump from spot to spot and turn to whoever is talking. The second and third partners have paths of their own.
+- **Animations window, U key.** It holds 250 animations: emotes, poses, actions and dances from the game, 16 animations for two (handshakes, gang greetings, a hand on the shoulder, a deal, a gift, an argument, a kiss) and 88 animations from other authors' packs, among them Fortnite dances, breakdance and parkour. The chosen animation shows at once on a copy of your CJ in the window, and the other players see it on your character. Your own .ifp files go into the `coop\anims` folder, and the other player sees such an animation if they have the same file.
+- **Zero's missions.** The partner gets a minigun of their own next to the host's turret or an RC toy of their own, and in New Model Army the toy has a magnet.
+- **Second gunner.** In The Da Nang Thang and Reuniting the Families the partner shoots from the other side of the helicopter or the car.
+- **The partner takes part in missions.** They plant the charges in Dam and Blast and the bug in Amphibious Assault, drive the bike onto the truck in Cop Wheels and throw the crates off the train in Catalyst. They see the missions' smoke, searchlights and sparks, and their shots raise the alarm.
+- **A vehicle of their own.** If the host has no free seat, the partner gets straight into the same kind of vehicle. In story missions they get a plane or helicopter of their own, like the Hydra in Vertical Bird, and in Toreno's missions a jetpack too.
+- **The mission waits for the partner.** If the host reaches the target while the partner is still on the way, the mission waits up to 45 seconds for them.
+- **Shared life.** With this box ticked when creating a game, the death of any player fails the host's mission. Without it, a dead host gets up next to the partner after a couple of seconds and the mission goes on.
+- **Races for two.** In a joint race, story races included, the second player races too, with checkpoints and a position of their own on the screen. Whoever rides with the racer sees their position.
+- **Pool for money.** The loser pays the bet to the winner.
+- **Together outside missions.** Both players can go to a school at the same time. Anyone can leave a car in a safe house garage and take it out. The export list at the docks is shared, and both get the money for a delivered car. Taxi fares, stolen goods, truck runs and quarry jobs count together for the rewards.
+- **Shooting from vehicles.** The driver aims and shoots anywhere while holding the right mouse button, on a motorbike too. A passenger can also fire the rocket launcher and the heat-seeking launcher, only without a lock-on (#94).
+- **One radio per car.** The driver changes the station, and the passenger hears the same song from the same point.
+- **Windows and keys.** In the F2 window you can give the other player money and weapons, and with more than two players it shows their numbers and `/tp` and `/tphere` buttons. The "Keys" button in the F9 window changes the keys and the microphone mode. F7 hides the whole interface. G takes a passenger seat by the nearest door.
+- **Your own progress in each game.** In a new game the partner's money, weapons, skills and looks start from zero. When the host goes back to an old save, the partner has everything they got there, and their weapons become what they were at that save.
+- **Wanted level in missions.** The stars a mission gives CJ go to a partner near the host too, while a partner far from the host keeps a wanted level of their own. If the story takes CJ's weapons away, a partner nearby loses them too.
 
 ### Fixes
 
-- The partner no longer crashes at the start of a cutscene (#72).
-- The game no longer hangs on a black screen while loading a cutscene or the world (#86, #87).
-- A GInput gamepad no longer stops working after the game is minimised (#74).
-- If the voice chat cannot open the sound card, the game no longer crashes on joining: the voice is just off this time (#80).
-- With mods that raise the game's limits, both players see the other's cars, people and objects again (#82).
-- `install.bat` no longer breaks the ASI loader of Widescreen Fix (the "This library isn't supported" error).
-- The host's people no longer just aim on the partner's screen, they shoot too. Players' shots on foot are seen by both, the copy's shots leave tracers, and the partner sees the bursts of the police helicopter and of mounted guns. The partner hears the helicopter's loudspeaker too.
-- Melee looks the same for both: the blows and the reactions to them match.
-- A head cut off with a katana comes back after respawning.
-- The cars and people of the host's missions no longer vanish for the partner for a minute or longer. That is how the Vagos of Running Dog and Mike Toreno's van went missing.
-- In turret missions (The Da Nang Thang, Reuniting the Families) the partner no longer gets the host's crosshair and gun.
-- The balls on the other player's pool table are visible now: before, they lay inside the table.
-- Cars in a safe house garage are no longer lost or doubled, and the partner takes only their own cars out of it. The garage door opens for the other player too.
-- The partner can now get on a train.
-- The San Fierro airport gates in Jizzy's missions are open for both.
-- The drop-off marker of the trucking job no longer stays on the map for good.
-- The slow motion of unique stunt jumps is no longer cut short.
-- The other player getting into a car looks the way it was, including jacking a rolling car.
-- Cars and pedestrians no longer turn into "stone" after hitting the other player's copy.
-- The police helicopter above the host is visible to the partner.
-- In Sweet's Girl the partner no longer vanishes from the car, and in Tagging Up Turf the partner gets out together with the host.
-- The Binco changing room door, the gym sparring opponent and the gym doors work for the partner as for the host.
-- The second CJ in cutscenes stays in one place in the picture and no longer jumps between shots.
-- Both players hear the phone calls between missions, and the phone no longer gets stuck in the hand.
-- The doubled cashier in Ryder's pizzeria and the doubled cars at the impound lot are gone.
-- Street lamps and traffic lights no longer break by themselves.
-- In burglary the house marker no longer disappears once the other player goes in.
-- A Molotov cocktail no longer explodes in the copy's hand.
-- The passed-mission jingle plays for the partner too.
-- While the chat is open, the character stands still: Shift, Alt and the space in a message no longer make them jump.
-- F1 (replay of the last seconds) is off in a co-op game: it used to crash the game.
-- When getting into a car, the submachine gun is in hand again as in the normal game, and a passenger's rifle is visible when they lean out (#83).
+- The game no longer crashes in Small Town Bank (#93), near Angel Pine and when two players ride in one car (#99), when loading a save (#97) and in the gym with modded builds.
+- A crash of the partner getting on a vehicle's machine gun is gone.
+- With mods that raise the game's limits, special characters such as Sweet and Smoke are visible to the partner again (#105).
+- After Air Raid the partner no longer keeps an endless minigun (#102).
+- Stealing the other player's car no longer gives a wanted star (#92).
+- Stowaway and Black Project can be played by two (#106).
+- Hats stay on in cutscenes (#111).
+- After the host's missions the streets have cars and people again.
+- The soldiers of Robbing Uncle Sam, SWAT, FBI, army and helicopters in the host's missions are visible to the partner, and the crates on the van in that mission no longer hang in the air.
+- In Vertical Bird the carrier's guards notice the partner too, and both hear the siren.
+- A car by an entrance door is no longer doubled.
+- An empty car where the other player has no ground no longer falls through the map.
+- The camera of a driver aiming from the car no longer swings forward by itself.
+- The driver's copy no longer fires out of the window with an empty hand (#107).
+- A passenger of the Wayfarer no longer gets a twisted face.
+- A ride's radio no longer carries over to the next car and no longer stutters for the passenger.
+- Each player has their own girlfriend, in a car too.
+- The world no longer reloads in the middle of a pool game or of someone else's odd job.
+- In basketball the ball appears on screen and the contest starts by itself.
+- The gym's dumbbells and barbell are no longer doubled.
+- In the vigilante job a car with its driver shot no longer drives on: it brakes and the driver's body falls out.
+- Two players can get into a Skimmer or a Sea Sparrow on the water straight from the water.
+- A button let go after closing a window no longer throws a punch.
 
 ### Installation
 
 Unpack `SA-COOP.zip` into the game folder so that `coop.asi`, `install.bat` and the `coop` folder sit next to `gta_sa.exe`, and run `install.bat`. The archive has detailed instructions in `Инструкция.txt` (Russian), and the repository's README describes the mod.
 
-To update from the previous version, unpack the archive over the old files. The settings and the partner's progress stay, and `install.bat` does not need to run again.
+To update from the previous version, unpack the archive over the old files. The settings and the partner's progress stay, and `install.bat` does not need to run again. The `coop\cutscenes.txt` file of the previous version is not needed any more and can be deleted.
 
-Versions 0.3.1 and 0.3.2 cannot connect to each other, so both the host and the partner need to update.
+Versions 0.3.2 and 0.3.3 cannot connect to each other, so all players need to update.
