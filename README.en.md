@@ -177,7 +177,10 @@ results are shown at the top of the screen, and at the end each player learns wh
 pool, blackjack, roulette, the wheel of fortune, dancing in a club, the lowrider contest, the stadium events, races and
 triathlons.
 
-<p align="center"><img src="docs/images/club.gif" width="49%" alt="A dance contest: the host and the partner dance in a club, both scores at the top"></p>
+<p align="center">
+  <img src="docs/images/club.gif" width="49%" alt="A dance contest: the host and the partner dance in a club, both scores at the top">
+  <img src="docs/images/8-track.gif" width="49%" alt="An 8-Track stadium contest: the partner races with the contest board at the top, then the host's car">
+</p>
 
 ### Everything else
 
