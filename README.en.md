@@ -10,6 +10,7 @@
   <img src="https://img.shields.io/badge/GTA_San_Andreas-1.0_US-orange" alt="GTA San Andreas 1.0 US">
   <a href="https://t.me/cavalier_mods"><img src="https://img.shields.io/badge/News-Telegram-26A5E4?logo=telegram&logoColor=white" alt="News on Telegram"></a>
   <a href="https://dalink.to/itscavalier"><img src="https://img.shields.io/badge/Support_the_project-DonationAlerts-F57507" alt="Support the project"></a>
+  <a href="https://github.com/sponsors/Karimov-Akbar"><img src="https://img.shields.io/badge/GitHub-Sponsors-EA4AAA?logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
 </p>
 
 <p align="center"><a href="README.md">Русский</a> · <b>English</b></p>
