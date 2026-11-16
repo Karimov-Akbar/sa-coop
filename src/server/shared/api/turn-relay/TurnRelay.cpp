@@ -379,8 +379,11 @@ void TurnRelay::Thread() {
             Request(REFRESH, {AttrU32(A_LIFETIME, m_lifetime)}, nullptr);
             refreshAt = now + std::max<uint32_t>(m_lifetime, 120) * 500;
         }
+        // Blocking TURN requests can dispatch packets and advance peer.lastMs.
+        // Refresh the clock before checking inactivity to avoid unsigned underflow.
+        now = NowMs();
         for (auto it = m_peers.begin(); it != m_peers.end();) {  // friends that left
-            if (now - it->second.lastMs > 120000) {
+            if (now >= it->second.lastMs && now - it->second.lastMs > 120000) {
                 closesocket(it->second.local);
                 it = m_peers.erase(it);
             } else {
