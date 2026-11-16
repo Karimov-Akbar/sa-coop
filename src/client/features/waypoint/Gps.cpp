@@ -1,5 +1,6 @@
 // The road route on the radar in a car, as GTA V and the SA GPS mods draw it: red to the player's own waypoint, or to the
-// other player's when there is none, else yellow to the mission's destination. The game's car path finder
+// other player's when there is none, in the colour of the player who set it when it chose one for its mark (10.11), else
+// yellow to the mission's destination. The game's car path finder
 // (CPathFind::DoPathSearch) finds it about once a second; Waypoints' hook of CRadar::DrawBlips draws it first, under the
 // blips.
 #include "features/waypoint/Gps.h"
@@ -11,6 +12,7 @@
 
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/player/Players.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
@@ -156,24 +158,31 @@ float OffRoute(CVector2D p) {
     return Dist(p, at);
 }
 
-// The player's own map waypoint (Waypoints reads it the same way), else the other player's it shows: a red route. With
-// neither, the mission's destination (a plain coordinate blip on the radar, the nearest): a yellow one (28.10:
-// "для целей желтый а для метки красная").
-bool g_mission = false;  // the target is a mission's destination
-bool g_routeMission = false;  // the route found goes to one
+// The player's own map waypoint (Waypoints reads it the same way), else the other player's it shows: a red route, or in
+// the colour of the player who set it when it chose one for its mark: its cross, its route and its nickname in one colour
+// (the user's word, 10.11). With neither, the mission's destination (a plain coordinate blip on the radar, the nearest):
+// a yellow one (28.10: "для целей желтый а для метки красная").
+constexpr CRGBA kRed{225, 45, 45, 255}, kYellow{240, 200, 40, 255};
+CRGBA g_partnerColour = kRed;  // the other player's waypoint's (DrawRoute)
+CRGBA g_targetColour = kRed;   // the target's (Target)
+CRGBA g_routeColour = kRed;    // the route found goes in it
+bool Same(const CRGBA& a, const CRGBA& b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
 bool Target(CVector2D& out, CVector2D from) {
     int h = Ref<int32_t>(addr::MenuManager + 0x2C);  // FrontEndMenuManager.m_nTargetBlipIndex
     uint32_t i = h & 0xFFFF;
     uintptr_t t = 0xBA86F0 + i * 0x28;  // CRadar::ms_RadarTrace[175]
-    g_mission = false;
     if (h && i < 175 && (Ref<uint8_t>(t + 0x25) & 2) && Ref<uint16_t>(t + 0x14) == (uint16_t)(h >> 16)) {  // in use, counter
         out = {Ref<float>(t + 0x08), Ref<float>(t + 0x0C)};
+        g_targetColour = MarkColourChosen(Cfg().markColour) ? MarkRgba(Cfg().markColour) : kRed;
         return true;
     }
     if (g_partnerOn) {
         out = g_partner;
+        g_targetColour = g_partnerColour;
         return true;
     }
+    g_targetColour = kYellow;
+    bool found = false;
     float best = 1e30f;
     for (int k = 0; k < 175; ++k) {
         uintptr_t b = 0xBA86F0 + (uintptr_t)k * 0x28;
@@ -182,9 +191,9 @@ bool Target(CVector2D& out, CVector2D from) {
         // or 3), no sprite (a contact point, a shop or the waypoint have one)
         if ((Ref<uint8_t>(b + 0x25) & 6) != 2 || ((bits >> 2) & 0xF) != 4 || !(bits & 2) || Ref<uint8_t>(b + 0x24)) continue;
         CVector2D p{Ref<float>(b + 0x08), Ref<float>(b + 0x0C)};
-        if (float d = Dist(p, from); d < best) best = d, out = p, g_mission = true;
+        if (float d = Dist(p, from); d < best) best = d, out = p, found = true;
     }
-    return g_mission;
+    return found;
 }
 
 CVector2D ToRadar(CVector2D world) {
@@ -240,13 +249,17 @@ public:
         uint64_t now = NowMs();
         if (now - g_radarMs > 1000) return;  // the radar's map is not drawn (the HUD is off, a scene): nothing to show
         // at once for a new target or when the car has left the route, else once a second
-        bool urgent = !g_targetOn || Dist(to, g_target) > 5.0f ||
+        bool urgent = !g_targetOn || Dist(to, g_target) > 5.0f || !Same(g_routeColour, g_targetColour) ||
                       (g_route.size() >= 2 && OffRoute(here) > g_offAtSearch + 40.0f);
         if (now - g_searchMs < (urgent ? 250u : 1000u)) return;
+        static CRGBA logged{0, 0, 0, 0};  // its colour changes: once in the log, not at every car
+        if (!Same(logged, g_targetColour))
+            logged = g_targetColour,
+            LOGI("GPS: the route to %.0f, %.0f in %02X%02X%02X", to.x, to.y, g_targetColour.r, g_targetColour.g, g_targetColour.b);
         g_searchMs = now;
         g_target = to;
         g_targetOn = true;
-        g_routeMission = g_mission;
+        g_routeColour = g_targetColour;
         Request(from, to);
         Search(from, to);
         g_offAtSearch = g_route.size() >= 2 ? OffRoute(here) : 0.0f;
@@ -263,10 +276,11 @@ struct Reg {
 } g_reg;
 }  // namespace
 
-void gps::DrawRoute(const std::map<uint8_t, game::CVector2D>& remote) {
+void gps::DrawRoute(const game::CVector2D* remote, const game::CRGBA* remoteColour) {
     using namespace game;
-    g_partnerOn = !remote.empty();
-    if (g_partnerOn) g_partner = remote.begin()->second;
+    g_partnerOn = remote != nullptr;
+    if (g_partnerOn) g_partner = *remote;
+    g_partnerColour = remoteColour ? *remoteColour : kRed;
     // where CRadar::DrawMap draws the radar's map: not the menu's (m_bDrawingMap), not the radar of blips only
     // (m_nRadarMode 1), not inside (CGame::currArea)
     if (Ref<uint8_t>(addr::MenuManager + 0x59) || Ref<int32_t>(addr::MenuManager + 0x24) == 1 || Ref<int32_t>(0xB72914))
@@ -276,11 +290,9 @@ void gps::DrawRoute(const std::map<uint8_t, game::CVector2D>& remote) {
     CVector2D at;
     size_t i = Beside(Ref<CVector2D>(0xBAA248), at);  // CRadar::vec2DRadarOrigin: the player
     float w = ScreenHeight() / 448.0f * 1.2f;        // 5-6 pixels across at 1080p
-    // red to a waypoint, yellow to a mission's destination (28.10)
-    const CRGBA colour = g_routeMission ? CRGBA{240, 200, 40, 255} : CRGBA{225, 45, 45, 255};
     for (CVector2D a = ToRadar(at); i + 1 < g_route.size(); ++i) {
         CVector2D b = ToRadar(g_route[i + 1]);
-        Band(a, b, w, colour);
+        Band(a, b, w, g_routeColour);
         a = b;
     }
 }

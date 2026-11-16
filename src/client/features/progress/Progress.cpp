@@ -27,6 +27,7 @@
 #include "entities/player/Players.h"
 #include "entities/profile/Profile.h"
 #include "entities/session/Flow.h"
+#include "entities/skin/OwnSkins.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -815,7 +816,8 @@ bool ApplyProfile(const std::vector<uint8_t>& blob, bool& lookOwn, bool& boughtO
 struct RemoteLook {
     std::vector<uint8_t> desc;
     uint16_t model = 0;    // a skin mod's player model (SET_PLAYER_MODEL), 0 = CJ in his clothes
-    std::string special;   // a special character's (models 290-299 are filled by name, each game its own)
+    std::string special;   // a special character's (models 290-299 are filled by name, each game its own), or an own
+                           // skin's (coop\skins: its number differs between games)
     uint8_t style = 0, moves = 0;  // the gym's fighting style (CPed +0x72D, +0x72E): the copy fights as its owner does
     int appliedTo = -1;    // handle of the ped it was last rebuilt on: a respawned ped can reuse the old one's address
     uint64_t waitMs = 0;   // a special character asked for here since
@@ -827,7 +829,7 @@ constexpr uint64_t kSpecialWaitMs = 10000;  // a special character that does not
 void HandleLook(uint8_t from, Reader& r) {
     std::vector<uint8_t> desc = r.Bytes(kClothesSize);
     uint16_t model = r.U16();
-    std::string special = r.Str(16);
+    std::string special = r.Str(64);
     uint8_t style = r.U8(), moves = r.U8();
     if (!r.Ok() || desc.size() != kClothesSize || from == Net().MyId()) return;
     RemoteLook& l = g_looks[from];
@@ -989,6 +991,12 @@ public:
             // its own single player game went on as on a first visit, and the old CJ came into the new game (31.10).
             bool fresh = m_profile.empty() && (m_reset || flow::IsFollower());
             if (m_profile.empty()) {
+                // the gym's "enough for today" (5347 day, 5348 month, 5349 the day's workout: gymbench.scm's $21388..$21396)
+                // came with the host's world, and a partner here for the first time could not train once the host had (#132)
+                if (Global(5347) || Global(5348) || Global(5349))
+                    LOGI("First visit: the gym's workout of the host's world (%d.%d) is not ours, the machines are free",
+                         Global(5347), Global(5348));
+                Global(5347) = Global(5348) = Global(5349) = 0;
                 ui::TheChat().AddSystem(fresh ? TR("Хост начал новую игру. Деньги, оружие, навыки и внешность у вас тоже начинаются заново.",
                                                    "The host started a new game. Your money, weapons, skills and look start over too.")
                                               : TR("Вы здесь впервые. Дальше деньги, навыки и внешность у вас будут свои.",
@@ -1035,7 +1043,7 @@ public:
                 Writer w(proto::G_PLAYER_LOOK);
                 w.Bytes(desc.data(), desc.size());
                 w.U16(model);
-                w.Str(model >= 290 && model <= 299 ? Peds::Instance().SpecialName(model) : std::string(), 16);
+                w.Str(model >= 290 && model <= 299 ? Peds::Instance().SpecialName(model) : skin::OwnName(model), 64);
                 w.U8((uint8_t)fight);
                 w.U8((uint8_t)(fight >> 8));
                 Net().Send(proto::CH_RELIABLE, w);
@@ -1072,6 +1080,9 @@ public:
                     if (now - l.waitMs < kSpecialWaitMs) continue;  // still coming in
                     model = 0;
                 }
+            } else if (!l.special.empty()) {  // an own skin: ours of that name, else the game's ped of that name, else CJ
+                int own = skin::OwnModel(l.special);
+                model = own > 0 ? own : std::max(skin::StandardModel(l.special), 0);
             }
             bool skin = model != 0 && Players::SetModel(rp->ped, model);
             if (skin) Peds::Instance().SpecialWorn(model);

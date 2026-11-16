@@ -46,6 +46,9 @@ struct RemotePlayer {
     int8_t doorArea = 0;      // the area its door (CPed::m_pEnex) was set for, and on which ped
     game::CPed* doorPed = nullptr;
     bool faceHeld = false;      // HoldWayfarerFace
+    uint8_t seatAboard = 0;     // the pose of its seat aboard (features/aboard, G_PED_ATTACH): 0, 1 a car's seat, 2 a bench
+    int aboardTask = -2;        // its copy's leading task while tied on, as last logged (ApplyState), and when it was
+    uint64_t aboardOffMs = 0;   // last told off its place there
     uint64_t jetpackMs = 0;     // when it was last given the jetpack
     std::vector<uint8_t> stats; // owner's CStats block (G_PLAYER_STATS): used while the ped is processed
     uint64_t heardMs = 0;       // its last voice frame was played (set by the voice feature)
@@ -96,8 +99,17 @@ public:
     // map): Waypoints' hook of it calls this, and says whether it is in (MinHook takes one hook per function)
     void DrawRadarArrows();
     static void SetRadarArrowsHooked(bool hooked);
-    // "G": enter the nearest vehicle as a passenger (prefers the partner's car).
-    void TryEnterAsPassenger();
+    // "G": enter the nearest vehicle as a passenger (prefers the partner's car). False: no free seat near, and then
+    // onNoSeat (features/aboard: a vehicle with no seat for us) has its try
+    bool TryEnterAsPassenger();
+    bool (*onNoSeat)() = nullptr;
+    // The host's mission moved the host and takes our player along (Missions, CS_FOLLOW), `indoors`: into an interior,
+    // `onFoot`: to a start point where the host started now (StartNow), off any vehicle.
+    // features/aboard, when he rides a vehicle with no seat for him. True: he stays on it, it brings him (as a seat does);
+    // false: he is off it where he is, free to be moved, or was on none.
+    bool (*onHostMove)(bool indoors, bool onFoot) = nullptr;
+    // our states went out within the last seconds: the other games count our player as in the game (WeInherit)
+    bool SentLately() const;
     // the vehicle this game's player drove last, while it exists (by handle: a reused pool slot is another car)
     game::CVehicle* LastCar() const { return game::GetVehicle(m_lastCar); }
     // our player to a spot by another player, as /tp: into that player's area (its interior's door used as a door),
@@ -118,6 +130,9 @@ public:
     Ride RideWith(const RemotePlayer& leader, bool asSeat);
     // that player's copy takes a script person's place and animation (RemotePlayer::avatar); -1 gives it back its own
     void SetAvatar(uint8_t id, int pedHandle);
+    // the vehicle FollowHost gave us for the host's full one stayed behind (a move of the host's brought us on foot): one
+    // again for the same vehicle of the host's
+    void ForgetOwnRide() { m_bikeFor = -1; }
 
     static Players& Instance();
 
@@ -129,6 +144,8 @@ private:
     void HoldForPassengerSeat();
     void GroupRides(game::CPlayerPed* me);
     void YieldClaimedSeat(game::CPlayerPed* me);
+    void TakeWheelForScript(game::CPlayerPed* me);
+    void HandleTakeWheel(uint8_t from, Reader& r);
     void PutAwayStuckPhone(game::CPlayerPed* me);
     void PassengerWeaponWheel(game::CPlayerPed* me);
     void HandleOnFoot(uint8_t from, Reader& r);
@@ -146,6 +163,7 @@ private:
     void KeepWalkSet(RemotePlayer& rp);
     void RideTrain(RemotePlayer& rp);
     bool TagAnchor(RemotePlayer& rp, float& sx, float& sy, float& alpha);
+    bool SeatWithFirst(int model, int rank);
     RemotePlayer& Touch(uint8_t from);
 
     std::map<uint8_t, RemotePlayer> m_remote;
@@ -156,6 +174,8 @@ private:
     bool m_exitReported = false;
     uint64_t m_followAt = 0;
     int m_bikeFor = -1;  // the host's vehicle (no seat left in it) the partner got one for, by handle: a later car in its slot is another
+    int m_firstWaitFor = -1;     // the second or third partner: the host's full vehicle it waits for the first partner's for,
+    uint64_t m_firstWaitMs = 0;  // since then (SeatWithFirst)
     bool m_jetpackGiven = false;  // the partner got a jetpack for the one the host has on (Zero's and Toreno's missions)
     int m_lastCar = -1;
     int8_t m_knockOffSaved = -1;
@@ -165,6 +185,7 @@ private:
     uint64_t m_selfBrakeLogMs = 0;  // our car braking with no brake pressed, last told then
     uint64_t m_groupRideMs = 0;
     uint64_t m_yieldMs = 0;
+    uint64_t m_wheelAskMs = 0;      // TakeWheelForScript asked the driver's game for the wheel then (0: not asking)
     int m_rideCar = -1;             // the other player's car we ride in, by handle, and since when
     uint64_t m_rideSinceMs = 0;
     std::vector<int> m_riders;      // our followers we sent into it
@@ -172,6 +193,9 @@ private:
 
 // helpers shared with other modules
 int ActivePrimaryTaskType(game::CPed* ped, void** taskOut = nullptr);
+// a player seated aboard with no seat of the game's (features/aboard): the seat's pose on him (1 a car's seat, 2 a bench),
+// or 0 off
+void HoldSeat(game::CPed* ped, uint8_t pose);
 bool TaskWalks(game::CPed* ped);  // a go-to task walks it (a door's walk-in, a script's), not its pad
 // our player was put into interior `area` at `inside` by the mod (a teleport, a follow): the street door it came
 // through, as a door's use sets it (SET_CHAR_HAS_USED_ENTRY_EXIT); `from`: where it stood before
@@ -180,6 +204,9 @@ void UseStreetDoor(int area, const game::CVector& inside, const game::CVector& f
 // door opened from outside, MTA guards 0x646026).
 void StopEntering(game::CVehicle* v);
 int PassengerSeatOf(game::CVehicle* v, game::CPed* ped);
+// another player sits in this passenger seat of v in its own game (its state says so, its copy here may not be in yet);
+// beforeUs: only one who goes before ours in PartnerRank's order (the host first), who keeps the seat when both took it
+bool PlayerInSeat(game::CVehicle* v, int seat, bool beforeUs = false);
 // An enter-car task keeps the door it goes to (node 8..11), not the passenger seat (the script command turns a seat
 // into a door): the seat back for the network.
 int SeatOfTargetDoor(int door);
@@ -190,8 +217,12 @@ int SeatOrAny(game::CVehicle* v, int seat);
 bool WeInherit(uint8_t leaving);
 // the partners in an order all games share: 0 the first, 1, 2; the host -1
 int PartnerRank(uint8_t id);
-// from someone facing heading, `apart` away: the first partner at its right hand, the second at its left, the third behind it
-game::CVector PartnerSide(float heading, uint8_t id, float apart);
+// that player's place around a leader in the middle (0 the first partner's, 1, 2): its rank, and the host beside a partner
+// (in its activity, aboard its vehicle) the leader's own place
+int PlaceRank(uint8_t id, uint8_t leader = 0xFF);
+// from someone facing heading, `apart` away: the first partner at its right hand, the second at its left, the third behind
+// it (leader: who that is, when it may be a partner)
+game::CVector PartnerSide(float heading, uint8_t id, float apart, uint8_t leader = 0xFF);
 // distance to the nearest remote player in the same interior (huge when there is none), and who it is
 float RemoteDistance(const game::CVector& p, int8_t area, uint8_t* who = nullptr);
 // Three or four players: a game shows the others what stands near any of them, also near a third player far from ours. That
@@ -201,6 +232,13 @@ bool FarFromUs(const game::CVector& at, int8_t area, float within);
 float RemoteViewDistance(const game::CVector& p, int8_t area);
 // the copy here of the remote-controlled toy that player drives (RcToys), or null
 game::CVehicle* RemoteToy(const RemotePlayer& rp);
+// the colour that player chose for its mark on the others' radar (its arrow), the allies' blue for none
+game::CRGBA MarkRgba(const RemotePlayer& rp);
+game::CRGBA MarkRgba(const std::string& colour);
+// a player's nickname in the chat and over its head (ARGB): in the colour it chose for its mark, the host's too
+uint32_t NameColour(uint8_t id);
+// one of the colours a mark can have (a name of the game's or RRGGBB): one chosen, not empty or garbage
+bool MarkColourChosen(const std::string& colour);
 // our CJ sits in a vehicle a mission froze in place (FREEZE_CAR_POSITION), parked out of the world: ZERO4's RC part
 // keeps it on a BMX in the air of area 10, ZERO2 in a van under Zero's shop. No place for another player to come to.
 bool OwnCarFrozen();

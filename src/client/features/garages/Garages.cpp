@@ -449,13 +449,25 @@ constexpr int kMaxGarages = 50;
 enum : uint8_t { DOOR_SHUT = 0, DOOR_OPEN = 1, DOOR_NONE = 2 };  // NONE: the sender's door follows ours
 enum : uint8_t { STATE_CLOSED = 0, STATE_OPEN = 1, STATE_CLOSING = 2, STATE_OPENING = 3, STATE_OPEN_WAITING = 4 };
 struct Door {
-    uint8_t remote = DOOR_NONE, from = 0;  // the other game's door
+    // each other game's door, by its player. One for all, the word of a third player whose door follows that door too
+    // (DOOR_NONE) wiped it: the onlookers' Pay 'n' Spray opened again over a car being sprayed, their mod shop shut in
+    // front of another player's car (three or four players, 10.11 audit)
+    uint8_t their[proto::kMaxPlayers] = {DOOR_NONE, DOOR_NONE, DOOR_NONE, DOOR_NONE};
+    static_assert(proto::kMaxPlayers == 4, "their's initialiser names each player");
     uint8_t sent = 0xFF;                   // ours, as last sent
     bool mirroring = false;                // ours follows the other game's
     bool forOther = false;                 // a safe house's: held open here for the other player
     bool lifted = false;                   // and its door lifted while shut, to go down again after
+    bool shutOnUs = false;                 // a Pay 'n' Spray the other game shut on the car we ride in
 };
 Door g_doors[kMaxGarages];
+
+// our player rides in a car someone else drives, inside this garage
+bool RideInside(void* g) {
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* car = FindPlayerVehicle();
+    return me && car && car->Driver() != me && Inside(g, car->GetPosition());
+}
 
 // The doors a script opens and shuts (mission garages, the burglary lockup BURG_LK, the script-controlled ones): during
 // the host's story mission they are its mission's, and the partner's followed nothing. "Home Invasion" opens the
@@ -537,16 +549,33 @@ void __fastcall HookGarageUpdate(void* g, void* edx, int id) {  // CGarages::Upd
     Door& d = g_doors[id];
     uint8_t& state = Field<uint8_t>(g, 0x4D);  // CGarage::m_nDoorState
     bool on = Net().Online() && core::IsPlayerReady();
-    bool theirs = on && d.remote != DOOR_NONE && Theirs(g, d.from);
+    // the player whose game moves its own door (not following) and whose garage it is now
+    uint8_t remote = DOOR_NONE;
+    for (uint8_t i = 0; on && i < proto::kMaxPlayers && remote == DOOR_NONE; ++i)
+        if (d.their[i] != DOOR_NONE && Theirs(g, i)) remote = d.their[i];
+    bool theirs = remote != DOOR_NONE;
     if (theirs) {
-        if (d.remote == DOOR_OPEN ? state != STATE_OPEN : state != STATE_CLOSED)
-            state = d.remote == DOOR_OPEN ? STATE_OPENING : STATE_CLOSING;
+        // The driver's game resprays the car and clears its own player's stars as its Pay 'n' Spray opens again
+        // (CGarage::Update, CWanted::ClearWantedLevelAndGoOnParole at 0x44AF10); here the door only follows, and a
+        // passenger kept its stars (#135, 13.11). Ours go too as the door opens on the car we still ride in.
+        if (TypeOf(g) == 5 && remote == DOOR_SHUT && RideInside(g)) d.shutOnUs = true;
+        if (d.shutOnUs && remote == DOOR_OPEN) {
+            d.shutOnUs = false;
+            void* wanted = RideInside(g) ? Call<0x56E230, void*>(-1) : nullptr;  // FindPlayerWanted
+            if (wanted && Field<int32_t>(wanted, 0x2C)) {                         // CWanted::m_nWantedLevel
+                CallMethod<0x5625A0>(wanted);  // CWanted::ClearWantedLevelAndGoOnParole
+                LOGI("Garage %s: the driver's Pay 'n' Spray resprayed the car we ride in, our stars go too", NameOf(g).c_str());
+            }
+        }
+        if (remote == DOOR_OPEN ? state != STATE_OPEN : state != STATE_CLOSED)
+            state = remote == DOOR_OPEN ? STATE_OPENING : STATE_CLOSING;
         uint8_t& type = Field<uint8_t>(g, 0x4C);
         uint8_t own = type;
         type = 19;  // GARAGE_SCRIPT_CONTROLLED: its Update only slides the door
         g_origGarageUpdate(g, edx, id);
         type = own;
     } else {
+        d.shutOnUs = false;
         // ours again: left shut, a Pay 'n' Spray or a bomb shop would respray or arm our car wherever it is, take our
         // money and clear our wanted level
         if (d.mirroring && TypeOf(g) >= 2 && TypeOf(g) <= 5 && state != STATE_OPEN && state != STATE_OPENING &&
@@ -569,11 +598,10 @@ void __fastcall HookGarageUpdate(void* g, void* edx, int id) {  // CGarages::Upd
 
 void HandleDoor(uint8_t from, Reader& r) {
     uint8_t id = r.U8(), v = r.U8();
-    if (!r.Ok() || from == Net().MyId() || id >= kMaxGarages || v > DOOR_NONE) return;
-    if (g_doors[id].remote != v && g_doors[id].mirroring)
-        LOGD("Garage %d: the other game's door %s", id, v == DOOR_OPEN ? "open" : v == DOOR_SHUT ? "shut" : "follows ours");
-    g_doors[id].remote = v;
-    g_doors[id].from = from;
+    if (!r.Ok() || from == Net().MyId() || from >= proto::kMaxPlayers || id >= kMaxGarages || v > DOOR_NONE) return;
+    if (g_doors[id].their[from] != v && g_doors[id].mirroring)
+        LOGD("Garage %d: player %d's door %s", id, from, v == DOOR_OPEN ? "open" : v == DOOR_SHUT ? "shut" : "follows another");
+    g_doors[id].their[from] = v;
 }
 
 class Garages : public Module {
@@ -599,10 +627,10 @@ public:
     }
     void OnPeerLeave(uint8_t id) override {
         for (Door& d : g_doors)
-            if (d.from == id) d.remote = DOOR_NONE;
+            if (id < proto::kMaxPlayers) d.their[id] = DOOR_NONE;
     }
     void OnSessionEnd() override {  // a door that followed the other game is handed back by the next update
-        for (Door& d : g_doors) d.remote = DOOR_NONE, d.sent = 0xFF;
+        for (Door& d : g_doors) std::fill(std::begin(d.their), std::end(d.their), (uint8_t)DOOR_NONE), d.sent = 0xFF;
         g_partnerCars.clear();  // their records stay in the stores, the host's now (as a loaded world's are)
         g_askedMs.clear();
         g_sentCount.fill(-1);

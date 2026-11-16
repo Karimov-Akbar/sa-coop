@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "common/lib/log/Log.h"
 
@@ -60,14 +61,51 @@ static uintptr_t LoadStates() {
     if (!told) {
         told = true;
         if (at != addr::StreamingInfo + 0x10) LOGI("The streaming table is at %08X, not at 008E4CC0: a limit adjuster moved it", at - 0x10);
+        ModelTablesKnown();  // says once where the model tables are
     }
     return at;
 }
-bool IsModelLoaded(int model) {
-    // models, then txds, cols, ipls, dats, ifps, rrrs and scms (26316 in all)
-    return model >= 0 && model < 26316 && Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) == 1;
+// an imm32 after the opcode bytes at `at`, or the game's own value when the bytes differ (ok cleared)
+static uint32_t ImmAfter(uintptr_t at, std::initializer_list<uint8_t> op, uint32_t own, bool* ok = nullptr) {
+    bool same = !memcmp((const void*)at, op.begin(), op.size());
+    if (ok) *ok = *ok && same;
+    return same ? Ref<uint32_t>(at + op.size()) : own;
 }
-int ModelLoadState(int model) { return model >= 0 && model < 26316 ? Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) : -1; }
+// a count read from the code: the game's when it is out of reason
+static int Sane(uint32_t v, uint32_t own) { return v >= own && v <= 0x40000 ? (int)v : (int)own; }
+
+uintptr_t ModelInfoTable() { return ImmAfter(0x4089CF, {0x8B, 0x1C, 0xB5}, addr::ModelInfoPtrs); }  // mov ebx, [esi*4 + table]
+int ModelCount() { return Sane(ImmAfter(0x4089C6, {0x81, 0xFE}, 20000), 20000); }                     // cmp esi, models
+int IfpBase() { return Sane(ImmAfter(0x408A76, {0x81, 0xFE}, 25575), 25575); }                        // cmp esi, first IFP
+int ResourceCount() { return Sane(ImmAfter(0x408AAA, {0x81, 0xFE}, 26230), 26230) + 86; }              // cmp esi, first SCM
+uintptr_t AnimBlocksTable() { return ImmAfter(0x4D39A5, {0x2D}, 0xB5D4A0); }                         // sub eax, ms_aAnimBlocks
+uintptr_t AnimationsTable() { return ImmAfter(0x4CDE57, {0x8D, 0x04, 0xC5}, 0xB4EA40); }             // lea eax, [eax*8 + table]
+
+bool ModelTablesKnown() {
+    bool ok = true;
+    ImmAfter(0x4089CF, {0x8B, 0x1C, 0xB5}, 0, &ok);
+    ImmAfter(0x4089C6, {0x81, 0xFE}, 0, &ok);
+    ImmAfter(0x408A76, {0x81, 0xFE}, 0, &ok);
+    ImmAfter(0x408AAA, {0x81, 0xFE}, 0, &ok);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        if (!ok) LOGW("The game's model code is not as expected (another mod replaced it): the game's own model tables are used");
+        else if (ModelInfoTable() != addr::ModelInfoPtrs || ModelCount() != 20000 || IfpBase() != 25575)
+            LOGI("Model tables moved by a limit adjuster: infos at %08X, %d models, IFPs from %d, %d resources, anim blocks at %08X",
+                 (unsigned)ModelInfoTable(), ModelCount(), IfpBase(), ResourceCount(), (unsigned)AnimBlocksTable());
+    }
+    return ok;
+}
+
+bool IsModelLoaded(int model) {
+    // models, then txds, cols, ipls, dats, ifps, rrrs and scms
+    return model >= 0 && model < ResourceCount() && Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) == 1;
+}
+int ModelLoadState(int model) { return model >= 0 && model < ResourceCount() ? Ref<uint8_t>(LoadStates() + (uintptr_t)model * 0x14) : -1; }
+uint8_t* StreamingInfoOf(int model) {
+    return model >= 0 && model < ResourceCount() ? (uint8_t*)(LoadStates() - 0x10 + (uintptr_t)model * 0x14) : nullptr;
+}
 bool LoadModelNow(int model) {
     if (!IsValidModel(model)) return false;
     if (IsModelLoaded(model)) return true;
@@ -98,18 +136,60 @@ void MarkModelNotNeeded(int model) {
     if (IsValidModel(model)) Call<0x409C10>(model);
 }
 
-static void* ModelInfo(int model) {
-    if (model < 0 || model >= 20000) return nullptr;
-    return Ref<void*>(addr::ModelInfoPtrs + (uintptr_t)model * 4);
+void* ModelInfoOf(int model) {
+    if (model < 0 || model >= ModelCount()) return nullptr;
+    return Ref<void*>(ModelInfoTable() + (uintptr_t)model * 4);
 }
 static int ModelType(int model) {
-    void* mi = ModelInfo(model);
+    void* mi = ModelInfoOf(model);
     return mi ? CallVirtual<4, uint8_t>(mi) : 0;
 }
-bool IsValidModel(int model) { return ModelInfo(model) != nullptr; }
+bool IsValidModel(int model) { return ModelInfoOf(model) != nullptr; }
 bool IsVehicleModel(int model) { return ModelType(model) == 6; }
 bool IsPedModel(int model) { return ModelType(model) == 7; }
 bool IsObjectModel(int model) { return IsValidModel(model) && !IsVehicleModel(model) && !IsPedModel(model); }
+
+// CJ's csplay and player have bones 301 and 302 where the upper arms are; the game's people have them 16-20 cm away on the
+// chest, and the skin packs' 5-95 cm (four of the beta pack are rigged as CJ). The upper arm's matrix copied into them
+// (CPed::ShoulderBoneRotation) pulls the chest up to the shoulders, so that turn is for a model rigged as CJ alone. (The
+// skins crooked in the cutscenes on 11.11 had another cause: features/skins, HookSetCutsceneAnim.) Read from the skin's
+// own bones at rest: its skin-to-bone matrices (right, up, at, pos; a bone's origin is -pos in its axes).
+bool ShoulderHelpers(void* clump) {
+    void* atomic = clump ? Call<0x734820, void*>(clump) : nullptr;                     // GetFirstAtomic
+    void* skin = atomic ? Call<0x7C7550, void*>(Field<void*>(atomic, 0x18)) : nullptr;  // RpSkinGeometryGetSkin(geometry)
+    void* hier = skin ? Call<0x734A40, void*>(clump) : nullptr;                        // GetAnimHierarchyFromSkinClump
+    auto* m = hier ? Call<0x7C7810, const float*>(skin) : nullptr;                     // RpSkinGetSkinToBoneMatrices
+    int bones = m ? Call<0x7C77E0, int>(skin) : 0;                                     // RpSkinGetNumBones
+    auto origin = [&](int bone, CVector& p) {
+        int i = Call<0x7C51A0, int>(hier, bone);  // RpHAnimIDGetIndex: the skin's bones are in the hierarchy's order
+        if (i < 0 || i >= bones) return false;
+        const float* r = m + i * 16;
+        p = {-(r[12] * r[0] + r[13] * r[1] + r[14] * r[2]), -(r[12] * r[4] + r[13] * r[5] + r[14] * r[6]),
+             -(r[12] * r[8] + r[13] * r[9] + r[14] * r[10])};
+        return true;
+    };
+    CVector arm, breast;
+    for (auto [a, b] : {std::pair{22, 301}, std::pair{32, 302}})
+        if (!origin(a, arm) || !origin(b, breast) || (arm - breast).Length() > 0.01f) return false;
+    return true;
+}
+
+// CAnimManager::ms_aAnimAssocGroups (0x14 bytes each: the block, its associations) by the number of animgrp.dat's sets;
+// block 0 is ped.ifp, read first (CAnimManager::LoadAnimFiles)
+bool PedWalkGroup(int group) {
+    if (group < 0 || group >= (int)Ref<uint32_t>(0xB4EA28)) return false;  // ms_numAnimAssocDefinitions
+    uintptr_t g = Ref<uintptr_t>(0xB4EA34) + (uintptr_t)group * 0x14;
+    uintptr_t ped = AnimBlocksTable();
+    return Ref<uintptr_t>(g) == ped && Ref<void*>(g + 0x04) && Ref<uint8_t>(ped + 0x10);  // CAnimBlock::bLoaded
+}
+// ms_aAnimAssocDefinitions (0x30 bytes each, the name first): the game's 118 and animgrp.dat's after them (man is 118,
+// woman 129, skate 138), as many as ms_numAnimAssocDefinitions says
+int WalkGroupByName(const char* name) {
+    int n = std::min<int>((int)Ref<uint32_t>(0xB4EA28), 200);
+    for (int i = 0; name && *name && i < n; ++i)
+        if (!_strnicmp((const char*)(0x8AA5A8 + (uintptr_t)i * 0x30), name, 16)) return i;
+    return -1;
+}
 
 void WorldAdd(CEntity* e) { Call<0x563220>(e); }
 

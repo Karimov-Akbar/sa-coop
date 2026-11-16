@@ -278,7 +278,9 @@ void __cdecl HookPopulateInterior(int count, CVector at) {  // CEntryExit::Gener
         return;
     }
     g_origPopulateInterior(count, at);
-    if (Net().Online() && Net().IsHost()) {  // two through the door at once: each saw the other still outside
+    // two through the door at once: each saw the other still outside. The host says so, and with two or more partners
+    // each of them does (two partners at once with the host elsewhere both made the people, 10.11 audit)
+    if (Net().Online() && (Net().IsHost() || Net().Peers().size() > 1)) {
         Writer w(proto::G_INTERIOR_POP);
         w.I8(area);
         w.Vec({at.x, at.y, at.z});
@@ -294,11 +296,13 @@ int __cdecl HookAttractorPeds(CVector at, float r1, float r2, float r3, float r4
     return OtherPlayerInside(at) ? 0 : g_origAttractorPeds(at, r1, r2, r3, r4, dm, count);
 }
 
-// We came in together with the host, each before the other's state said so: the host's people stay, ours go
+// We came in together with the host, each before the other's state said so: the host's people stay, ours go. The same
+// with a partner who goes before ours (PartnerRank), when there are two or more of them.
 void HandleInteriorPop(uint8_t from, Reader& r) {
     int8_t area = r.I8();
     Vec3 v = r.Vec();
-    if (!r.Ok() || from != Net().HostId() || Net().IsHost() || !core::IsPlayerReady()) return;
+    bool theirs = from == Net().HostId() || (Net().Peers().size() > 1 && PartnerRank(from) < PartnerRank(Net().MyId()));
+    if (!r.Ok() || !theirs || Net().IsHost() || !core::IsPlayerReady()) return;
     CVector at{v.x, v.y, v.z};
     g_hostPopArea = area, g_hostPopAt = at, g_hostPopMs = NowMs();
     CPlayerPed* me = FindPlayerPed(0);
@@ -316,7 +320,7 @@ void HandleInteriorPop(uint8_t from, Reader& r) {
         ++n;
     }
     g_guest = true;
-    LOGI("Came into interior %d with the host: its game's people stay, ours (%d) go", area, n);
+    LOGI("Came into interior %d with player %d: its game's people stay, ours (%d) go", area, from, n);
 }
 
 using SetupPedsFn = void(__fastcall*)(void*, void*);

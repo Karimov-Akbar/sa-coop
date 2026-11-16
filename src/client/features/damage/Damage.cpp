@@ -129,6 +129,15 @@ bool IsRemotePlayerEntity(CEntity* e) {
     return ped && Players::Instance().FindByPed(ped);
 }
 
+// Two gunners on one vehicle (ATTACH_CHAR_TO_CAR) stand shoulder to shoulder, and with friendly fire their bullets went
+// into each other and into the car under them ("Reuniting the Families" for four, 14.11). They spare each other and it
+// with friendly fire too (the user's choice, 16.11).
+bool SameRide(CEntity* a, CEntity* b) {
+    CPed* pa = a && a->IsPed() ? (CPed*)a : DriverOf(a);
+    CPed* pb = b && b->IsPed() ? (CPed*)b : DriverOf(b);
+    return pa && pb && pa->AttachedTo() && pa->AttachedTo() == pb->AttachedTo();
+}
+
 // the other player, its car, or a car or ped its game owns (a copy here)
 bool FromOtherSide(CEntity* e) {
     if (!e) return false;
@@ -211,7 +220,9 @@ bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon,
         if (cam::WideScreenOn() && FromOtherSide(creator)) return true;  // see the top of the file
         bool fromRemote = IsRemotePlayerEntity(creator);
         if (fromRemote && victim == FindPlayerPed(0))  // see the top of the file
-            return Net().FriendlyFire() && !IsDirect(weapon) ? g_origGenerateDamage(victim, creator, weapon, damage, piece, dir) : true;
+            return Net().FriendlyFire() && !IsDirect(weapon) && !SameRide(victim, creator)
+                       ? g_origGenerateDamage(victim, creator, weapon, damage, piece, dir)
+                       : true;
         // A mirrored ped's blow is its owner's to tell (TARGET_PLAYER from there). A mirror fighting here too (29.10: 29FE,
         // 1C47, 1F13) hit our player a second time out of step, and its blows on the copy went there as this game's
         if (weapon <= WEAPON_LAST_MELEE && !fromRemote && creator && creator->IsPed() &&
@@ -233,6 +244,7 @@ bool __cdecl HookGenerateDamageEvent(CPed* victim, CEntity* creator, int weapon,
                 return true;
             }
             if (Net().FriendlyFire() && IsDirect(weapon) && IsLocalPlayerEntity(creator)) {
+                if (SameRide(victim, creator)) return true;
                 SendDamage(TARGET_PLAYER_BY_PLAYER, rp->id, 0, weapon, (float)damage, piece, dir, victim->GetPosition(), 0, creator);
                 LOGI("Hit player %d: weapon %d, damage %d", rp->id, weapon, damage);
                 return true;
@@ -322,11 +334,66 @@ void __fastcall HookKillPedWithCar(CPed* ped, void* edx, CVehicle* car, float im
 // A knife's stealth kill hurts its victim itself (ProcessPlayerWeapon: CEventDamage and ComputeDamageResponse, then the
 // victim's own CTaskSimpleStealthKill), never through GenerateDamageEvent: the other player's copy, run here under its
 // owner's pad, killed this player with friendly fire off (issue #58). Between the players it is an ordinary stab then.
+// With friendly fire on each game decided the kill for itself, from where its copy of the other one stood, and they did
+// not agree: the knife went in in the victim's game alone, the attacker saw no kill (#125). The attacker's game decides
+// now (the user's choice, 12.11): another player's copy never begins one here, and our player's tells the victim's game
+// (G_STEALTH), whose player gets the victim's part of it as the game's event handler gives it (0x4C0338): KILL_KNIFE_PED_
+// DAMAGE, then KILL_KNIFE_PED_DIE and the knife's damage. Each side's animation goes to the copies as an activity (Anims).
+constexpr int TASK_SIMPLE_STEALTH_KILL = 1027;
 using StealthTestFn = bool(__fastcall*)(void*, void*, CPed*, bool);
 StealthTestFn g_origStealthTest = nullptr;
+uint8_t g_stealthVictim = 0xFF;  // our player began a kill of that player's copy: sent once its task is there
+uint64_t g_stealthSinceMs = 0;
 bool __fastcall HookTestForStealthKill(void* intel, void* edx, CPed* target, bool full) {
-    if (Net().Online() && !Net().FriendlyFire() && target && target->IsPlayer()) return false;
-    return g_origStealthTest(intel, edx, target, full);
+    CPed* self = intel ? Field<CPed*>(intel, 0x00) : nullptr;  // CPedIntelligence::m_pPed
+    if (Net().Online() && target) {
+        if (self && Players::Instance().FindByPed(self)) return false;  // another player's copy: its own game decides
+        if (!Net().FriendlyFire() && target->IsPlayer()) return false;
+    }
+    bool ok = g_origStealthTest(intel, edx, target, full);
+    // the full test comes with the attack just pressed and the target in place: the caller begins the kill at once
+    if (ok && full && Net().Online() && self == FindPlayerPed(0))
+        if (const RemotePlayer* rp = Players::Instance().FindByPed(target)) g_stealthVictim = rp->id, g_stealthSinceMs = NowMs();
+    return ok;
+}
+
+void* StealthTask(CPed* ped) {  // CTaskManager::FindActiveTaskByType
+    return ped && ped->Intelligence() ? CallMethod<0x681740, void*>((uint8_t*)ped->Intelligence() + 4, TASK_SIMPLE_STEALTH_KILL) : nullptr;
+}
+
+void SendStealth() {
+    if (g_stealthVictim == 0xFF) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    const RemotePlayer* rp = Players::Instance().Get(g_stealthVictim);
+    void* task = StealthTask(me);
+    if (task && rp && rp->ped && Field<CPed*>(task, 0x0C) == rp->ped) {  // m_target: the kill of that copy began
+        Writer w(proto::G_STEALTH);
+        w.U8(g_stealthVictim);
+        w.U8((uint8_t)Field<int32_t>(task, 0x10));  // m_animGrpId: the knife's
+        Net().Send(proto::CH_RELIABLE, w);
+        LOGI("Our player knifed player %d from behind: its game plays its part", g_stealthVictim);
+    } else if (NowMs() - g_stealthSinceMs < 500) {
+        return;  // the task comes in this frame's processing
+    }
+    g_stealthVictim = 0xFF;
+}
+
+void HandleStealth(uint8_t from, Reader& r) {
+    uint8_t victim = r.U8();
+    int group = r.U8();
+    if (!r.Ok() || victim != Net().MyId() || !Net().FriendlyFire() || !core::IsPlayerReady()) return;
+    const RemotePlayer* rp = Players::Instance().Get(from);
+    CPlayerPed* me = FindPlayerPed(0);
+    CPed* attacker = rp ? rp->ped : nullptr;
+    // as the game's own test: on foot, alive, near; not in a cutscene, and not twice
+    if (!attacker || !me || me->InVehicle() || me->Health() < 1.0f || Ref<uint8_t>(0xB5F851) || StealthTask(me) ||
+        (attacker->GetPosition() - me->GetPosition()).Length() > 4.0f || !me->Intelligence())
+        return LOGI("Player %d knifed us from behind in its game: not here (gone, dead, in a car or far)", from);
+    if (void* task = Call<0x61A5A0, void*>(0x20)) {           // CTask::operator new
+        CallMethod<0x6225F0>(task, false, attacker, group);    // CTaskSimpleStealthKill: the victim's part
+        CallMethod<0x681AF0>((uint8_t*)me->Intelligence() + 4, task, 0, false);  // CTaskManager::SetTask: physical response
+        LOGI("Player %d knifed us from behind: our part of the kill", from);
+    }
 }
 
 using InflictDamageFn = void(__fastcall*)(CVehicle*, void*, CEntity*, int, float, CVector);
@@ -336,6 +403,10 @@ bool CarriesOtherPlayer(CVehicle* v) {
     if (v->Driver() && Players::Instance().FindByPed(v->Driver())) return true;
     for (int i = 0; i < v->MaxPassengers() && i < 8; ++i)
         if (CPed* p = v->Passengers()[i]; p && Players::Instance().FindByPed(p)) return true;
+    // or the other player rides on it, a gunner or with no seat (ATTACH_CHAR_TO_CAR): Sweet drives his car in "Reuniting
+    // the Families", and the partners' shots that hit it from its back went to the host's game as hits (14.11)
+    for (auto& [id, rp] : Players::Instance().All())
+        if (rp.ped && rp.ped->AttachedTo() == (CPhysical*)v) return true;
     if (NetVehicle* nv = Vehicles::Instance().Find(v))  // or it is the toy the other player drives (RcToys)
         for (auto& [id, rp] : Players::Instance().All())
             if (rp.toyNetId && rp.toyNetId == nv->netId) return true;
@@ -353,7 +424,10 @@ void __fastcall HookInflictDamage(CVehicle* v, void* edx, CEntity* damager, int 
             // A toy's gun (the RC Baron's, the RC Goblin's: CWeapon::FireOneInstantHitRound) hits with no damager and the
             // micro SMG's id: with our toy out, that is ours (RcToys, Zero's missions for two)
             bool toyRound = !damager && weapon == 28 && PlayerInfos()[0].remoteVehicle;
-            if (!IsCollision(weapon) && (IsLocalPlayerEntity(damager) || toyRound) && (Net().FriendlyFire() || !CarriesOtherPlayer(v)))
+            CPlayerPed* me = FindPlayerPed(0);
+            bool weRideIt = me && me->AttachedTo() == (CPhysical*)v;  // a gunner on it: spared with friendly fire too (SameRide)
+            if (!IsCollision(weapon) && !weRideIt && (IsLocalPlayerEntity(damager) || toyRound) &&
+                (Net().FriendlyFire() || !CarriesOtherPlayer(v)))
                 SendDamage(TARGET_VEHICLE, nv->owner, nv->netId, weapon, damage, 0, 0, pos);
             return;
         }
@@ -591,6 +665,10 @@ public:
         mem::HookFn(0x4B4E80, &HookKnockOffReport, &g_origKnockOffReport, "CEventKnockOffBike::ReportCriminalEvent");
         mem::HookFn(0x655F20, &HookEvasiveDive, &g_origDive, "CTaskSimpleEvasiveDive::StartAnim");
         Net().SetHandler(proto::G_DAMAGE, &HandleDamage);
+        Net().SetHandler(proto::G_STEALTH, &HandleStealth);
+    }
+    void OnPostProcess() override {
+        if (Net().Online()) SendStealth();
     }
 };
 

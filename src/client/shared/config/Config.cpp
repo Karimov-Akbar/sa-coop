@@ -39,6 +39,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     nickname = SanitizeNickname(ini.Get("player", "name", nickname));
     if (nickname.size() < 2) nickname = "Player";
     english = ToLower(ini.Get("player", "language", "ru")) == "en";  // configs made before the switch were Russian
+    skin = ini.Get("player", "skin", skin);
 
     autoConnect = ini.GetBool("connect", "auto_connect", autoConnect);
     host = ini.Get("connect", "host", host);
@@ -49,6 +50,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     friendlyFire = ini.GetBool("connect", "friendly_fire", friendlyFire);
     partnerTeleport = ini.GetBool("connect", "partner_teleport", partnerTeleport);
     sharedLife = ini.GetBool("connect", "shared_life", sharedLife);
+    partnerCheats = ini.GetBool("connect", "partner_cheats", partnerCheats);
     maxPlayers = std::clamp(ini.GetInt("connect", "max_players", maxPlayers), 2, proto::kMaxPlayers);
 
     windowed = ini.GetBool("game", "windowed", windowed);
@@ -84,6 +86,7 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
     chatKey = ini.GetInt("keys", "chat", chatKey);
     passengerKey = ini.GetInt("keys", "enter_as_passenger", passengerKey);
     playerListKey = ini.GetInt("keys", "player_list", playerListKey);
+    skinsKey = ini.GetInt("keys", "skins", skinsKey);
 
     debugOverlay = ini.GetBool("debug", "overlay", debugOverlay);
     cleanScreen = ini.GetBool("debug", "clean_screen", cleanScreen);

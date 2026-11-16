@@ -6,6 +6,8 @@
 #include <cstring>
 
 #include "common/lib/log/Log.h"
+#include "common/lib/util/Util.h"
+#include "shared/config/Config.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
 #include "shared/lib/memory/Memory.h"
@@ -15,6 +17,13 @@ namespace coop::ui {
 Input& In() {
     static Input i;
     return i;
+}
+
+std::string AnswerHint(const char* yes, const char* no) {
+    if (game::PadControls())
+        return no ? Format(TR("Вправо на крестовине - %s, влево - %s", "D-pad right: %s, left: %s"), yes, no)
+                  : Format(TR("Вправо на крестовине - %s", "D-pad right: %s"), yes);
+    return no ? Format(TR("Y - %s, N - %s", "Y: %s, N: %s"), yes, no) : Format(TR("Y - %s", "Y: %s"), yes);
 }
 
 static WNDPROC g_origProc = nullptr;

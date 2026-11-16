@@ -8,7 +8,8 @@
 namespace coop::gps {
 
 // Waypoints' hook of CRadar::DrawBlips calls it before the blips, so the route lies under them. remote: the other
-// players' waypoints it draws (the route goes to the first one when this player has none of its own).
-void DrawRoute(const std::map<uint8_t, game::CVector2D>& remote);
+// players' waypoint the route goes to when this player has none of its own (the one set last), null for none;
+// remoteColour: the colour its player chose for its mark, null for none (a red route).
+void DrawRoute(const game::CVector2D* remote, const game::CRGBA* remoteColour);
 
 }  // namespace coop::gps

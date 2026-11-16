@@ -280,7 +280,15 @@ void SwitchRandomTrains() {
     if (!Net().IsHost()) {
         RemotePlayer* host = Players::Instance().Get(Net().HostId());
         CPlayerPed* me = FindPlayerPed(0);
-        off = host && host->ped && (host->ped->GetPosition() - me->GetPosition()).Length2D() < kOwnRandomFrom;
+        auto near = [](const CVector& a, const CVector& b) { return (a - b).Length2D() < kOwnRandomFrom; };
+        bool hostThere = host && host->ped;
+        off = hostThere && near(host->ped->GetPosition(), me->GetPosition());
+        // Two partners together far from the host: the trains of the first of them, as their people (Population's
+        // UpdateSuppression). Both games' ran on the same rails (10.11 audit).
+        for (auto& [id, rp] : Players::Instance().All())
+            if (!off && id != Net().HostId() && id < Net().MyId() && rp.ped && near(rp.ped->GetPosition(), me->GetPosition()) &&
+                !(hostThere && near(host->ped->GetPosition(), rp.ped->GetPosition())))
+                off = true;
     }
     if (off == g_randomOff) return;
     Ref<uint8_t>(kDisableRandomTrains) = off ? 1 : 0;

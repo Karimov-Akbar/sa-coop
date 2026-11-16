@@ -738,7 +738,10 @@ public:
                 LOGW("Mission object %04X has an unknown model %d", no.netId, no.model);
                 return;
             }
-            if (auto it = g_mirrors.find(no.netId); it != g_mirrors.end()) {  // announced again: a fresh copy
+            if (auto it = g_mirrors.find(no.netId); it != g_mirrors.end()) {
+                // announced again for another partner whose game started over (the host's resync goes to all): ours stays,
+                // made again it vanished for a moment and dropped from the hands that held it (10.11 audit)
+                if (Alive(it->second) && it->second.model == no.model) return;
                 DeleteCopy(it->second);
                 g_mirrors.erase(it);
             }

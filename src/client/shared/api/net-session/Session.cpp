@@ -150,6 +150,7 @@ void Session::HandleService(uint8_t id, Reader& r) {
             m_friendlyFire = w.friendlyFire;
             m_partnerTeleport = w.partnerTeleport;
             m_sharedLife = w.sharedLife;
+            m_partnerCheats = w.partnerCheats;
             m_peers.clear();
             for (auto& p : w.players) m_peers[p.id] = PeerInfo{p.id, p.name, p.isHost, 0};
             m_state = State::Online;
@@ -166,6 +167,8 @@ void Session::HandleService(uint8_t id, Reader& r) {
             if (m_sharedLife)
                 chat.AddSystem(TR("Общая жизнь включена: если напарник погибнет, миссия хоста провалится.",
                                   "Shared life is on: if a partner dies, the host's mission fails."));
+            if (!m_partnerCheats && !IsHost())
+                chat.AddSystem(TR("Хост запретил напарникам чит-коды.", "The host turned cheat codes off for partners."));
             if (onOnline) onOnline();
             break;
         }
@@ -211,7 +214,7 @@ void Session::HandleService(uint8_t id, Reader& r) {
             if (from == kServerId) {
                 chat.Add(Cfg().english && !en.empty() ? en : text, ui::RgbaToArgb(rgba));
             } else {
-                uint32_t nameColor = from == m_hostId ? 0xFF64B4FF : 0xFF78DC78;
+                uint32_t nameColor = nameColour ? nameColour(from) : from == m_hostId ? 0xFF64B4FF : 0xFF78DC78;
                 char hex[16];
                 snprintf(hex, sizeof(hex), "{%06X}", nameColor & 0xFFFFFF);
                 chat.Add(std::string(hex) + PeerName(from) + "{FFFFFF}: " + text, 0xFFFFFFFF);

@@ -264,6 +264,8 @@ struct CPhysical : CEntity {
 
     // physical flag bits
     enum : uint32_t {
+        PF_SUBMERGED_IN_WATER = 1u << 8,
+        PF_TOUCHING_WATER = 1u << 27,
         PF_BULLET_PROOF = 1u << 18,
         PF_FIRE_PROOF = 1u << 19,
         PF_COLLISION_PROOF = 1u << 20,
@@ -418,6 +420,9 @@ inline uint32_t TimeMs() { return Ref<uint32_t>(addr::TimeInMs); }
 inline float TimeStep() { return Ref<float>(addr::TimeStep); }
 inline int32_t GameState() { return Ref<int32_t>(addr::GameState); }
 inline bool MenuActive() { return Ref<uint8_t>(addr::MenuManager + 0x5C) != 0; }
+// FrontEndMenuManager.m_ControlMethod, a byte (CMenuManager::LoadSettings reads it at 0x57CAA8): 1 when the game is set
+// to be played on a pad (its camera then takes the right stick, not the mouse)
+inline bool PadControls() { return Ref<uint8_t>(addr::MenuManager + 0xD0) == 1; }
 inline void* D3DDevice() { return Ref<void*>(addr::D3DDevice); }
 inline CPad* GetPad(int i) { return reinterpret_cast<CPad*>(addr::Pads) + i; }
 inline bool IsForeground() { return Ref<uint8_t>(addr::ForegroundApp) != 0; }
@@ -486,6 +491,19 @@ void RequestCopyModel(int model, bool mission);  // for a copy of the other game
 void LoadAllRequestedModels(bool onlyPriority = false);
 bool IsModelLoaded(int model);
 int ModelLoadState(int model);  // 0 not asked for, 1 in memory, 2 asked for, 3 being read, 4 finishing; -1 no such model
+// its CStreamingInfo (0x14: +6 flags, +0xC size on the disc, +0x10 load state), wherever a limit adjuster put the table
+uint8_t* StreamingInfoOf(int model);
+// The model tables where the game's code reads them (#88): a limit adjuster's ID limit patch (fastman92's) moves them and
+// gives them more ids, and corrects the game's code in place. CStreaming::RemoveModel (0x4089A0) holds them all; the
+// game's own values when its code there is not as expected (replaced, not corrected).
+uintptr_t ModelInfoTable();  // CModelInfo::ms_modelInfoPtrs
+int ModelCount();            // model ids, the first txd's resource id (20000 in the game)
+int IfpBase();               // the first IFP's resource id (25575 in the game)
+int ResourceCount();         // all streamed resources (26316 in the game)
+bool ModelTablesKnown();     // the code they are read from is the game's or corrected in place
+void* ModelInfoOf(int model);  // CModelInfo::GetModelInfo, null for none
+uintptr_t AnimBlocksTable();   // CAnimManager::ms_aAnimBlocks (0x20 bytes each)
+uintptr_t AnimationsTable();   // CAnimManager::ms_aAnimations (0x18 bytes each)
 bool LoadModelNow(int model);  // request + blocking load
 int8_t TrueArea(CEntity* e);   // its area, with a door's fade seen through
 void MarkModelNotNeeded(int model);
@@ -493,6 +511,13 @@ bool IsValidModel(int model);
 bool IsVehicleModel(int model);
 bool IsPedModel(int model);
 bool IsObjectModel(int model);  // known here and neither a ped nor a vehicle: what CREATE_OBJECT and pickups can use
+// A person's skinned clump rigged as CJ's models are: bones 301 and 302 at the upper arms, the helpers
+// CPed::ShoulderBoneRotation turns (the game does it to CJ's models alone). Others have them on the chest.
+bool ShoulderHelpers(void* clump);
+// A walk set of ped.ifp, always in memory (man, woman, gang1 and the rest of animgrp.dat's): not the skaters', whose file
+// comes and goes with their model
+bool PedWalkGroup(int group);
+int WalkGroupByName(const char* name);  // animgrp.dat's set of that name, -1 for none
 
 void WorldAdd(CEntity* e);
 void WorldRemove(CEntity* e);

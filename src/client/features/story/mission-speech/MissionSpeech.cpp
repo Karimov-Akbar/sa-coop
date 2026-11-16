@@ -14,6 +14,7 @@
 #include "entities/mission/Mission.h"
 #include "entities/ped/Peds.h"
 #include "entities/player/Players.h"
+#include "entities/skin/StoryVoice.h"
 #include "entities/vehicle/Vehicles.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
@@ -77,6 +78,7 @@ void SendAttach(uint8_t slot, CEntity* e) {
 
 void __fastcall HookPreload(void* ae, void* edx, uint8_t slot, int32_t sample) {
     g_origPreload(ae, edx, slot, sample);
+    skin::StoryLineFrom(slot, false);  // a script of this game: its CJ is our own player (a skin's voice, StoryVoice)
     if (!Sharing() || slot >= kSlots) return;
     Writer w = Begin(OP_LOAD, slot);
     w.I32(sample);
@@ -166,6 +168,7 @@ void Handle(uint8_t from, Reader& r) {
                 g_origClear(Engine(), nullptr, slot);
             }
             g_origPreload(Engine(), nullptr, slot, sample);
+            skin::StoryLineFrom(slot, true);  // the host's line: its CJ is the host
             s = Slot{};
             s.loaded = true;
             LOGD("Mission speech: slot %d loads %d", slot, sample);

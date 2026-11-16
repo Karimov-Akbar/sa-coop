@@ -12,9 +12,6 @@
 
 namespace game::anim {
 
-constexpr uintptr_t kHierarchies = 0xB4EA40;  // CAnimManager::ms_aAnimations, 0x18 bytes each
-constexpr uintptr_t kBlocks = 0xB5D4A0;       // CAnimManager::ms_aAnimBlocks, 0x20 bytes each
-constexpr int kIfpBase = 25575;               // streaming id of the first IFP resource
 constexpr uint16_t F_LOOPED = 0x2, F_AUTO_REMOVE = 0x4, F_PARTIAL = 0x10, F_SECONDARY = 0x1000, F_BLOCK_REFERENCED = 0x4000,
                    F_INDESTRUCTIBLE = 0x8000;
 
@@ -35,7 +32,7 @@ inline void FadeOut(void* a) {
 }
 inline float TotalTime(void* hierarchy) { return Field<float>(hierarchy, 0x10); }
 
-inline uintptr_t Block(int i) { return kBlocks + (uintptr_t)i * 0x20; }
+inline uintptr_t Block(int i) { return AnimBlocksTable() + (uintptr_t)i * 0x20; }
 inline bool BlockLoaded(int i) { return Ref<uint8_t>(Block(i) + 0x10) != 0; }
 
 // hierarchy -> (block, index); false for animations outside the IFP blocks. A cutscene's animations are in a
@@ -44,7 +41,7 @@ inline bool Locate(void* h, int& block, int& idx) {
     if (!h) return false;
     block = Field<int32_t>(h, 0x0C);
     if (block < 0 || block >= Ref<int32_t>(0xB4EA30)) return false;  // ms_numAnimBlocks
-    intptr_t off = (intptr_t)h - (intptr_t)(kHierarchies + (uintptr_t)Ref<int32_t>(Block(block) + 0x14) * 0x18);
+    intptr_t off = (intptr_t)h - (intptr_t)(AnimationsTable() + (uintptr_t)Ref<int32_t>(Block(block) + 0x14) * 0x18);
     idx = (int)(off / 0x18);
     return off >= 0 && off % 0x18 == 0 && idx < Ref<int32_t>(Block(block) + 0x18);
 }
@@ -79,10 +76,10 @@ inline int BlockByKey(uint32_t key) {
 inline void* Find(int block, uint32_t key) {
     if (block < 0 || block >= Ref<int32_t>(0xB4EA30)) return nullptr;
     if (!BlockLoaded(block)) {
-        RequestModel(kIfpBase + block, 2);
+        RequestModel(IfpBase() + block, 2);
         return nullptr;
     }
-    uintptr_t first = kHierarchies + (uintptr_t)Ref<int32_t>(Block(block) + 0x14) * 0x18;
+    uintptr_t first = AnimationsTable() + (uintptr_t)Ref<int32_t>(Block(block) + 0x14) * 0x18;
     for (int i = 0, n = Ref<int32_t>(Block(block) + 0x18); i < n; ++i)
         if (Ref<uint32_t>(first + (uintptr_t)i * 0x18) == key) return (void*)(first + (uintptr_t)i * 0x18);
     return nullptr;

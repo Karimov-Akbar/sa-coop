@@ -43,6 +43,9 @@ void FollowSpot(const Spot& s, float at);
 void Follow();
 // The spot for the current shot. False: no cutscene with CJ (yet) to place the partner in.
 bool CurrentSpot(Spot& out);
+// The scene's CJ ("csplay"): the cutscene object of model 1, or the one of the story's CJ's skin that plays his animation
+// (features/skins). Null: none (yet).
+game::CEntity* Hero();
 int ShotNumber();                     // grows with every new shot
 float ShotLeftMs();                   // until the current shot's cut, by the camera's spline; -1 unknown
 const char* Describe(const Spot& s);  // "lean GANGS/leanIDLE", for logs

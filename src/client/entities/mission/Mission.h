@@ -15,9 +15,17 @@ std::string HostMissionName();
 // a person of this game this game put on a car (ATTACH_CHAR_TO_CAR, at offset): its copy in the other games goes on the
 // copy of that car the same way (false: the person or the car is not shared yet)
 bool SharePersonOnCar(bool on, int ped, int car, float x, float y, float z);
+// our player rides a vehicle with no seat for him (features/aboard): his copy in the other games goes on it the same way,
+// hidden inside a plane or a helicopter, or seated on a seat of the model facing `side` (the turret's direction: 0 ahead,
+// 1 left, 2 back, 3 right) in its pose (1 a car's seat, 2 a bench; 0 standing). car: its handle here (ignored when off).
+// Said again when he sits down or stands up: the copies move to the new place.
+bool ShareAboard(bool on, int car, float x, float y, float z, int side, float range, int weapon, bool hidden, uint8_t pose);
 
 // partner: it watches a scene of the host's mission on the engine (the host's camera)
 bool SceneWatched();
+
+// partner: the host's cutscene loads or plays here, and its story's CJ is the host, not this game's player
+bool HostCutsceneHere();
 
 // a joint side activity (a vehicle job, a race) of this game's runs with another player in it
 bool SideLeading();

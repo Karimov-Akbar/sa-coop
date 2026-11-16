@@ -78,12 +78,7 @@ void Internet::Worker() {
     else LOGI("UPnP недоступен (%s). Будем пробивать NAT", m_upnp.error.c_str());
 
     // 2. the address the internet sees for our socket
-    for (const std::string& server : nat::StunServers()) {
-        if (m_quit) return;
-        size_t colon = server.rfind(':');
-        ENetAddress addr{};
-        if (enet_address_set_host(&addr, server.substr(0, colon).c_str()) != 0) continue;
-        addr.port = (enet_uint16)atoi(server.c_str() + colon + 1);
+    auto askStun = [this](const ENetAddress& addr) {
         uint8_t req[20];
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -92,13 +87,25 @@ void Internet::Worker() {
         }
         ENetBuffer buf{sizeof(req), req};
         enet_socket_send(m_host->socket, &addr, &buf, 1);
+    };
+    ENetAddress stunAddr{};  // the server that answered
+    for (const std::string& server : nat::StunServers()) {
+        if (m_quit) return;
+        size_t colon = server.rfind(':');
+        ENetAddress addr{};
+        if (enet_address_set_host(&addr, server.substr(0, colon).c_str()) != 0) continue;
+        addr.port = (enet_uint16)atoi(server.c_str() + colon + 1);
+        askStun(addr);
         for (int i = 0; i < 20 && !m_quit; ++i) {
             Sleep(100);
             std::lock_guard<std::mutex> lock(m_mutex);
             if (!m_stunWaiting) break;
         }
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_mapped.Valid()) break;
+        if (m_mapped.Valid()) {
+            stunAddr = addr;
+            break;
+        }
         m_stunWaiting = false;
     }
 
@@ -135,13 +142,36 @@ void Internet::Worker() {
         LOGI("Ретранслятор для друзей за любым NAT: %s", relay.ToString().c_str());
     }
 
-    // 4. renew a finite UPnP lease while the server runs
-    for (uint64_t renewAt = NowMs() + (uint64_t)m_upnp.leaseSeconds * 500; m_upnp.ok && m_upnp.leaseSeconds > 0 && !m_quit;) {
+    // 4. while the server runs: renew a finite UPnP lease, and keep the port's mapping alive. A router gave a forwarded
+    //    port a new external port after a minute of silence (12.11), and the code given to a player who came later led
+    //    nowhere (#133, #138: a new port and code helped). A STUN request every 15 s keeps it; a changed one is logged.
+    nat::Endpoint coded;  // what the code says when it came from STUN
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (ep.ip == m_mapped.ip && ep.port == m_mapped.port) coded = ep;
+    }
+    uint64_t renewAt = NowMs() + (uint64_t)m_upnp.leaseSeconds * 500, keepAt = NowMs() + 15000, checkAt = 0;
+    bool told = false;
+    while (!m_quit) {
         Sleep(500);
-        if (NowMs() < renewAt) continue;
-        nat::UpnpResult again = nat::UpnpMapPort(m_port, "SA:COOP server");
-        if (again.ok) m_upnp = again;
-        renewAt = NowMs() + (uint64_t)m_upnp.leaseSeconds * 500;
+        uint64_t now = NowMs();
+        if (m_upnp.ok && m_upnp.leaseSeconds > 0 && now >= renewAt) {
+            nat::UpnpResult again = nat::UpnpMapPort(m_port, "SA:COOP server");
+            if (again.ok) m_upnp = again;
+            renewAt = NowMs() + (uint64_t)m_upnp.leaseSeconds * 500;
+        }
+        if (stunAddr.host && now >= keepAt) {
+            keepAt = now + 15000, checkAt = now + 3000;
+            askStun(stunAddr);
+        }
+        if (checkAt && now >= checkAt) {
+            checkAt = 0;
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (coded.Valid() && m_mapped.Valid() && (m_mapped.ip != coded.ip || m_mapped.port != coded.port) && !told) {
+                told = true;
+                LOGW("Внешний адрес сервера сменился (%s): код приглашения больше не ведёт сюда", m_mapped.ToString().c_str());
+            }
+        }
     }
 }
 

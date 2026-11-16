@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -84,19 +85,29 @@ enum : uint8_t { TURF_WON = 0, TURF_LEFT = 1, TURF_CALLED_OFF = 2 };
 // its game takes that war as its own for that, within 300 m of the player who fights it.
 using WarFn = bool(__cdecl*)();
 WarFn g_origWar[2] = {};
-uint64_t g_otherWarUntil = 0;  // the other player said a war of its game is fought, until then
-uint8_t g_otherWarFrom = 0xFF;
+// each other player that said a war of its game is fought, until then. One for all: the host's word of its flags (no war)
+// wiped a partner's war from a third one's sight for up to 3 s (10.11 audit)
+std::map<uint8_t, uint64_t> g_otherWars;
 uint8_t g_hostWarFlags = WAR_ALLOWED;  // partner: what the host's world allows
 bool g_hostWarShown = false;           // partner: the chat told of the host's war going on
 bool g_sentWar = false;
 uint8_t g_sentFlags = 0xFF;
 uint64_t g_sentWarAt = 0;
 
+bool OtherWarOn() {
+    for (auto& [id, until] : g_otherWars)
+        if (NowMs() < until) return true;
+    return false;
+}
+
 bool OtherWarHere() {
-    if (!Net().Online() || NowMs() > g_otherWarUntil) return false;
-    const RemotePlayer* rp = Players::Instance().Get(g_otherWarFrom);
     CPlayerPed* me = FindPlayerPed(0);
-    return rp && rp->ped && me && (rp->ped->GetPosition() - me->GetPosition()).Length2D() < 300.0f;
+    if (!Net().Online() || !me) return false;
+    for (auto& [id, until] : g_otherWars) {
+        const RemotePlayer* rp = NowMs() < until ? Players::Instance().Get(id) : nullptr;
+        if (rp && rp->ped && (rp->ped->GetPosition() - me->GetPosition()).Length2D() < 300.0f) return true;
+    }
+    return false;
 }
 bool __cdecl WarFought0() { return g_origWar[0]() || OtherWarHere(); }
 bool __cdecl WarFought1() { return g_origWar[1]() || OtherWarHere(); }
@@ -154,7 +165,7 @@ void __cdecl HookStartOffensiveGangWar() {
         Provocation() = 0.0f;  // one war at a time: the partner's is fought
         return;
     }
-    if (!(g_hostWarFlags & WAR_ALLOWED) || (g_hostWarFlags & (WAR_STORY | WAR_MISSION)) || NowMs() < g_otherWarUntil ||
+    if (!(g_hostWarFlags & WAR_ALLOWED) || (g_hostWarFlags & (WAR_STORY | WAR_MISSION)) || OtherWarOn() ||
         HostWithin(100.0f) || HostMissionRecent(0) || !flow::InHostWorld()) {
         Provocation() = 0.0f;  // what the engine does where no war can start
         return;
@@ -268,8 +279,7 @@ void HandleGangWar(uint8_t from, Reader& r) {
     uint8_t flags = r.U8();
     int zone = r.U16();
     if (!r.Ok() || from == Net().MyId()) return;
-    g_otherWarUntil = fought ? NowMs() + 6000 : 0;
-    g_otherWarFrom = from;
+    g_otherWars[from] = fought ? NowMs() + 6000 : 0;
     if (from != Net().HostId() || Net().IsHost()) return;
     g_hostWarFlags = flags;
     // the host's war in the partner's chat too, as the partner's own war is in the host's (#72)
@@ -340,7 +350,7 @@ public:
     void OnSessionEnd() override {
         g_sent.clear();
         g_partnerWar = g_ownWar = {};
-        g_sentWar = false, g_sentFlags = 0xFF, g_otherWarUntil = 0, g_hostWarFlags = WAR_ALLOWED, g_hostWarShown = false;
+        g_sentWar = false, g_sentFlags = 0xFF, g_otherWars.clear(), g_hostWarFlags = WAR_ALLOWED, g_hostWarShown = false;
     }
     void OnGameStarted() override {
         g_sent.clear();
@@ -358,6 +368,7 @@ public:
     void OnPeerResync(uint8_t) override { g_sent.clear(), g_sentFlags = 0xFF; }  // the next scan sends everything
     void OnPeerJoin(uint8_t) override { g_sentWar = false, g_sentFlags = 0xFF; }  // the newcomer hears of a war going on
     void OnPeerLeave(uint8_t id) override {
+        g_otherWars.erase(id);
         if (Net().IsHost() && id == g_partnerWar.owner) EndPartnerWar("its player left");
     }
 

@@ -164,6 +164,7 @@ bool StartServerProcess(const std::wstring& worldPath, bool newGame) {
     cmd += cfg.friendlyFire ? L" --friendly-fire 1" : L" --friendly-fire 0";  // the checkbox wins over server.ini
     cmd += cfg.partnerTeleport ? L" --partner-teleport 1" : L" --partner-teleport 0";
     cmd += cfg.sharedLife ? L" --shared-life 1" : L" --shared-life 0";
+    cmd += cfg.partnerCheats ? L" --partner-cheats 1" : L" --partner-cheats 0";
     cmd += L" --max " + std::to_wstring(cfg.maxPlayers);
 
     if (!g_serverJob) {
@@ -220,11 +221,24 @@ void UploadWorld(const std::vector<uint8_t>& data, const std::string& label) {
     LOGI("World snapshot uploaded (%u bytes)", (unsigned)data.size());
 }
 
+bool SameMainScm(const std::vector<uint8_t>& save);  // below
+
 void OnOnline() {
     auto& net = Net();
     if (net.IsHost()) {
         if (g_hostSlot > 0 && !core::IsInGame()) {
             ui::TheChat().AddSystem(Format(TR("Загружаем сохранение из слота %d...", "Loading the save from slot %d..."), g_hostSlot));
+            // The host's own save goes through the same check as the host's world on a partner: one of another main.scm
+            // crashed the host's game in its first scripts, before any session (16.11, 0x465F3F)
+            std::vector<uint8_t> save;
+            if (ReadFileBytes(core::SlotPath(g_hostSlot), save) && !SameMainScm(save)) {
+                Fail(Format(TR("Сохранение из слота %d сделано с другим файлом data\\script\\main.scm. Игра на нём вылетит. "
+                               "Выберите другой слот или верните моды, с которыми оно сделано.",
+                               "The save in slot %d was made with another data\\script\\main.scm. The game would crash on it. "
+                               "Pick another slot or bring back the mods it was made with."),
+                            g_hostSlot));
+                return;
+            }
             if (!core::LoadSaveFile(core::SlotPath(g_hostSlot))) {
                 Fail(Format(TR("Не удалось загрузить сохранение из слота %d.", "Could not load the save from slot %d."), g_hostSlot));
                 return;
@@ -268,6 +282,7 @@ void SaveConnectSettings() {
     ini.SetInt("connect", "friendly_fire", cfg.friendlyFire);
     ini.SetInt("connect", "partner_teleport", cfg.partnerTeleport);
     ini.SetInt("connect", "shared_life", cfg.sharedLife);
+    ini.SetInt("connect", "partner_cheats", cfg.partnerCheats);
     ini.SetInt("connect", "max_players", cfg.maxPlayers);
     ini.SetInt("keys", "chat", cfg.chatKey);  // the keys page
     ini.SetInt("keys", "enter_as_passenger", cfg.passengerKey);
@@ -495,6 +510,9 @@ const char* ReloadBlocker(bool anyStars) {
     game::CPlayerPed* me = game::FindPlayerPed(0);
     if (!core::IsPlayerReady() || !me) return "no player";
     if (me->InVehicle()) return "in a vehicle";
+    // riding a vehicle with no seat for him (features/aboard), or a mission's gunner: attached, not in it. The world loaded
+    // in the middle of a flight and he came back at that height with no plane under him (10.11 audit)
+    if (me->AttachedTo()) return "on a vehicle";
     if (me->Health() <= 0.0f) return "dead";
     if (game::Ref<uint8_t>(0xB5F851)) return "a cutscene";
     if (core::IsOnMission()) return "a mission here";
@@ -514,6 +532,14 @@ void SaveSpot() {
     g_spot.x = p.x, g_spot.y = p.y, g_spot.z = p.z;
     g_spot.heading = me->CurrentRotation();
     g_spot.area = me->AreaCode();
+    // CPed::m_pEnex: the door it came in by (CEntryExit::TransitionFinished sets it, 0x4406DE). The door nearest the room
+    // was taken after the reload, and a partner in the Binco of Ganton walked out in Las Venturas (12.11)
+    void* door = g_spot.area != 0 ? game::Field<void*>(me, 0x78C) : nullptr;
+    uintptr_t inside = door ? game::Ref<uintptr_t>((uintptr_t)door + 0x38) : 0;  // m_pLink
+    if (door && game::Ref<int8_t>((uintptr_t)door + 0x32) == 0 && inside && game::Ref<int8_t>(inside + 0x32) == g_spot.area) {
+        game::CVector d = game::DoorSpot(door);
+        g_spot.byDoor = true, g_spot.doorX = d.x, g_spot.doorY = d.y;
+    }
     g_spot.health = me->Health();
     g_spot.armour = me->Armour();
     g_spot.activeWeapon = me->ActiveWeapon().type;

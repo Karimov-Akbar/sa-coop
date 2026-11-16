@@ -30,6 +30,7 @@
 #include "shared/game/Game.h"
 #include "shared/game/Script.h"
 #include "shared/lib/core/Core.h"
+#include "shared/lib/memory/Memory.h"
 #include "shared/ui/chat/Chat.h"
 
 namespace coop::rctoys {
@@ -93,6 +94,49 @@ struct Own {
     uint64_t floorUntil = 0;  // back in the street: frozen until its floor is there (5 s at most)
 } g_own;
 uint16_t g_toyTold = 0;
+
+// The keys of our toy as a driver's (W and S), not a walker's (Space and Shift). The game maps keys and buttons to the pad
+// as a driver's only for a player in a vehicle in PEDSTATE_DRIVING (CControllerConfigManager's inlined
+// UseDrivingControls: FindPlayerVehicle, then the state). ZERO2 and ZERO4 sit the host's CJ in a frozen van or on a BMX
+// for it; ours stands frozen on foot, and on the keyboard the partner's RC Baron took its throttle on Space and its
+// reverse on Left Shift (16.11). For the three calls that map them, our CJ is shown in the toy, and back right after.
+struct DrivingKeys {
+    CPlayerPed* me = nullptr;
+    uint32_t flags = 0;
+    void* vehicle = nullptr;
+    int32_t state = 0;
+    DrivingKeys() {
+        CPlayerPed* p = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+        CVehicle* toy = p && g_own.out && !g_own.turret ? Toy() : nullptr;
+        if (!toy || p->InVehicle()) return;
+        me = p, flags = Field<uint32_t>(p, 0x46C), vehicle = Field<void*>(p, 0x58C), state = Field<int32_t>(p, 0x530);
+        Field<uint32_t>(p, 0x46C) |= 0x100;  // CPed::bInVehicle
+        Field<void*>(p, 0x58C) = toy;        // CPed::m_pVehicle
+        Field<int32_t>(p, 0x530) = 50;       // CPed::m_nPedState: PEDSTATE_DRIVING
+    }
+    ~DrivingKeys() {
+        if (!me) return;
+        Field<uint32_t>(me, 0x46C) = flags, Field<void*>(me, 0x58C) = vehicle, Field<int32_t>(me, 0x530) = state;
+    }
+    DrivingKeys(const DrivingKeys&) = delete;
+    DrivingKeys& operator=(const DrivingKeys&) = delete;
+};
+using PadFromFn = void(__fastcall*)(void*, void*);
+PadFromFn g_origFromKeyboard = nullptr, g_origFromMouse = nullptr;
+void __fastcall HookFromKeyboard(void* self, void* edx) {
+    DrivingKeys keys;
+    g_origFromKeyboard(self, edx);
+}
+void __fastcall HookFromMouse(void* self, void* edx) {
+    DrivingKeys keys;
+    g_origFromMouse(self, edx);
+}
+using ButtonDownFn = void(__fastcall*)(void*, void*, int, int);
+ButtonDownFn g_origButtonDown = nullptr;
+void __fastcall HookButtonDown(void* self, void* edx, int button, int type) {
+    DrivingKeys keys;
+    g_origButtonDown(self, edx, button, type);
+}
 
 void SendPhase(const Phase& p) {
     Writer w(proto::G_RC);
@@ -405,7 +449,12 @@ void Handle(uint8_t from, Reader& r) {
 class RcToys : public Module {
 public:
     const char* Name() const override { return "RcToys"; }
-    void OnInstallHooks() override { Net().SetHandler(proto::G_RC, &Handle); }
+    void OnInstallHooks() override {
+        Net().SetHandler(proto::G_RC, &Handle);
+        mem::RedirectCallFn(0x541DF5, &HookFromKeyboard, &g_origFromKeyboard);  // CPad::UpdatePads -> AffectPadFromKeyBoard
+        mem::RedirectCallFn(0x541DFF, &HookFromMouse, &g_origFromMouse);        // CPad::UpdatePads -> AffectPadFromMouse
+        mem::RedirectCallFn(0x744905, &HookButtonDown, &g_origButtonDown);      // a gamepad's button -> AffectControllerStateOn_ButtonDown
+    }
     void OnPeerJoin(uint8_t) override { g_sent = {}, g_toyTold = 0; }  // the newcomer hears it all again
     void OnSessionEnd() override {
         if (CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr) TakeAway(me);

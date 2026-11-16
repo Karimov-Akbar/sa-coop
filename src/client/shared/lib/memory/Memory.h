@@ -51,4 +51,7 @@ void* SwapVTable(void** vtable, int index, void* fn);
 // Checks that the expected bytes are at addr (used to detect other versions / conflicting mods).
 bool Check(uintptr_t addr, const void* expected, size_t size);
 
+// Whether addr lies in committed executable memory (VirtualQuery: slow, for rare checks or cached answers).
+bool IsCode(const void* addr);
+
 }  // namespace coop::mem

@@ -91,6 +91,10 @@ struct NetPed {
     uint32_t animKey = 0, baseKey = 0;                // (a fight stance under punches), by block and name
     float animTime = 0;                         // owner's time of it in the latest state (restarts go back)
     bool animFull = false;                      // it is not partial: locomotion tasks must wait
+    // mirror: its owner handed it to another player (not ours) and that game announces it under a number of its own in a
+    // moment: kept until then for that announcement (TakeHanded), else it goes then
+    uint64_t handedUntil = 0;
+    uint8_t handedTo = 0xFF;
 };
 
 class Peds : public Module {
@@ -151,9 +155,11 @@ private:
     void ApplyMirror(NetPed& np);
     bool EvictRandomCopy();
     game::CPed* SpawnMirror(NetPed& np);
+    bool TakeHanded(NetPed& np);  // np's ped is the one its owner was just handed by another game: ours of it becomes np's
     void Forget(uint16_t netId, bool deletePed);
     void Adopt(NetPed& np);
-    void DropMirrorsOf(uint8_t id, bool keep);  // keep: this game's own people now (it left), else deleted (it restarted)
+    // keep: this game's own people now (it left: `left`), else deleted (it restarted)
+    void DropMirrorsOf(uint8_t id, bool keep, bool left = false);
     PedSyncState Capture(NetPed& np);
 
     std::map<uint16_t, NetPed> m_byId;
@@ -163,7 +169,8 @@ private:
     std::set<int> m_ourSpecials;  // special slots SpecialModelFor asked for (no script or cutscene holds them)
     std::map<game::CPed*, uint8_t> m_giveAway;  // to hand over after the population code (ped -> player)
     std::map<int, bool> m_local;                // MarkLocal: script handle -> made by a side job
-    std::set<int> m_localInCar;                 // of m_local: not shown in a car either (a girlfriend)
+    std::set<int> m_localInCar;                 // of m_local: a girlfriend's, shown anywhere unless the other game has her (OwnGirl)
+    bool OwnGirl(int model) const;
     std::set<int> m_hiddenTwins;                // of m_local: hidden while a copy of the host's mission person stands there
     uint64_t m_lastScan = 0, m_lastStatsMs = 0;
     bool m_wasReady = false;

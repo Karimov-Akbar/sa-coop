@@ -93,6 +93,8 @@ struct Activity {
 };
 
 constexpr int TASK_SIMPLE_NAMED_ANIM = 401;         // what a script's TASK_PLAY_ANIM gives
+constexpr int TASK_SIMPLE_HOLD_ENTITY = 307;
+constexpr int TASK_SIMPLE_STEALTH_KILL = 1027;
 // get up, fall, fall and get up, fall and stay down; busted (TASK_SIMPLE_BE_ARRESTED: the hands up for the cop)
 constexpr int kDownTasks[] = {205, 207, 208, 209, 1102};
 constexpr int TASK_COMPLEX_IN_AIR_AND_LAND = 240;
@@ -110,6 +112,14 @@ void* FindTask(CPed* ped, int type) {
 bool CurrentActivity(CPed* ped, Activity& out) {
     void* named = FindTask(ped, TASK_SIMPLE_NAMED_ANIM);
     void* script = named ? Field<void*>(named, 0x08) : nullptr;  // CTaskSimpleAnim::m_pAnim, only compared
+    // a knife's kill from behind, either side of it (KILL_KNIFE_PLAYER; KILL_KNIFE_PED_DAMAGE, _DIE): the copy did neither
+    // by itself, the attacker's game decides it (Damage.cpp, #125)
+    void* stealth = FindTask(ped, TASK_SIMPLE_STEALTH_KILL);
+    void* stealthAnim = stealth ? Field<void*>(stealth, 0x18) : nullptr;  // CTaskSimpleStealthKill::m_anim
+    // a hold task's own animation: the U window's smoke on the move and beer play with the thing in the hand (12.11),
+    // GANGS is no activity block
+    void* hold = FindTask(ped, TASK_SIMPLE_HOLD_ENTITY);
+    void* holdAnim = hold ? Field<void*>(hold, 0x38) : nullptr;  // CTaskSimpleHoldEntity::m_pAnimBlendAssociation
     bool down = false;
     for (int t : kDownTasks) down = down || FindTask(ped, t);
     int walk = Field<int32_t>(ped, 0x4D4);  // CPed::m_nAnimGroup
@@ -130,7 +140,8 @@ bool CurrentActivity(CPed* ped, Activity& out) {
         // A crouched roll (CROUCH_ROLL_L/R) starts on the stick held sideways while aiming: the copy, its stick a moment
         // late, rolled late, or made a crouched step instead by the split-screen rules (see Patches). It rolls as its owner.
         bool roll = anim::Group(a) == 0 && (anim::Id(a) == 57 || anim::Id(a) == 59);  // ANIM_GROUP_DEFAULT
-        if (!IsActivityBlock(block) && a != script && !(down && fall) && !push && !roll) continue;
+        if (!IsActivityBlock(block) && a != script && a != stealthAnim && a != holdAnim && !(down && fall) && !push && !roll)
+            continue;
         if (best && anim::BlendAmount(a) <= anim::BlendAmount(best)) continue;
         best = a;
         out.roll = roll;
@@ -185,7 +196,7 @@ bool EnsureBlockLoaded(const char* block) {
     int idx = Call<0x4D3990, int>(block);  // CAnimManager::GetAnimationBlockIndex
     if (idx < 0) return false;
     if (anim::BlockLoaded(idx)) return true;
-    RequestModel(anim::kIfpBase + idx, 2);
+    RequestModel(IfpBase() + idx, 2);
     return false;
 }
 

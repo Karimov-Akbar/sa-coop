@@ -52,6 +52,8 @@ void WorldProgressed();    // host: the story moved on, the partners in the game
 struct SavedSpot {
     float x = 0, y = 0, z = 0, heading = 0, health = 100, armour = 0;
     int8_t area = 0;
+    bool byDoor = false;  // indoors: the street door it came in by (one room has many: all the Bincos)
+    float doorX = 0, doorY = 0;
     int activeWeapon = 0;
     int weapons[13] = {}, ammo[13] = {};
     // the car the partner drove last, when it stands close by: it is in the new world too

@@ -407,6 +407,10 @@ void RenderConnectMenu() {
             if (w::Checkbox("tp", cx, cy, TR("Запретить напарникам /tp и /tphere", "No /tp and /tphere for partners"), noTeleport))
                 Cfg().partnerTeleport = !noTeleport;
             cy += lh * 0.8f + 22 * s;
+            bool noCheats = !Cfg().partnerCheats;
+            if (w::Checkbox("cheats", cx, cy, TR("Запретить напарникам чит-коды", "No cheat codes for partners"), noCheats))
+                Cfg().partnerCheats = !noCheats;
+            cy += lh * 0.8f + 22 * s;
         }
 
         // the main action: a big menu item in the middle, lit like the selected entry of the game's menus

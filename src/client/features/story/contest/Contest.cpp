@@ -26,6 +26,7 @@
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
 #include "shared/ui/chat/Chat.h"
+#include "shared/ui/input/Input.h"
 
 namespace coop::contest {
 
@@ -543,7 +544,7 @@ std::string Text(std::string& hint) {
     hint.clear();
     if (!Net().Online()) return "";
     if (g_c.phase == Phase::CALLED) {
-        hint = TR("Y - принять, N - отказаться", "Y: accept, N: decline");
+        hint = ui::AnswerHint(TR("принять", "accept"), TR("отказаться", "decline"));
         return Format(TR("%s вызывает вас на соревнование: %s", "%s challenges you: %s"), Who(g_c.with).c_str(),
                       KindName(g_c.kind, g_c.variant).c_str());
     }

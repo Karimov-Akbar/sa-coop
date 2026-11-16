@@ -8,6 +8,7 @@ struct ClientConfig {
     // [player]
     std::string nickname = "Player";
     bool english = false;             // language = en: the interface in English instead of Russian
+    std::string skin;                 // worn instead of CJ (features/skins): a model's number or an own skin's file, empty: CJ
 
     // [connect]
     bool autoConnect = false;  // the F9 menu by default; launchers and test setups switch it on
@@ -19,6 +20,7 @@ struct ClientConfig {
     bool friendlyFire = false;  // host: the players can hurt each other
     bool partnerTeleport = true;  // host: the partners may use /tp and /tphere
     bool sharedLife = false;      // host: a partner's death fails the host's story mission
+    bool partnerCheats = true;    // host: the partners' cheat codes work
     int maxPlayers = 2;           // host: how many play, 2 to 4
 
     // [game]
@@ -56,6 +58,7 @@ struct ClientConfig {
     int chatKey = 0x54;               // T
     int passengerKey = 0x47;          // G
     int playerListKey = 0x71;         // F2
+    int skinsKey = 0x73;              // F4: not a letter, a cheat code being typed never opens the skins
 
     // [debug]
     bool debugOverlay = false;

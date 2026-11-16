@@ -1,6 +1,7 @@
 #include "shared/lib/core/Core.h"
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cctype>
@@ -21,6 +22,7 @@
 #include "pages/anims-menu/AnimsMenu.h"
 #include "pages/connect-menu/ConnectMenu.h"
 #include "pages/players-menu/PlayersMenu.h"
+#include "pages/skins-menu/SkinsMenu.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/config/Config.h"
 #include "shared/game/Game.h"
@@ -140,6 +142,7 @@ void RenderOverlay() {
     g.SetHidden(clean);   // the windows a key opens are drawn under F7 too
     ui::RenderPlayersMenu();
     ui::RenderAnimsMenu();
+    ui::RenderSkinsMenu();
     ui::RenderConnectMenu();
     g.End();
     ui::In().EndFrame();
@@ -194,6 +197,14 @@ void* __cdecl HookEndUpdateMenu(void* camera) {
 
 void __cdecl HookShutDownForRestart() {
     LOGI("CGame::ShutDownForRestart");
+    // A load or a new game while a cutscene is loaded (a partner's rejoin during the host's first mission, 10.11): the game
+    // clears the players (CPlayerInfo::Clear) before the world, and CWorld::ClearForRestart then deletes the cutscene's
+    // data, whose CCamera::RestoreWithJumpCut gave the camera back to the player just cleared (a null ped, 0x571B73). The
+    // cutscene goes first, as a script's CLEAR_CUTSCENE ends it, while the player is still there.
+    if (game::Ref<int32_t>(0xB5F84C) != 0 && game::FindPlayerPed(0)) {  // CCutsceneMgr::ms_cutsceneLoadStatus
+        LOGI("A cutscene is loaded: its data goes before the restart");
+        game::Call<0x4D5ED0>();  // CCutsceneMgr::DeleteCutsceneData
+    }
     if (g_gameStarted) {
         g_gameStarted = false;
         for (auto* m : Modules()) m->OnGameShutdown();
@@ -203,6 +214,17 @@ void __cdecl HookShutDownForRestart() {
     // at once: holding them would leave the game without a player for good
     g_restarting = g_initDepth == 0;
     g_origShutDownForRestart();
+}
+
+// The game closes (WinMain after its loop: CGame::Shutdown done, then RwTerminate): what the mod made of RenderWare goes
+// now, while the engine and its plugins are up. A skinned clump left to RwEngineStop is destroyed when the clump plugin
+// closes, after the skin plugin freed its free list (_rwFreeListFreeReal on a null list, 0x801D58): the host's game
+// crashed so on closing twice on 13.11, with own skins loaded, whose model info CModelInfo::ShutDown never sees.
+VoidFn g_origShutdownRenderWare = nullptr;
+void __cdecl HookShutdownRenderWare() {
+    LOGI("CGame::ShutdownRenderWare: the game closes");
+    for (auto* m : Modules()) m->OnGameExit();
+    g_origShutdownRenderWare();
 }
 
 // F7 (03.11): the game's parts of the interface outside CHud::Draw (Players' hook hides its own), the zone's name and
@@ -265,7 +287,7 @@ void HandleChatSubmit(const std::string& text) {
         else ui::TheChat().AddError(TR("Вы не подключены к серверу.", "You are not connected to a server."));
         return;
     }
-    if (Net().Online()) Net().SendChat(text);
+    if (Net().Online()) Net().SendChat(text), anims::ChatGesture();
     else ui::TheChat().AddError(TR("Вы не подключены. Окно SA:COOP открывается клавишей F9.",
                                    "You are not connected. Press F9 to open the SA:COOP window."));
 }
@@ -355,6 +377,8 @@ void WriteDefaultConfig(const std::wstring& path) {
         "partner_teleport = 1\r\n"
         "; Для хоста: поставьте 1, чтобы гибель напарника проваливала сюжетную миссию хоста. Это галочка в окне F9.\r\n"
         "shared_life = 0\r\n"
+        "; Для хоста: поставьте 0, чтобы у напарников не работали чит-коды. Это галочка в окне F9.\r\n"
+        "partner_cheats = 1\r\n"
         "\r\n"
         "[game]\r\n"
         "; Поставьте 1, чтобы играть в окне.\r\n"
@@ -477,6 +501,33 @@ bool StartsCodeWithU(int vk) {
     return false;
 }
 
+// Y or N to the call in the middle of the screen, in the order the overlay shows them (Overlay.cpp)
+bool AnswerCall(bool yes) { return contest::Key(yes ? 'Y' : 'N') || teleport::Key(yes) || anims::Key(yes) || SideCallKey(yes); }
+
+// Right and left on a pad's D-pad answer it too (10.11: a partner who played on a pad had the keyboard across the room).
+// They are the game's own yes and no to people in the street (CONVERSATION_YES and NO), which Y and N set as well: a Y
+// held past its answer in the window procedure (its repeats reach the game) is no second answer here. The button that
+// answered is kept from the game until let go, as that Y is: no trip skip's yes with it.
+int g_padAnswered = 0;  // 1 right, 2 left
+void PadAnswers() {
+    game::CPad* pad = game::GetPad(0);
+    int16_t& right = pad->NewState.DPadRight;
+    int16_t& left = pad->NewState.DPadLeft;
+    int16_t& held = g_padAnswered == 1 ? right : left;
+    if (g_padAnswered && held) {
+        held = 0;
+        return;
+    }
+    g_padAnswered = 0;
+    bool yes = right && !pad->OldState.DPadRight, no = left && !pad->OldState.DPadLeft;
+    // the pause menu's own (no_pause_menu runs the game under it), the box hidden under F9, or typing
+    if (yes == no || !IsPlayerReady() || game::MenuActive() || ui::IsConnectMenuVisible() || ui::TheChat().IsOpen() ||
+        GetAsyncKeyState('Y') < 0 || GetAsyncKeyState('N') < 0 || !AnswerCall(yes))
+        return;
+    (yes ? right : left) = 0;
+    g_padAnswered = yes ? 1 : 2;
+}
+
 bool OnKeyDown(int vk, bool repeat) {
     auto& cfg = Cfg();
     // before this key counts as the last letter (the codes' timing)
@@ -506,12 +557,14 @@ bool OnKeyDown(int vk, bool repeat) {
         if ((vk == VK_ESCAPE || vk == 'U') && !repeat) ui::SetAnimsMenuVisible(false);
         return true;  // its list takes the keys while it is open
     }
+    if (ui::IsSkinsMenuVisible()) {
+        if ((vk == VK_ESCAPE || vk == cfg.skinsKey) && !repeat) ui::SetSkinsMenuVisible(false);
+        return true;  // its list takes the keys while it is open
+    }
     if (ui::TheChat().IsOpen()) return true;
     if (repeat) return false;
     if (vk == VK_ESCAPE && CutsceneSkipDecline()) return true;  // "watch on", not the pause menu
-    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() &&
-        (contest::Key(vk) || teleport::Key(vk == 'Y') || anims::Key(vk == 'Y') || SideCallKey(vk == 'Y')))
-        return true;  // a call, a request
+    if ((vk == 'Y' || vk == 'N') && !game::MenuActive() && AnswerCall(vk == 'Y')) return true;  // a call, a request
     if (vk == 'U' && !game::MenuActive() && !typingCheat && contest::Key(vk)) return true;  // a contest's challenge
     if (vk == VK_F9) {
         // a window that cannot be drawn would only take the mouse and the keys (#26)
@@ -526,6 +579,10 @@ bool OnKeyDown(int vk, bool repeat) {
     if (vk == 'U' && !inMenu && IsPlayerReady() && !typingCheat) {
         ui::ToggleAnimsMenu();
         return false;  // U reaches the game too: a cheat code beginning with it goes on (the window gives way, above)
+    }
+    if (vk == cfg.skinsKey && !inMenu && IsPlayerReady()) {  // F4: no letter, a cheat code typed never opens it
+        ui::ToggleSkinsMenu();
+        return true;
     }
     if (vk == cfg.chatKey && !inMenu && (IsPlayerReady() || Net().Online()) && !typingCheat) {
         ui::TheChat().Open();
@@ -594,6 +651,24 @@ void KeepGameFolder() {
         SetCurrentDirectoryA(root.c_str());
     }
     if (GetFileAttributesA("anim\\ped.ifp") == INVALID_FILE_ATTRIBUTES) LOGW("anim\\ped.ifp is missing: the game can't start");
+}
+
+// SA-MP's and open.mp's launchers start the game with their own arguments ("-c -n <nick> -h <ip> -p <port>") and put their
+// samp.dll in it, and the ASI loader loads this mod there too: with its hooks under SA-MP's, SA-MP crashed (issue #121,
+// 0x706611), and it ran again once the mod was taken out of the folder.
+bool RunBySamp() {
+    if (GetModuleHandleW(L"samp.dll")) return true;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+    bool h = false, p = false, c = false;
+    for (int i = 1; i < argc; ++i) {
+        h = h || !wcscmp(argv[i], L"-h");
+        p = p || !wcscmp(argv[i], L"-p");
+        c = c || !wcscmp(argv[i], L"-c") || !wcscmp(argv[i], L"-n");
+    }
+    LocalFree(argv);
+    return h && p && c;
 }
 
 bool LoadSaveFile(const std::wstring& path) {
@@ -689,6 +764,10 @@ void Init(void* hModule) {
     LOGI("%s %s (protocol %u) loaded, coop dir: %s, config: %s", COOP_NAME, COOP_VERSION_STR, kProtocolVersion,
          WideToUtf8(coopDir).c_str(), WideToUtf8(cfg.iniPath).c_str());
     if (!cfg.verboseLog) log::SetMinLevel(log::Level::Info);
+    if (RunBySamp()) {  // nothing of ours in SA-MP's game: not even the crash filter
+        LOGI("The game is started by SA-MP or open.mp: SA:COOP stays off");
+        return;
+    }
     InstallCrashHandler(coopDir);
     // for everyone, not only with verbose_log: the reports of a game frozen on a black screen (#86, #87) came without the
     // place it stood, and the main thread's stack 15 s into a freeze goes to crash.log
@@ -732,6 +811,7 @@ void Init(void* hModule) {
     mem::HookFn(0x6190A0, &HookGenerateGameFilename, &g_origGenerateGameFilename, "C_PcSave::GenerateGameFilename");
     mem::HookFn(0x53C550, &HookShutDownForRestart, &g_origShutDownForRestart, "CGame::ShutDownForRestart");
     mem::HookFn(0x53C680, &HookInitialiseWhenRestarting, &g_origInitWhenRestarting, "CGame::InitialiseWhenRestarting");
+    mem::HookFn(0x53BB80, &HookShutdownRenderWare, &g_origShutdownRenderWare, "CGame::ShutdownRenderWare");  // RwTerminate only
 
     for (auto* m : Modules()) {
         LOGI("Module: %s", m->Name());

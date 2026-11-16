@@ -119,7 +119,7 @@ bool WalkGroupReady(int group) {
     uintptr_t block = Ref<uintptr_t>(g + 0x00);                           // CAnimBlendAssocGroup::m_pAnimBlock
     if (!block || !Ref<void*>(g + 0x04)) return false;                    // its associations not made yet
     if (Ref<uint8_t>(block + 0x10)) return true;                          // CAnimBlock::bLoaded
-    RequestModel(anim::kIfpBase + (int)((block - anim::kBlocks) / 0x20), 2);
+    RequestModel(IfpBase() + (int)((block - AnimBlocksTable()) / 0x20), 2);
     return false;
 }
 
@@ -641,11 +641,12 @@ void Peds::ScanOwned() {
                 continue;
             // made by a script each game runs for its own player (MarkLocal); one that drives off is ours to show, and a
             // side job's people (a taxi fare, the vigilante's criminals) are shown out in the street, the gym's trainer in
-            // its ring with our player. Not a girlfriend (GFAGNT and its GFDATE, GFMEET, GFSEX): a date's marker takes a
-            // passenger too (LOCATE_STOPPED_CHAR_ANY_MEANS_3D), so two players who drove up together began it in both games.
-            // She got into a car in each, went over, and each player had two of her for good (05.11).
-            if (auto it = m_local.find(GetPedRef(ped)); it != m_local.end() && (m_localInCar.count(it->first) ||
-                (!ped->InVehicle() && (!it->second || (AreaOf(ped) != 0 && !GymOpponent(ped, me))))))
+            // its ring with our player. A girlfriend (GFAGNT and its GFDATE, GFMEET, GFSEX) is shown wherever she is: kept
+            // back, the partner saw the host alone at her door with the flowers (11.11). A date's marker takes a passenger
+            // too (LOCATE_STOPPED_CHAR_ANY_MEANS_3D), so two players who drove up together begin it in both games, and
+            // each had two of her for good (05.11): a game that has her itself shows no copy of her (OwnGirl).
+            if (auto it = m_local.find(GetPedRef(ped)); it != m_local.end() && !m_localInCar.count(it->first) &&
+                !ped->InVehicle() && (!it->second || (AreaOf(ped) != 0 && !GymOpponent(ped, me))))
                 continue;
             if (CVehicle* v = ped->VehicleIfIn(); v && !IsSyncableVehicle(v)) continue;
             uint16_t id;
@@ -662,6 +663,11 @@ void Peds::ScanOwned() {
             if (auto it = m_specialNames.find(n.model); it != m_specialNames.end()) n.special = it->second;
             m_byPtr[ped] = id;
             Announce(n);
+            // 14.11: in "555 We Tip" the partner saw neither the DA nor the valet; the host's mission's people as they go
+            // over, for the next report (the partner's log tells why a copy is not shown, NoteUnshown)
+            if (Net().IsHost() && HostReplicating() && ped->CreatedBy() == 2 /* PED_MISSION */)
+                LOGD("Ped %04X (model %d, type %d) of our mission goes over, %.0f m from the nearest other player%s", id, n.model,
+                     n.pedType, d, ped->VehicleIfIn() ? ", in a vehicle" : "");
             continue;
         }
         if (np->pedType == PED_TYPE_COP && chased) {
@@ -718,7 +724,48 @@ bool Peds::EvictRandomCopy() {
     return true;
 }
 
+// A ped another game handed to np's owner a moment ago (HandleOwner): ours of it becomes np's as it stands, with what it
+// does. Deleted at the hand-over and made again by the new owner's announcement, it vanished and came back in front of our
+// player, half the street at once when the player whose game made its people walked through a door (three or four
+// players, 10.11 audit). The same ped: its model, its place on foot or its seat in that vehicle.
+bool Peds::TakeHanded(NetPed& np) {
+    const PedSyncState& st = np.state;
+    bool seated = (st.flags & PedSyncState::F_IN_VEHICLE) != 0;
+    NetVehicle* nv = seated ? Vehicles::Instance().Find(st.vehNetId) : nullptr;
+    NetPed* best = nullptr;
+    float bestD = 6.0f;
+    for (auto& [id, old] : m_byId) {
+        if (!old.handedUntil || old.handedTo != np.owner || old.model != np.model || old.special != np.special || !IsAlive(old) ||
+            IsPedDead(old.ped) || (old.ped->InVehicle() && old.ped->Vehicle()) != seated)
+            continue;
+        float d = 0.0f;
+        if (!seated) d = (old.ped->GetPosition() - st.pos).Length();
+        else if (!nv || !Vehicles::Alive(*nv) || old.ped->Vehicle() != nv->veh ||
+                 (st.seat < 0 ? nv->veh->Driver() != old.ped : st.seat >= 8 || nv->veh->Passengers()[st.seat] != old.ped))
+            continue;
+        if (d < bestD) bestD = d, best = &old;
+    }
+    if (!best) return false;
+    NetPed taken = *best;
+    best->ped = nullptr, best->handle = -1, best->blip = 0, best->handedUntil = 1;  // its old record goes with the next sweep
+    taken.netId = np.netId;
+    taken.owner = np.owner;
+    taken.pedType = np.pedType;
+    taken.state = np.state;  // its new owner's clock is another one
+    taken.hasState = true;
+    taken.recvMs = np.recvMs;
+    taken.handedUntil = 0, taken.handedTo = 0xFF;
+    taken.unshownSince = 0, taken.unshownTold = false;
+    np = taken;
+    m_byPtr[np.ped] = np.netId;
+    LOGD("Ped %04X is the one player %d was handed: ours stays", np.netId, np.owner);
+    return true;
+}
+
 CPed* Peds::SpawnMirror(NetPed& np) {
+    if (np.handedUntil) return nullptr;  // handed on: its new owner's announcement brings it, under another number
+    if (TakeHanded(np)) return np.ped;
+    if (OwnGirl(np.model)) return nullptr;  // the other game's girlfriend, on a date here as well
     const PedSyncState& st = np.state;
     int model = np.model;
     if (model >= kSpecialFirst && model <= kSpecialLast) {
@@ -923,7 +970,14 @@ void Peds::HandleOwner(uint8_t from, Reader& r) {
         return;
     }
     if (np.owner != from) return;
-    if (to != Net().MyId() || !IsAlive(np) || IsPedDead(np.ped)) return Forget(id, true);
+    if (to != Net().MyId() || !IsAlive(np) || IsPedDead(np.ped)) {
+        // to a third player: that game announces it as its own in a moment, and ours waits for it (TakeHanded)
+        if (to != Net().MyId() && IsAlive(np) && !IsPedDead(np.ped) && Net().Peers().count(to)) {
+            np.handedUntil = NowMs() + 1500, np.handedTo = to;
+            return;
+        }
+        return Forget(id, true);
+    }
     bool asked = NowMs() - np.askedMs < 4000;
     uint8_t type = np.pedType;
     Adopt(np);
@@ -1040,6 +1094,13 @@ void Peds::ApplyMirror(NetPed& np) {
     if (!IsAlive(np)) {  // deleted by the game (should not happen to mission peds): spawn again
         m_byPtr.erase(ped);
         np.ped = nullptr;
+        return;
+    }
+    if (OwnGirl(np.model)) {  // this game's own date with her began meanwhile: one of her (see OwnGirl)
+        Cmd(0x009B).I(np.handle).Run();  // DELETE_CHAR
+        m_byPtr.erase(ped);
+        np.ped = nullptr;
+        np.handle = -1;
         return;
     }
     if (np.pedType < 24 /* PED_TYPE_MISSION1.. */ && !(np.model >= kSpecialFirst && np.model <= kSpecialLast) && !ped->InVehicle() &&
@@ -1410,6 +1471,12 @@ void Peds::OnPreProcess() {
     }
     m_wasReady = ready;
     if (!ready) return;
+    // handed to another player whose announcement never came (it had no copy of it), or taken over by it (TakeHanded: its
+    // old record holds no ped then)
+    std::vector<uint16_t> late;
+    for (auto& [id, np] : m_byId)
+        if (np.handedUntil && NowMs() > np.handedUntil) late.push_back(id);
+    for (uint16_t id : late) Forget(id, true);
     for (auto& [id, np] : m_byId) {
         if (np.owner == Net().MyId()) continue;
         ApplyMirror(np);
@@ -1469,15 +1536,18 @@ void Peds::OnSessionEnd() {
 
 // The player left: its people stay in this game as its own (deleted, they left its cars driverless in the street, as MTA
 // keeps the elements and picks a new syncer).
-void Peds::OnPeerLeave(uint8_t id) { DropMirrorsOf(id, WeInherit(id)); }
+void Peds::OnPeerLeave(uint8_t id) { DropMirrorsOf(id, WeInherit(id), true); }
 
-void Peds::DropMirrorsOf(uint8_t id, bool keep) {
+void Peds::DropMirrorsOf(uint8_t id, bool keep, bool left) {
     std::vector<uint16_t> mirrors;
     for (auto& [pid, np] : m_byId)
         if (np.owner == id) mirrors.push_back(pid);
     for (uint16_t pid : mirrors) {
         NetPed& np = m_byId[pid];
         bool adopt = keep && IsAlive(np) && !IsPedDead(np.ped);
+        // its player left: one in a vehicle stays where the vehicle does (Vehicles::OccupantKept)
+        if (left && IsAlive(np) && !IsPedDead(np.ped) && np.ped->InVehicle() && np.ped->Vehicle())
+            adopt = Vehicles::Instance().OccupantKept(np.ped->Vehicle(), id, keep);
         if (adopt) Adopt(np);
         Forget(pid, !adopt);
     }
@@ -1529,6 +1599,13 @@ void Peds::ShotFired(CPed* ped) {
     if (!np) return;
     if (np->owner == Net().MyId()) np->lastShotMs = NowMs();
     else ++m_mirrorShots;
+}
+
+// this game's own girlfriend of that model, made by its GF scripts and alive: the other game's copy of her is not shown
+bool Peds::OwnGirl(int model) const {
+    for (int h : m_localInCar)
+        if (CPed* p = GetPed(h); p && p->ModelIndex() == model && !IsPedDead(p)) return true;
+    return false;
 }
 
 void Peds::MarkLocal(CPed* ped, bool sideJob, bool inCarToo) {

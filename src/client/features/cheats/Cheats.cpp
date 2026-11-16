@@ -1,7 +1,7 @@
 // Cheats that change the shared world (weather, game speed, traffic, pedestrians, themes, car behaviour) work in both
 // games: the other game applies the same cheat (CCheat::ApplyCheat), a switch only when its own state differs. Cheats
 // for the player alone (weapons, money, health, wanted level, vehicles, body, skills) stay in the game where they were
-// typed, and so do a theme's clothes and katana.
+// typed, and so do a theme's clothes and katana. The host may turn the partners' cheat codes off.
 #include <cstring>
 
 #include "common/api/protocol/Protocol.h"
@@ -75,6 +75,13 @@ void __cdecl HookCheatCounted(uint16_t stat, float value) {
 class Cheats : public Module {
 public:
     const char* Name() const override { return "Cheats"; }
+
+    // The host turned its partners' cheat codes off (#118): the keys typed here are forgotten every frame before
+    // CPad::DoCheats (CGame::Process) adds the new ones, and CCheat::AddToCheatString looks for a code only in 6 keys or
+    // more. The world cheats the host types still come here (G_CHEAT).
+    void OnPreProcess() override {
+        if (Net().Online() && !Net().IsHost() && !Net().PartnerCheats()) memset((void*)kCheatString, 0, 30);
+    }
 
     void OnInstallHooks() override {
         mem::RedirectCallFn(0x438565, &HookCheatCounted, &g_origIncrementStat);  // in CCheat::AddToCheatString

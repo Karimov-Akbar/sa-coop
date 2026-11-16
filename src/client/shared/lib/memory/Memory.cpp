@@ -94,4 +94,10 @@ void* SwapVTable(void** vtable, int index, void* fn) {
 
 bool Check(uintptr_t addr, const void* expected, size_t size) { return memcmp((void*)addr, expected, size) == 0; }
 
+bool IsCode(const void* addr) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    return VirtualQuery(addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
+           (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+}
+
 }  // namespace coop::mem

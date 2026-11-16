@@ -105,9 +105,25 @@ void Places(const Owner& o, int& theirs, int& ours, int& racers) {
 
 void OwnerRun(uint8_t with, Owner& o);
 
+// Cesar's races are the story's: CESAR and BCESAR launch CPRACE as they launch his missions, so it ran as the host's
+// mission, with nobody joined. The partner stood on foot behind the racers while only the host could take the
+// checkpoints (#139). Everyone by the host at its countdown races too (the user's choice, 16.11); the mission's own
+// result is still the host's race.
+std::vector<uint8_t> StoryRacers(void* s) {
+    std::vector<uint8_t> out;
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!Net().IsHost() || !StoryMission(s) || !me) return out;
+    bool countdown = Int(kStage) < 11;
+    for (auto& [id, rp] : Players::Instance().All()) {
+        bool near = rp.ped && rp.ped->AreaCode() == me->AreaCode() && (rp.ped->GetPosition() - me->GetPosition()).Length() < 150.0f;
+        if (g_own.count(id) || (countdown && near)) out.push_back(id);
+    }
+    return out;
+}
+
 void OwnerUpdate() {
     void* s = Cprace();
-    std::vector<uint8_t> helpers = s && SideLeading() ? SideHelpers() : std::vector<uint8_t>{};
+    std::vector<uint8_t> helpers = s && SideLeading() ? SideHelpers() : s ? StoryRacers(s) : std::vector<uint8_t>{};
     for (auto it = g_own.begin(); it != g_own.end();) {  // its end, or that player left it
         if (std::find(helpers.begin(), helpers.end(), it->first) != helpers.end()) {
             ++it;
@@ -186,7 +202,37 @@ struct Joined {
     int place = 0, racers = 0, ownerPlace = 0, lap = 0, laps = 0;
     CVector next;
     int checkpoint = -1, blip = -1;
+    uint64_t carTryMs = 0;  // the host's story race: the last look for a car of our own (StoryCar)
 } g_join;
+
+// The host's story race (StoryRacers): on foot, or in the host's car, we get one like it beside us, as the one who joins a
+// joint race gets one (BoardSide). One of our own we drive races as it is. Asked once a second while the host's car stands
+// within 60 m, its start: CPRACE seats CJ a moment after it starts, and moves the car to its grid, which brings us over on
+// foot (CS_FOLLOW, 16.11). Once the host drives off, one on foot watches.
+void StoryCar() {
+    if (g_join.from != Net().HostId() || _stricmp(HostMissionName().c_str(), "cprace") || NowMs() - g_join.carTryMs < 1000) return;
+    g_join.carTryMs = NowMs();
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    CPlayerPed* me = FindPlayerPed(0);
+    if (!host || !host->ped || !me || me->Health() <= 0.0f || me->AttachedTo()) return;
+    CVehicle* hv = host->ped->InVehicle() ? host->ped->Vehicle() : nullptr;
+    if (!hv || (me->InVehicle() && me->Vehicle() != hv) || hv->MoveSpeed().Length() * 50.0f > 1.0f ||
+        (hv->GetPosition() - me->GetPosition()).Length() > 60.0f)
+        return;
+    // the host's passenger, or right by its car: aside first, as a joint job's does (BoardSide). Put out where it sat, it
+    // stood on the car's roof, and no spot beside it was in sight for a car (16.11). The side is the car's: its driver's
+    // copy turned elsewhere put us 2.5 m ahead of it every second.
+    if (me->InVehicle() || (hv->GetPosition() - me->GetPosition()).Length() < 3.0f) {
+        CMatrix* m = hv->Matrix();
+        float heading = m ? std::atan2(-m->forward.x, m->forward.y) : host->ped->CurrentRotation();
+        CVector at = hv->GetPosition();
+        at.z = host->ped->GetPosition().z;
+        Players::Instance().GoTo(*host, at + PartnerSide(heading, Net().MyId(), 3.5f), true);
+        LOGI("The host's story race: beside the host's car for one of our own");
+        return;
+    }
+    Players::Instance().RideWith(*host, false);
+}
 
 void Unmark() {
     if (g_join.checkpoint != -1) Cmd(0x06D6).I(g_join.checkpoint).Run();  // DELETE_CHECKPOINT
@@ -270,6 +316,7 @@ public:
         if (!Net().Online() || !core::IsPlayerReady()) return;
         OwnerUpdate();
         SendWatch();
+        StoryCar();
         if (g_join.from != 0xFF && NowMs() - g_join.heardMs > kQuietMs) JoinEnd();  // its race is over there
         if (g_watch.from != 0xFF && NowMs() - g_watch.heardMs > 2000) g_watch = {};
     }

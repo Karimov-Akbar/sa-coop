@@ -7,3 +7,6 @@ package/** text eol=crlf
 *.jpg binary
 # the animation packs: whole bytes, never line endings
 *.ifp binary
+# the skin packs' models and textures too: package/** made them text, and the commit took a byte 0x0D out of each CR LF
+*.dff binary
+*.txd binary

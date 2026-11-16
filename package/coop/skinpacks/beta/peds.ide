@@ -1,0 +1,14 @@
+# SA:COOP reads this file for the skins of this folder: a line of the game's peds.ide each, by the skin's name
+# (the second word). Of it the ped type (its sex), the walk set and the voices are used for a player wearing it.
+# CDEPUT, SBMYTR4, SFPDM1, VWMYAP: the lines of the "Restored Unused Peds" pack for the same people.
+269, CDEPUT, CDEPUT, COP, STAT_COP, swat, 1FFF, 0, null, 9, 9, PED_TYPE_EMG, VOICE_EMG_RCOP1, VOICE_EMG_RCOP4
+270, SFPDM1, SFPDM1, COP, STAT_COP, swat, 1FFF, 0, null, 9, 9, PED_TYPE_EMG, VOICE_EMG_MCOP1, VOICE_EMG_MCOP6
+340, VWMYAP, VWMYAP, CIVMALE, STAT_SUIT_GUY, man, 1000, 1, null, 1, 2, PED_TYPE_GEN, VOICE_GEN_VWMYAP, VOICE_GEN_VWMYAP
+383, SBMYTR4, SBMYTR4, CIVMALE, STAT_TRAMP_MALE, man,1000,0, man,1,4,PED_TYPE_GEN,VOICE_GEN_SBMYTR3 ,VOICE_GEN_SBMYTR3
+# SA:COOP's, for the skins that came with no line: as the game's people they look like
+0, BMYJG, BMYJG, CIVMALE, STAT_SENSIBLE_GUY, jogger, 1000, 0, null, 9, 9, PED_TYPE_GEN, VOICE_GEN_BMYST, VOICE_GEN_BMYST
+0, CSBETTINA, CSBETTINA, CIVFEMALE, STAT_STREET_GIRL, woman, 1983, 1, null, 4, 6, PED_TYPE_GEN, VOICE_GEN_WFYST, VOICE_GEN_WFYST
+0, CSBMYDJ, CSBMYDJ, CIVMALE, STAT_STREET_GUY, gang1, 170F, 1, null, 5, 0, PED_TYPE_GEN, VOICE_GEN_BMYDJ, VOICE_GEN_BMYDJ
+0, LAPDNA, LAPDNA, COP, STAT_COP, swat, 1FFF, 0, null, 9, 9, PED_TYPE_EMG, VOICE_EMG_LAPD1, VOICE_EMG_LAPD8
+0, SUZIE, SUZIE, CIVFEMALE, STAT_STREET_GIRL, woman, 1983, 1, null, 4, 6, PED_TYPE_GEN, VOICE_GEN_WFYST, VOICE_GEN_WFYST
+0, WFYCRP, WFYCRP, CIVFEMALE, STAT_SUIT_GIRL, busywoman, 1000, 1, man, 1, 4, PED_TYPE_GEN, VOICE_GEN_WFYCRP, VOICE_GEN_WFYCRP

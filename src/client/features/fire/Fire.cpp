@@ -39,6 +39,9 @@ CEntity* Target(uintptr_t f) { return Ref<CEntity*>(f + 0x10); }
 struct Sent {
     uint16_t id;
     CEntity* target;
+    // sent once more under its id: a player whose game started over has no copy of it. Under a new id the other games lit
+    // a second copy, and the first one, its id forgotten here, burned there for ten minutes (10.11 audit)
+    bool again = false;
 };
 std::map<uintptr_t, Sent> g_sent;         // our fires the other game copied
 struct Copy {
@@ -136,18 +139,19 @@ void Scan() {
             continue;
         }
         CEntity* target = Target(f);
-        if (sent != g_sent.end()) {
-            if (sent->second.target == target) continue;
+        if (sent != g_sent.end() && sent->second.target != target) {
             SendStop(sent->second.id);  // the slot holds another fire now
             g_sent.erase(sent);
+            sent = g_sent.end();
         }
+        if (sent != g_sent.end() && !sent->second.again) continue;
         uint8_t kind = ON_SPOT;
         uint16_t entityId = 0;
         bool script = Ref<uint8_t>(f) & 2;  // bCreatedByScript
         // a script's fire on the ground: the host's story mission's, or the joint side activity's this game leads
         if (target ? !Describe(target, kind, entityId) : !(script && ((Net().IsHost() && HostReplicating()) || SideLeading()))) continue;
         // the owner in its top bits, as a vehicle's: the copies of two players' fires are kept by the id alone
-        uint16_t id = (uint16_t)(((Net().MyId() + 1) << 12) | (g_nextId++ & 0x0FFF));
+        uint16_t id = sent != g_sent.end() ? sent->second.id : (uint16_t)(((Net().MyId() + 1) << 12) | (g_nextId++ & 0x0FFF));
         g_sent[f] = {id, target};
         CVector pos = Ref<CVector>(f + 0x04);
         Writer w(proto::G_FIRE);
@@ -604,6 +608,8 @@ public:
             float strength = r.F32();
             bool script = r.U8() != 0;
             if (!r.Ok()) return;
+            // the same fire sent again for a player whose game started over: ours burns already
+            if (auto it = g_copies.find(id); it != g_copies.end() && it->second.from == from && Active(it->second.fire)) return;
             PutOut(id);
             Light(from, id, kind, entityId, {p.x, p.y, p.z}, strength, script);
         });
@@ -619,7 +625,7 @@ public:
         if (Net().Online() && core::IsPlayerReady()) ShootJets();
     }
     void OnPeerResync(uint8_t id) override {
-        g_sent.clear();  // sent again by the next scan
+        for (auto& [f, s] : g_sent) s.again = true;  // sent again by the next scan, under their ids
         PutOutCopiesOf(id);
     }
     void OnPeerLeave(uint8_t id) override { PutOutCopiesOf(id); }

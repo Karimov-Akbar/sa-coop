@@ -18,6 +18,7 @@
 #include "features/anims/Emotes.h"
 
 #include <windows.h>
+#undef GetObject  // GetObjectA: game::GetObject below
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,7 @@
 #include "shared/game/Script.h"
 #include "shared/lib/core/Core.h"
 #include "shared/ui/chat/Chat.h"
+#include "shared/ui/input/Input.h"
 
 namespace coop::anims {
 
@@ -46,7 +48,9 @@ using game::script::Cmd;
 
 constexpr int TASK_SIMPLE_NAMED_ANIM = 401, TASK_SIMPLE_HOLD_ENTITY = 307, TASK_SIMPLE_SWIM = 1304,
               TASK_COMPLEX_USE_MOBILE_PHONE = 1600;
-enum : uint8_t { OP_ASK = 1, OP_NO = 2, OP_GO = 3, OP_STOP = 4 };
+// OP_BUSY: the one asked has another player's invitation to answer first; OP_WITHDRAW: the one who asked said yes to
+// another player's (three or four players: a second invitation took the first one's place unsaid, 10.11 audit)
+enum : uint8_t { OP_ASK = 1, OP_NO = 2, OP_GO = 3, OP_STOP = 4, OP_BUSY = 5, OP_WITHDRAW = 6 };
 constexpr uint64_t kAnswerMs = 20000;
 constexpr float kPairRange = 4.0f;  // the two players stand this close to start a pair
 
@@ -104,6 +108,11 @@ std::vector<PackRow> Numbered(uint16_t first, const char* prefix, int count, con
     return rows;
 }
 
+// The files of coop\packs that load: every AddPack's. A pack taken out of the mod (12.11) stays in the folder of whoever
+// puts a new version over an old one, and loaded it took places in the animation table with no row in the window.
+const char* const kPackFiles[] = {"salute",   "gtavsalute", "rapping",  "idlepose",   "restpose", "lcsidle",
+                                  "grafdance", "housedance", "newmoves", "acrostreet", "parkour"};
+
 // gestures, poses, idle actions, dances, tricks; the flags as each animation goes (its length, how far its root
 // moves: MOVES past half a metre)
 void AddPacks() {
@@ -140,8 +149,6 @@ void AddPacks() {
              {635, "LcsShoulders", TR("Размять плечи", "Roll the shoulders"), 0}});
     AddPack("grafdance", TR("Диско-танцы", "Disco dances"), "GRAF MC",
             Numbered(641, "Graf", 16, TR("Танец", "Dance"), {11, 12, 13, 14, 15, 16}, LOOP));
-    AddPack("fortnite", TR("Танцы из Fortnite", "Fortnite dances"), "Sergio Persson",
-            Numbered(661, "Fortnite", 16, TR("Танец", "Dance"), {}, LOOP));
     AddPack("housedance", TR("Танцы с вечеринки", "Party dances"), "ATField02_GR",
             {{683, "House03", TR("Танец 1", "Dance 1"), LOOP},
              {684, "House04", TR("Танец 2", "Dance 2"), LOOP | MOVES},
@@ -430,6 +437,89 @@ struct Ask {
 Ask g_asked;   // ours, until its answer
 Ask g_asking;  // the other player's, until ours
 
+// What the hand holds in the animations of smoking, drinking, eating, the phone and the camera (12.11, the user's word: the
+// smoking ones and those that should have a thing). The models and the places are the game's own: its scripts'
+// TASK_PICK_UP_OBJECT (main.scm, script.img: the cigar and the phone on the right hand's bone, the can on the left hand in
+// home_brains.scm before VEND_DRINK_P, the burger in the fast food booths) and the gangs' cigarette and bottle
+// (CPedGroupMembership::GivePedRandomObjectToHold, right hand, the very animations of "smoke on the move" and "drink a
+// beer"). The game's scripts give no thing to the deal, the pay, the gift or the bomb: neither does the window.
+struct Prop {
+    uint16_t emote;
+    const char* model;
+    uint8_t node;    // ePedNode: 6 the right hand, 5 the left one
+    CVector offset;  // in the bone's axes, as the hold task takes it
+};
+// The hand is the one the animation brings to the face (the bones' distance to the head over it, scripts/analysis/anims/
+// handfk.py): SMOKING's M_smkstnd_loop and M_smklean_loop smoke with the left one, and their cigarette was in the right
+// (12.11); the woman's, M_smk_* and the gangs' with the right.
+const Prop kProps[] = {
+    {110, "CJ_CIGGY", 5, {0, 0, 0}},       {111, "CJ_CIGGY", 5, {0, 0, 0}},  {151, "CJ_CIGGY", 6, {0, 0, 0}},
+    {201, "CJ_CIGGY", 6, {0, 0, 0}},       {226, "CJ_CIGGY", 6, {0, 0, 0}},  {225, "CJ_BEAR_BOTTLE", 6, {0, 0, 0}},
+    {144, "CJ_BEAR_BOTTLE", 6, {0, 0, 0}}, {223, "CJ_JUICE_CAN", 5, {0.1f, 0.1f, 0}},
+    {219, "CJ_BURG_2", 6, {0, 0, 0}},      {218, "cellphone", 6, {0, 0, 0}}, {211, "camera", 6, {0, 0, 0}},
+    {263, "camera", 6, {0, 0, 0}},
+};
+
+const Prop* PropOf(uint16_t emote) {
+    for (const Prop& p : kProps)
+        if (p.emote == emote) return &p;
+    return nullptr;
+}
+
+// by its name (a mod may have moved the numbers), -1: this game has no such object
+int PropModel(const Prop& p) {
+    int index = -1;
+    return Call<0x4C5940, void*>(p.model, &index) && IsObjectModel(index) ? index : -1;  // CModelInfo::GetModelInfo
+}
+
+// our CJ's thing of the emote now
+struct Held {
+    CObject* obj = nullptr;
+    int handle = -1;
+};
+Held g_held;
+
+// The thing in our CJ's hand as the game's scripts give one (TASK_PICK_UP_OBJECT): an object without collision held by a
+// CTaskSimpleHoldEntity in the upper body's slot (TASK_SECONDARY_PARTIAL_ANIM), the slot the game moves a held thing from,
+// on the bone, after each frame's bones (CPedIntelligence::ProcessAfterPreRender). Set into the slot straight: the
+// script command goes as a task of the whole body and would take the emote's place. Props.cpp shows it on our copy in
+// the other games, as any thing a player holds. Given an animation (an emote of the upper body) the hold task plays it
+// itself, partial (StartAnim): TASK_PLAY_ANIM_SECONDARY wants the same slot. The animation's end ends the task, and the
+// task's end takes the thing out of the world (m_bRemoveFromWorld in its destructor).
+bool Hold(CPlayerPed* me, const Prop& p, int model, const char* anim, const char* block) {
+    if (!HasRoom(ObjectPool(), kKeepObjects, "object")) return false;
+    CVector at = me->GetPosition();
+    int h = -1;
+    Cmd(0x029B).I(model).F(at.x).F(at.y).F(at.z).Out(&h).Run();  // CREATE_OBJECT_NO_OFFSET
+    CObject* o = h >= 0 ? GetObject(h) : nullptr;
+    if (!o) return false;
+    Field<uint8_t>(o, 0x13C) = 6;  // OBJECT_MISSION2, as Props' copies: no save keeps it
+    Cmd(0x0382).I(h).I(0).Run();   // SET_OBJECT_COLLISION
+    o->AreaCode() = me->AreaCode();
+    MarkModelNotNeeded(model);
+    void* t = Call<0x61A5A0, void*>(0x3C);  // CTask::operator new
+    if (!t) {
+        Cmd(0x0108).I(h).Run();  // DELETE_OBJECT
+        return false;
+    }
+    CVector off = p.offset;
+    if (anim)  // ANIMATION_IS_PLAYING | ANIMATION_IS_FINISH_AUTO_REMOVE: once, fading out at its end
+        CallMethod<0x691470>(t, (CEntity*)o, &off, p.node, (uint8_t)0x10, anim, block, 0x1 | 0x8);
+    else  // ANIM_ID_NO_ANIMATION_SET, ANIM_GROUP_DEFAULT, kept when an animation ends
+        CallMethod<0x6913A0>(t, (CEntity*)o, &off, p.node, (uint8_t)0x10, 191, 0, true);
+    CallMethod<0x681B60>((uint8_t*)me->Intelligence() + 4, t, 4);  // CTaskManager::SetTaskSecondary(TASK_SECONDARY_PARTIAL_ANIM)
+    g_held = {o, h};
+    LOGI("Emote %u: %s in the %s hand", g_run.id, p.model, p.node == 5 ? "left" : "right");
+    return true;
+}
+
+// our thing out of the world; its hold task, holding nothing then, ends by itself (CTaskSimpleHoldEntity::SetPedPosition)
+void Drop() {
+    if (g_held.handle >= 0 && IsObjectValid(g_held.obj) && GetObjectRef(g_held.obj) == g_held.handle)
+        Cmd(0x0108).I(g_held.handle).Run();  // DELETE_OBJECT
+    g_held = {};
+}
+
 void Send(uint8_t op, uint8_t to, uint16_t id) {
     Writer w(proto::G_EMOTE);
     w.U8(op);
@@ -452,6 +542,7 @@ void GiveBackWeapon(CPlayerPed* me) {
 // unless ours ran to its end
 void End(bool giveBack, bool tellOther) {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    Drop();
     if (giveBack) GiveBackWeapon(me);
     if (tellOther && g_run.with != 0xFF && Net().Peers().count(g_run.with)) Send(OP_STOP, g_run.with, g_run.id);
     LOGI("Emote %u ended%s", g_run.id, giveBack ? "" : " (taken over)");
@@ -479,13 +570,26 @@ bool PadEnds() {
 bool g_toldEnds = false;  // the chat said how a lasting one ends, once a game
 
 void StartStages(CPlayerPed* me) {
-    if (!(g_run.flags & PART) && me->ActiveWeapon().type != 0) {
+    const Prop* prop = PropOf(g_run.id);
+    int model = prop ? PropModel(*prop) : -1;
+    if (model >= 0 && !IsModelLoaded(model)) model = -1;  // it never came (Update's wait): the emote goes without it
+    // the hand of a thing is free too, even in a gesture of the upper body
+    if ((!(g_run.flags & PART) || model >= 0) && me->ActiveWeapon().type != 0) {
         g_run.weapon = me->ActiveWeapon().type;
         Cmd(0x01B9).I(GetPedRef(me)).I(0).Run();  // SET_CURRENT_CHAR_WEAPON: put away, a gun in a dancing hand floats
     }
     if (Lasting() && !std::exchange(g_toldEnds, true))
         ui::TheChat().AddSystem(TR("Пробел или F останавливают анимацию.", "Space or F stops the animation."));
     g_run.calm = false;
+    if (model >= 0 && (g_run.flags & PART) && g_run.in.empty() &&
+        Hold(me, *prop, model, g_run.main.c_str(), g_run.block.c_str())) {  // the hold task plays it
+        g_run.stage = Run::MAIN;
+        g_run.sinceMs = NowMs();
+        g_run.at = g_run.total = 0;
+        LOGI("Emote %u: %s/%s with the hold task", g_run.id, g_run.block.c_str(), g_run.main.c_str());
+        return;
+    }
+    if (model >= 0 && !(g_run.flags & PART)) Hold(me, *prop, model, nullptr, nullptr);
     if (!g_run.in.empty()) {
         g_run.stage = Run::INTRO;
         PlayStage(me, g_run.in, false, true);  // held on its last frame: no gap before the loop
@@ -499,6 +603,9 @@ void StartStages(CPlayerPed* me) {
 
 void Start(const Emote& e, const char* mine, uint8_t with, uint64_t startMs) {
     int weapon = g_run.stage != Run::OFF ? g_run.weapon : 0;  // one emote after another: the weapon put away for the first
+    Drop();  // the thing of the one before
+    if (const Prop* p = PropOf(e.id))
+        if (int m = PropModel(*p); m >= 0 && !IsModelLoaded(m)) RequestModel(m);
     g_run = Run{};
     g_run.stage = Run::LOADING;
     g_run.id = e.id;
@@ -540,7 +647,7 @@ void StopByPlayer(CPlayerPed* me) {
 void Update() {
     if (g_run.stage == Run::OFF) return;
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
-    if (!me) return void(g_run = Run{});
+    if (!me) return Drop(), void(g_run = Run{});
     if (CutsceneOn() || Scripted() || me->InVehicle()) return End(false, true);  // the game's now: its own animations on CJ
     bool input = Lasting() ? PadEnds() : PadMoves();
     bool react = g_run.calm && input && NowMs() - g_run.sinceMs > 300;
@@ -562,6 +669,9 @@ void Update() {
                 ui::TheChat().AddError(TR("Этой анимации нет в вашей игре.", "This animation is not in your game."));
                 return End(true, true);
             }
+            // its thing in memory, as long as the blocks are given at most: without it after that
+            if (const Prop* p = PropOf(g_run.id))
+                if (int m = PropModel(*p); m >= 0 && !IsModelLoaded(m) && NowMs() - g_run.sinceMs <= 6000) return RequestModel(m);
             if (NowMs() < g_run.startMs) return;
             // still free for it (a pair's other side said go): CJ just put in front of the other one stands on the ground a
             // frame or two later, so a while is given
@@ -587,6 +697,12 @@ void Update() {
             return;
         }
         case Run::MAIN: {
+            if (g_held.obj && (g_run.flags & PART)) {
+                // the hold task plays it (StartStages): on while the hand has our thing, over with the animation
+                void* hold = FindTask(me, TASK_SIMPLE_HOLD_ENTITY);
+                if (!hold || Field<CEntity*>(hold, 0x08) != (CEntity*)g_held.obj) End(true, false);
+                return;
+            }
             void* t = NamedTask(me, g_run.main);
             if (!t && g_run.total == 0.0f && NowMs() - g_run.sinceMs < 400) return;  // not on yet
             if (!t) {
@@ -632,7 +748,7 @@ void ReleaseBlocks() {
             ++it;
             continue;
         }
-        Call<0x409C10>(anim::kIfpBase + i);  // CStreaming::SetModelIsDeletable
+        Call<0x409C10>(IfpBase() + i);  // CStreaming::SetModelIsDeletable
         it = g_ourBlocks.erase(it);
     }
 }
@@ -725,7 +841,7 @@ void LoadOne(const std::wstring& file, std::vector<uint8_t>& bytes, const char* 
     into.push_back(std::move(c));
 }
 
-void LoadFolder(const wchar_t* folder, const char* what, const char* prefix, std::vector<Custom>& into) {
+void LoadFolder(const wchar_t* folder, const char* what, const char* prefix, std::vector<Custom>& into, bool packs = false) {
     std::wstring dir = Cfg().coopDir + folder;
     std::vector<std::wstring> files;
     WIN32_FIND_DATAW fd;
@@ -736,6 +852,16 @@ void LoadFolder(const wchar_t* folder, const char* what, const char* prefix, std
             files.push_back(fd.cFileName);
     while (FindNextFileW(h, &fd));
     FindClose(h);
+    if (packs)
+        files.erase(std::remove_if(files.begin(), files.end(),
+                                   [what](const std::wstring& f) {
+                                       std::string name = WideToUtf8(f), base = name.substr(0, name.find_last_of('.'));
+                                       bool ours = std::any_of(std::begin(kPackFiles), std::end(kPackFiles),
+                                                               [&](const char* k) { return !_stricmp(base.c_str(), k); });
+                                       if (!ours) LOGI("%s: %s is not one of the mod's, left alone", what, name.c_str());
+                                       return !ours;
+                                   }),
+                    files.end());
     std::sort(files.begin(), files.end());
     if (files.size() > kMaxFiles) LOGW("%s: %zu files, the first %zu are read", what, files.size(), kMaxFiles), files.resize(kMaxFiles);
     size_t all = 0;
@@ -748,7 +874,7 @@ void LoadFolder(const wchar_t* folder, const char* what, const char* prefix, std
 
 // the mod's packs first: the players' own files after them take what is left of the places
 void LoadCustom() {
-    LoadFolder(L"packs\\", "Packs", "P_", g_packs);
+    LoadFolder(L"packs\\", "Packs", "P_", g_packs, true);
     LoadFolder(L"anims\\", "Own animations", "C_", g_custom);
 }
 
@@ -779,7 +905,7 @@ public:
             g_asked = {};
         }
     }
-    void OnGameStarted() override { g_run = Run{}, g_asked = g_asking = {}; }
+    void OnGameStarted() override { g_run = Run{}, g_asked = g_asking = {}, g_held = {}; }  // the world made anew: its thing gone
     void OnSessionEnd() override {
         g_asked = g_asking = {};
         g_run.with = 0xFF;
@@ -798,6 +924,7 @@ public:
         const Emote* e = Find(id);
         if (op == OP_ASK) {
             if (!e || e->kind != PAIR) return;
+            if (g_asking.who != 0xFF && g_asking.who != from && NowMs() < g_asking.until) return Send(OP_BUSY, from, id);
             if (g_asked.who == from) g_asked = {};  // both asked at once: ours gives way
             g_asking = {from, id, NowMs() + kAnswerMs};
             BlockReady(e->block);  // in memory by the answer
@@ -807,6 +934,13 @@ public:
         } else if (op == OP_NO && g_asked.who == from) {
             g_asked = {};
             ui::TheChat().AddSystem(Format(TR("%s отказывается.", "%s says no."), name.c_str()));
+        } else if (op == OP_BUSY && g_asked.who == from) {
+            g_asked = {};
+            ui::TheChat().AddSystem(Format(TR("%s сейчас отвечает на другое приглашение.", "%s is answering another invitation now."),
+                                           name.c_str()));
+        } else if (op == OP_WITHDRAW && g_asking.who == from) {
+            g_asking = {};
+            ui::TheChat().AddSystem(Format(TR("%s отменяет приглашение.", "%s takes the invitation back."), name.c_str()));
         } else if (op == OP_GO && g_asked.who == from && g_asked.id == id && e) {
             g_asked = {};
             if (std::string why = WhyNot(); !why.empty()) {
@@ -869,10 +1003,23 @@ std::string WhyNot() {
     if (!(me->PedFlags() & 1) || me->IsInTheAir() || FindTask(me, TASK_SIMPLE_SWIM))  // CPed::bIsStanding
         return TR("CJ должен стоять на земле.", "CJ must stand on the ground.");
     int task = ActivePrimaryTaskType(me);
+    // a thing of the game in the hands (a crate, a tray); our emote's own thing goes with the next emote, and a hold task
+    // left holding nothing ends by itself next frame
+    void* hold = FindTask(me, TASK_SIMPLE_HOLD_ENTITY);
+    CEntity* held = hold ? Field<CEntity*>(hold, 0x08) : nullptr;
     if ((task != 0 && task != TASK_SIMPLE_NAMED_ANIM) || me->Health() <= 0.0f || FindTask(me, TASK_COMPLEX_USE_MOBILE_PHONE) ||
-        FindTask(me, TASK_SIMPLE_HOLD_ENTITY) || me->AttachedTo() || PlayerInfos()[0].remoteVehicle)
+        (held && held != (CEntity*)g_held.obj) || me->AttachedTo() || PlayerInfos()[0].remoteVehicle)
         return TR("CJ сейчас занят.", "CJ is busy right now.");
     return "";
+}
+
+int EmoteThing(uint16_t emote, int& bone, float offset[3]) {
+    const Prop* p = PropOf(emote);
+    int model = p ? PropModel(*p) : -1;
+    if (model < 0) return -1;
+    bone = p->node == 5 ? 34 : 24;  // ConvertPedNode2BoneTag: BONE_L_HAND, BONE_R_HAND
+    offset[0] = p->offset.x, offset[1] = p->offset.y, offset[2] = p->offset.z;
+    return model;
 }
 
 bool Play(const Emote& e, std::string& why) {
@@ -894,6 +1041,14 @@ bool Play(const Emote& e, std::string& why) {
     ui::TheChat().AddSystem(Format(TR("Приглашение отправлено игроку %s.", "Invitation sent to %s."), Net().PeerName(rp->id).c_str()));
     LOGI("Pair emote %u offered to %s", e.id, Net().PeerName(rp->id).c_str());
     return true;
+}
+
+// As on SA-MP's servers (a players' idea, 09.11): an upper-body gesture, so CJ walks on, played once. Nothing of ours
+// that plays is cut for it, and a CJ the game or a script holds is left alone (WhyNot).
+void ChatGesture() {
+    static const uint16_t kTalks[] = {27, 36, 37, 38};  // "Разговаривать" 1-4: GANGS prtial_gngtlkA-D
+    if (g_run.stage != Run::OFF || !WhyNot().empty()) return;
+    if (const Emote* e = Find(kTalks[NowMs() % 4])) Start(*e, e->main, 0xFF, 0);
 }
 
 bool Key(bool yes) {
@@ -918,6 +1073,8 @@ bool Key(bool yes) {
         ui::TheChat().AddError(why);
         return true;
     }
+    // our own invitation to a third player goes back: its yes would have started a second pair over this one
+    if (g_asked.who != 0xFF && g_asked.who != a.who) Send(OP_WITHDRAW, g_asked.who, g_asked.id), g_asked = {};
     Cmd(0x00A1).I(GetPedRef(me)).F(spot.x).F(spot.y).F(spot.z).Run();  // SET_CHAR_COORDINATES: in front of the other one
     Cmd(0x0173).I(GetPedRef(me)).F(heading).Run();  // SET_CHAR_HEADING
     Send(OP_GO, a.who, a.id);
@@ -930,7 +1087,7 @@ bool Key(bool yes) {
 std::string Text(std::string& hint) {
     if (g_asking.who == 0xFF || NowMs() >= g_asking.until || !Net().Peers().count(g_asking.who)) return "";
     const Emote* e = Find(g_asking.id);
-    hint = TR("Y - да, N - нет", "Y: yes, N: no");
+    hint = ui::AnswerHint(TR("да", "yes"), TR("нет", "no"));
     return Format(TR("%s предлагает: %s", "%s offers: %s"), Net().PeerName(g_asking.who).c_str(), e ? e->name.c_str() : "?");
 }
 
@@ -945,7 +1102,7 @@ bool NeedBlock(int block) {
     if (block < 0) return false;
     if (auto it = g_ourBlocks.find(block); it != g_ourBlocks.end()) it->second = NowMs();
     if (anim::BlockLoaded(block)) return true;
-    RequestModel(anim::kIfpBase + block, 2);
+    RequestModel(IfpBase() + block, 2);
     g_ourBlocks[block] = NowMs();  // ours to let go (ReleaseBlocks)
     return false;
 }

@@ -62,6 +62,29 @@ void __cdecl HookRespawnPassTime(uint32_t minutes) {
     g_respawning = false;
 }
 
+// A club's dance (dance.scm, a streamed script, no mission) keeps a night of its own behind its fades: STORE_CLOCK,
+// SET_TIME_OF_DAY 0 0, RESTORE_CLOCK at its end. The partners took the host's clock every second, and their time ran to
+// midnight and back in plain sight as the host began and ended a dance (15.11). While a script of no mission has the
+// clock stored, the host sends the stored one: the partners' time waits where the host's comes back to. A story
+// mission's hour is the world's and goes as before.
+void* g_clockHeldBy = nullptr;  // that script, till its RESTORE_CLOCK or its end
+using ClockFn = void(__cdecl*)();
+ClockFn g_origStoreClock = nullptr, g_origRestoreClock = nullptr;
+void __cdecl HookStoreClock() {
+    g_origStoreClock();
+    void* s = CurrentScript();
+    g_clockHeldBy = s && !Field<uint8_t>(s, 0xDC) ? s : nullptr;  // CRunningScript::m_bIsMission
+}
+void __cdecl HookRestoreClock() {
+    g_origRestoreClock();
+    g_clockHeldBy = nullptr;
+}
+bool ScriptRuns(void* script) {
+    for (void* s = Ref<void*>(0xA8B42C); s; s = Field<void*>(s, 0x00))  // CTheScripts::pActiveScripts
+        if (s == script) return true;
+    return false;
+}
+
 class World : public Module {
 public:
     const char* Name() const override { return "World"; }
@@ -70,17 +93,23 @@ public:
         mem::RedirectCallFn(0x441534, &HookPassTimeClock, &g_origSetClock);  // CGameLogic::PassTime -> CClock::SetGameClock
         // PassTime(720): CGameLogic::Update after a death and after an arrest, CGameLogic::ResetStuffUponResurrection
         for (uintptr_t at : {0x442FCF, 0x44337A, 0x4429C5}) mem::RedirectCallFn(at, &HookRespawnPassTime, &g_origPassTime);
+        mem::RedirectCallFn(0x47F1AC, &HookStoreClock, &g_origStoreClock);      // STORE_CLOCK -> CClock::StoreClock
+        mem::RedirectCallFn(0x47F1C7, &HookRestoreClock, &g_origRestoreClock);  // RESTORE_CLOCK -> CClock::RestoreClock
         Net().SetHandler(proto::G_WORLD_STATE, [](uint8_t from, Reader& r) { Handle(from, r); });
     }
+
+    void OnGameShutdown() override { g_clockHeldBy = nullptr; }
 
     void OnPostProcess() override {
         if (!Net().IsHost() || !core::IsPlayerReady() || NowMs() - m_lastSend < 1000) return;
         m_lastSend = NowMs();
+        if (g_clockHeldBy && !ScriptRuns(g_clockHeldBy)) g_clockHeldBy = nullptr;  // over with no RESTORE_CLOCK
+        bool held = g_clockHeldBy != nullptr;
         Writer w(proto::G_WORLD_STATE);
-        w.U8(ClockHours());
-        w.U8(ClockMinutes());
+        w.U8(held ? Ref<uint8_t>(0xB7014B) : ClockHours());    // CClock::ms_Stored_nGameClockHours
+        w.U8(held ? Ref<uint8_t>(0xB7014A) : ClockMinutes());  // CClock::ms_Stored_nGameClockMinutes
         w.U8(ClockWeekday());
-        w.U32(TimeMs() - LastClockTick());  // progress inside the current game minute
+        w.U32(held ? 0 : TimeMs() - LastClockTick());  // progress inside the current game minute
         w.I16(OldWeather());
         w.I16(NewWeather());
         w.I16(ForcedWeather());

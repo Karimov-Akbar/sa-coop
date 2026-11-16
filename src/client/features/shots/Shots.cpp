@@ -4,8 +4,10 @@
 // (CWeapon::DoBulletImpact: where from, where to, the weapon), and the other game draws them on that player's copy: the
 // tracer, the muzzle flash and the shot's sound. A copy that fired itself meanwhile (the game's own drive-by goes over by
 // its pad) is left to its own shots, so they do not come twice. The hits count as before: the shooter's game reports them.
-// The guns fixed on a vehicle (the Hunter's, the Seasparrow's, the Rustler's, the Predator's) go over the same way: the
-// copy never fires them (CVehicle::ProcessWeapons runs for a player's vehicle only).
+// The guns fixed on a vehicle go over the same way: the copy never fires them (CVehicle::ProcessWeapons runs for a player's
+// vehicle only). A boat's (the Predator's) fire by CVehicle::FireFixedMachineGuns (HookFixedRound); an aircraft's (the
+// Hunter's, the Seasparrow's, the Rustler's) by CVehicle::FirePlaneGuns, a CWeapon::FireInstantHit whose shooter is the
+// aircraft itself, not the pilot: those went over from 12.11 on, before the other player neither heard nor saw them.
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -44,14 +46,16 @@ std::vector<Queued> g_theirs;
 std::map<uint8_t, uint64_t> g_copyFired;  // when each player's copy here fired a bullet of its own
 std::map<uint8_t, uint64_t> g_soundMs;    // its last shot's sound here: a shotgun's pellets are one shot
 std::map<uint8_t, uint64_t> g_traceMs;    // its last shot's trace here: one a shot (a shotgun's pellets too)
+std::map<uint8_t, uint64_t> g_gunsToldMs; // its vehicle's guns last drawn here, for the log
+uint64_t g_aircraftToldMs = 0;            // our aircraft's guns last sent, for the log
 
 using DoBulletImpactFn = void(__fastcall*)(void*, void*, CEntity*, CEntity*, CVector*, CVector*, void*, int);
 DoBulletImpactFn g_origImpact = nullptr;
 void __fastcall HookDoBulletImpact(void* weapon, void* edx, CEntity* by, CEntity* victim, CVector* start, CVector* end, void* hit,
                                    int incremental) {
     g_origImpact(weapon, edx, by, victim, start, end, hit, incremental);
-    if (!Net().Online() || !by || !by->IsPed() || !start || !end) return;
-    if (RemotePlayer* rp = Players::Instance().FindByPed((CPed*)by)) {
+    if (!Net().Online() || !by || !start || !end) return;
+    if (RemotePlayer* rp = by->IsPed() ? Players::Instance().FindByPed((CPed*)by) : nullptr) {
         g_copyFired[rp->id] = NowMs();
         // its whole way, as the game draws the rounds of the guns fixed on vehicles (FireOneInstantHitRound): of a
         // player's shot the game draws a short faint piece at random, none in its first-person aims standing still, and
@@ -64,9 +68,18 @@ void __fastcall HookDoBulletImpact(void* weapon, void* edx, CEntity* by, CEntity
         return;
     }
     CPlayerPed* me = FindPlayerPed(0);
-    if ((CPed*)by != me || !me->InVehicle() || (int)g_ours.size() >= kMaxPerFrame) return;
+    CVehicle* car = me && me->InVehicle() ? me->Vehicle() : nullptr;
+    // its guns (CVehicle::FirePlaneGuns, 0x6D4E7C gives FireInstantHit the vehicle); a tank's shell is the tank's too
+    // (CAutomobile::TankControl), and goes as its explosion
+    int sub = car ? car->VehicleSubClass() : -1;
+    bool aircraft = car && by == (CEntity*)car && (sub == VEHICLE_TYPE_HELI || sub == VEHICLE_TYPE_PLANE);
+    if (!car || ((CPed*)by != me && !aircraft) || (int)g_ours.size() >= kMaxPerFrame) return;
     CVector to = victim && hit ? *(CVector*)hit : *end;  // CColPoint::m_vecPoint: where it stopped
-    g_ours.push_back({{start->x, start->y, start->z}, {to.x, to.y, to.z}, (uint8_t)Field<int32_t>(weapon, 0x00)});  // CWeapon::m_eWeaponType
+    // an aircraft's round is drawn as the fixed guns' (38: Draw), whichever gun it was (31 or 38)
+    uint8_t type = aircraft ? 38 : (uint8_t)Field<int32_t>(weapon, 0x00);  // CWeapon::m_eWeaponType
+    g_ours.push_back({{start->x, start->y, start->z}, {to.x, to.y, to.z}, type});
+    if (aircraft && NowMs() - g_aircraftToldMs > 5000) LOGD("Our aircraft's guns fire: the rounds go to the other games");
+    if (aircraft) g_aircraftToldMs = NowMs();
 }
 
 // a round of the guns fixed on a vehicle (CVehicle::FireFixedMachineGuns -> FireOneInstantHitRound): our player's, as a
@@ -106,12 +119,25 @@ void Draw(RemotePlayer& rp, const Bullet& b) {
     float len = dir.Length();
     if (len < 0.01f || len > 1000.0f) return;
     dir = dir * (1.0f / len);
-    Call<0x726AF0>(&from, &to, (int)b.weapon, (CEntity*)rp.ped);                 // CBulletTraces::AddTrace
+    // A round of a vehicle's guns (38: HookFixedRound, an aircraft's in HookDoBulletImpact) goes its whole way, as
+    // FireOneInstantHitRound draws a boat's (0x73AFC7) and the copy's own shots are drawn (29.10); the game's short piece
+    // at random (0x726AF0) stays for the shots a player fires from the window
+    bool fixed = b.weapon == 38;
+    if (fixed) Call<0x723750>(&from, &to, 0.02f, 750u, (uint8_t)150);            // CBulletTraces::AddTrace
+    else Call<0x726AF0>(&from, &to, (int)b.weapon, (CEntity*)rp.ped);           // CBulletTraces::AddTrace
     CallMethod<0x4A0DE0>((void*)0xA9AE00, (CEntity*)nullptr, &from, &dir, true);  // g_fx.TriggerGunshot: the muzzle flash
+    if (uint64_t& told = g_gunsToldMs[rp.id]; fixed && NowMs() - told > 5000)
+        LOGD("Player %d's vehicle guns fire: drawn here", rp.id);
+    if (fixed) g_gunsToldMs[rp.id] = NowMs();
     uint64_t& sound = g_soundMs[rp.id];
     if (NowMs() - sound < 60) return;
     sound = NowMs();
-    CallMethod<0x506F40>((void*)0xB6BC90, 145, (int)b.weapon, (CEntity*)rp.ped);  // AudioEngine.ReportWeaponEvent(AE_WEAPON_FIRE)
+    // A round of a vehicle's guns (38) sounds as the game sounds it (CVehicle::FireFixedMachineGuns and FirePlaneGuns:
+    // AE_WEAPON_FIRE_PLANE with the M4, from the vehicle). As a minigun's fire the shared weapon audio started the minigun's
+    // loop on the copy, and the loop never stopped: after a police boat's guns the other player's copy kept sounding of a
+    // minigun on foot until a save was loaded (09.11).
+    CEntity* source = fixed && rp.ped->InVehicle() && rp.ped->Vehicle() ? (CEntity*)rp.ped->Vehicle() : (CEntity*)rp.ped;
+    CallMethod<0x506F40>((void*)0xB6BC90, fixed ? 149 : 145, fixed ? 31 : (int)b.weapon, source);  // AudioEngine.ReportWeaponEvent
 }
 
 class Shots : public Module {

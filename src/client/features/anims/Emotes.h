@@ -39,6 +39,8 @@ const Emote* Find(uint16_t id);
 std::string WhyNot();
 // starts it on our CJ; a pair asks the other player first. False: the reason is in why
 bool Play(const Emote& e, std::string& why);
+// our player sent a message to the chat: CJ talks with his hands a moment, when he is free and plays nothing of ours
+void ChatGesture();
 
 // the other player's call to do a pair together: our answer (Y, N) and the centre box's line
 bool Key(bool yes);
@@ -48,9 +50,14 @@ std::string Text(std::string& hint);
 // kept while the window asks for it every frame (`pixels`: how big the window shows it); PreviewTexture is the picture
 // (IDirect3DTexture9*, null: none yet)
 void PreviewShow(const Emote* e, float pixels);
+// the skins' window: a ped of that model (0: CJ's) standing in the same picture, its model asked for while it loads
+void PreviewModel(int model, float pixels);
 void PreviewHide();
 void* PreviewTexture();
 void PreviewTurn(float radians);
+// the thing the hand holds in that emote (a cigarette, a bottle, the phone): its object model, -1 for none or none in this
+// game; the bone it is on (RpHAnim ID) and its place in the bone's axes
+int EmoteThing(uint16_t emote, int& bone, float offset[3]);
 
 // a block loaded from coop\anims or coop\packs: its index differs between games, the others know it by its name
 bool IsCustomBlock(int block);

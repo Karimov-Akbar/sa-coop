@@ -19,6 +19,7 @@ public:
     virtual void OnHostChanged(uint8_t newHost) {}
     virtual void OnGameStarted() {}             // a game (new or loaded) became playable
     virtual void OnGameShutdown() {}            // restarting / loading another save
+    virtual void OnGameExit() {}                // the game closes: its world is gone, RenderWare is still up
     virtual void OnPreProcess() {}              // before CGame::Process
     virtual void OnPostProcess() {}             // after CGame::Process
     virtual void OnRender() {}                  // HUD overlay (renderer is active)
@@ -34,6 +35,8 @@ void PeerResynced(uint8_t id);  // dispatches Module::OnPeerResync
 
 // Hotkey routing from the window procedure. Returns true if the key must not reach the game.
 bool OnKeyDown(int vk, bool repeat);
+// Right and left on a pad's D-pad as Y and N to a call in the middle of the screen: the pads just read (CPad::UpdatePads)
+void PadAnswers();
 bool IsInCoopSession();
 bool IsInGame();          // a game is loaded and running (not the main menu)
 bool IsPlayerReady();     // local CPlayerPed exists and the game is in GAME_STATE_IDLE

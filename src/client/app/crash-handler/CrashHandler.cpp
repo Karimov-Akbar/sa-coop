@@ -9,6 +9,7 @@
 #include "common/config/version/Version.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "shared/game/Game.h"
 
 namespace coop {
 
@@ -144,8 +145,11 @@ void WriteStreaming(FILE* f) {
                 *(volatile const int32_t*)(ch + 0x80), (unsigned)*(volatile const int32_t*)(ch + 0x88),
                 *(volatile const int32_t*)(ch + 0x8C), *(volatile const int32_t*)(ch + 0x90), *(volatile const int32_t*)(ch + 0x94),
                 model);
-        if (model >= 0 && model < 26316) {
-            auto* info = (volatile const uint8_t*)(0x8E4CC0 + model * 0x14);
+        // where the game reads the table (a limit adjuster moves it, #82; Game.cpp's LoadStates, without its log line)
+        static const uint8_t kCmp[] = {0x80, 0x3C, 0x95};  // cmp byte [edx*4 + disp32], imm8 at 0x47EFFF
+        uintptr_t table = memcmp((const void*)0x47EFFF, kCmp, sizeof kCmp) ? 0x8E4CC0 : *(const uint32_t*)0x47F002 - 0x10;
+        if (model >= 0 && model < game::ResourceCount()) {
+            auto* info = (volatile const uint8_t*)(table + (uintptr_t)model * 0x14);
             fprintf(f, " (img %u, sector %d, size %d, state %u)", info[7], *(volatile const int32_t*)(info + 8),
                     *(volatile const int32_t*)(info + 0xC), info[0x10]);
         }

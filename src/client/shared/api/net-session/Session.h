@@ -40,6 +40,7 @@ public:
     bool FriendlyFire() const { return Online() && m_friendlyFire; }  // the host let the players hurt each other
     bool PartnerTeleport() const { return m_partnerTeleport; }  // the host let its partners use /tp and /tphere
     bool SharedLife() const { return Online() && m_sharedLife; }  // a partner's death fails the host's story mission
+    bool PartnerCheats() const { return m_partnerCheats; }  // the host let its partners use cheat codes
     const std::map<uint8_t, PeerInfo>& Peers() const { return m_peers; }
     const PeerInfo* Peer(uint8_t id) const;
     std::string PeerName(uint8_t id) const;
@@ -64,6 +65,7 @@ public:
     std::function<void(uint8_t id)> onPeerLeave;
     std::function<void(uint8_t newHost)> onHostChanged;
     std::function<void(const std::string&)> onInvite;      // the server learned its invite code
+    uint32_t (*nameColour)(uint8_t id) = nullptr;           // a player's nickname in the chat (ARGB; entities/player)
     const std::string& InviteCode() const { return m_inviteCode; }
 
     // World transfer progress (0..1) while downloading, -1 when idle.
@@ -82,6 +84,7 @@ private:
     bool m_friendlyFire = false;
     bool m_partnerTeleport = true;
     bool m_sharedLife = false;
+    bool m_partnerCheats = true;
     std::string m_inviteCode;
     std::map<uint8_t, PeerInfo> m_peers;
     Handler m_handlers[256] = {};

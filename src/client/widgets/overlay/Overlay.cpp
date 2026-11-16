@@ -25,16 +25,11 @@ void RenderOverlay() {
     auto& net = Net();
     bool frontend = game::GameState() != game::GAME_STATE_IDLE;
 
-    // status line, bottom-right
-    std::string line;
-    if (net.Online()) {
-        line = Format(TR("SA:COOP · %s · %u мс", "SA:COOP · %s · %u ms"),
-                      net.IsHost() ? TR("хост", "host") : TR("напарник", "partner"), net.Rtt());
-    } else if (frontend) {
-        line = TR("SA:COOP " COOP_VERSION_STR " · F9: совместная игра", "SA:COOP " COOP_VERSION_STR " · F9: co-op");
-    }
-    if (!line.empty())
-        g.Text(FONT_SMALL, g.Width() - 16 * s, g.Height() - g.LineHeight(FONT_SMALL) - 10 * s, line, 0xC0FFFFFF,
+    // bottom-right, in the game's menus: the way to the co-op window. Online it said "SA:COOP · host · 42 ms" all game long;
+    // the players know the mod, and the F2 list shows each one's ping and who hosts (the user's word, 16.11).
+    if (!net.Online() && frontend)
+        g.Text(FONT_SMALL, g.Width() - 16 * s, g.Height() - g.LineHeight(FONT_SMALL) - 10 * s,
+               TR("SA:COOP " COOP_VERSION_STR " · F9: совместная игра", "SA:COOP " COOP_VERSION_STR " · F9: co-op"), 0xC0FFFFFF,
                TEXT_RIGHT | TEXT_OUTLINE);
 
     // A contest of two players on top of the screen: the activity, both players' points or times (the one ahead in

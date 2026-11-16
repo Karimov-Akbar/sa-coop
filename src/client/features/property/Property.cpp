@@ -144,7 +144,12 @@ public:
             } else if (Net().IsHost() && !LaunchStoryPurchase(k, applied)) {
                 ++it;
                 continue;
-            }  // a story purchase of the host comes to the partner with the host's world
+            } else if (!Net().IsHost() && from == Net().HostId()) {
+                // A story purchase of the host comes to the partner with the host's world, which waits for the next
+                // mission's start point: its for-sale pickup stood here till then, and a partner asked whether he had
+                // to buy Zero's shop too (16.11). His purchase would cost him and change nothing.
+                if (int pickup = Global(6740 + 4 * k)) Cmd(0x0215).I(pickup).Run();  // REMOVE_PICKUP
+            }
             LOGI("Property %d bought by player %d: %s", k, from, applied ? "applied" : "not applied here");
             if (applied)
                 ui::TheChat().AddSystem(Format(TR("Недвижимость, купленная %s, теперь есть и у вас.",

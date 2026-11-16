@@ -56,7 +56,7 @@ bool Server::Start(const Config& cfg) {
         LoadWorld(WorldPath(), "world.b");
     }
 
-    for (int i = 0; i < kMaxPlayers; ++i) m_players[i].id = (uint8_t)i;
+    for (size_t i = 0; i < m_players.size(); ++i) m_players[i].id = (uint8_t)i;
     LOGI("Сервер \"%s\" запущен на порту %u, мест: %d%s", m_cfg.name.c_str(), m_cfg.port, m_cfg.maxPlayers,
          m_cfg.password.empty() ? "" : ", с паролем");
     m_running = true;
@@ -91,6 +91,7 @@ void Server::Run() {
             LOGW("Хост не прислал свежий мир за 10 с. Отправляю сохранённый");
             FlushWorldRequests(false);
         }
+        if (NowMs() - m_trafficMs >= 30000) ReportTraffic();
         if (NowMs() - m_lastPings > 2000) {
             m_lastPings = NowMs();
             SendPings();
@@ -143,11 +144,11 @@ void Server::OnConnect(ENetPeer* peer) {
     char ip[64];
     enet_address_get_host_ip(&peer->address, ip, sizeof(ip));
     Player* slot = nullptr;
-    // every slot: a player coming back after a crash finds its old connection still holding one (it times out in 10 to
-    // 20 s); the number of players is checked at the hello, where that old one is let go
-    for (int i = 0; i < kMaxPlayers; ++i)
-        if (!m_players[i].used) {
-            slot = &m_players[i];
+    // every slot and the spare one: a player coming back after a crash finds its old connection still holding one (it
+    // times out in 10 to 20 s); the number of players is checked at the hello, where that old one is let go
+    for (Player& s : m_players)
+        if (!s.used) {
+            slot = &s;
             break;
         }
     if (!slot) {
@@ -317,7 +318,23 @@ void Server::HandleHello(Player& p, Reader& r) {
     }
     if (JoinedCount() >= m_cfg.maxPlayers) return reject("на сервере нет свободных мест", "the server is full");
     if (!m_cfg.password.empty() && h.password != m_cfg.password) return reject("неверный пароль", "wrong password");
+    if (p.id < kMaxPlayers) return Join(p, h, name);
+    // in the spare slot: into a slot of its own, the ghost's let go above among them (the games keep one data block per id)
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        Player& to = m_players[i];
+        if (to.used) continue;
+        uint8_t id = to.id;
+        to = std::move(p);
+        to.id = id;
+        to.peer->data = &to;
+        p = Player{};
+        p.id = (uint8_t)kMaxPlayers;
+        return Join(to, h, name);
+    }
+    reject("на сервере нет свободных мест", "the server is full");
+}
 
+void Server::Join(Player& p, const Hello& h, const std::string& name) {
     p.name = name;
     p.joined = true;
     bool hostExists = false;
@@ -344,6 +361,7 @@ void Server::HandleHello(Player& p, Reader& r) {
     wel.friendlyFire = m_cfg.friendlyFire;
     wel.partnerTeleport = m_cfg.partnerTeleport;
     wel.sharedLife = m_cfg.sharedLife;
+    wel.partnerCheats = m_cfg.partnerCheats;
     wel.worldAvailable = !m_world.empty();
     Writer w(S_WELCOME);
     wel.Write(w);
@@ -409,6 +427,7 @@ void Server::HandleCommand(Player* p, const std::string& text) {
             reply(kColorServer, "В игре: /tp (переместиться к напарнику), /tphere (позвать напарника к себе). Напарник отвечает Y или N",
                   "In the game: /tp (go to your partner), /tphere (bring your partner to you). Your partner answers Y or N");
         reply(kColorServer, "F2: игроки, у кого сколько денег, перевод денег", "F2: the players, their money, giving money");
+        reply(kColorServer, "U: анимации. F4: скины", "U: animations. F4: skins");
     } else if (cmd == "players" || cmd == "status") {
         for (auto& o : m_players) {
             if (!o.joined) continue;
@@ -631,6 +650,7 @@ void Server::SendWorld(Player& p) {
     }
     Writer e(S_WORLD_END);
     net::Send(p.peer, CH_BULK, e);
+    p.sentBytes += m_world.size();
     LOGI("Отправлено сохранение мира игроку %s (%u байт)", p.name.c_str(), (unsigned)m_world.size());
 }
 
@@ -712,7 +732,9 @@ void Server::Relay(Player& from, uint8_t channel, const uint8_t* data, size_t si
         // states for a player still loading or in the menu piled up there and came stale all at once (voice goes on:
         // players talk while one of them loads)
         if (channel == CH_STATE && o.status != STATUS_INGAME) continue;
-        sent = enet_peer_send(o.peer, channel, pkt) == 0 || sent;  // a peer going away takes nothing
+        if (enet_peer_send(o.peer, channel, pkt) != 0) continue;  // a peer going away takes nothing
+        sent = true;
+        o.sentBytes += size + 1;
     }
     if (!sent) enet_packet_destroy(pkt);
 }
@@ -776,6 +798,32 @@ void Server::SendPings() {
         w.U16((uint16_t)std::min<uint32_t>(o.peer->roundTripTime, 65535));
     }
     Broadcast(CH_RELIABLE, w);
+}
+
+// With three or four players the server sends each player's states to every other one: the host's upload grows several
+// times over two players' (10.11 audit). What went to each player in 30 s, to see it in a real game. A game on this
+// computer (the host's own, connected over 127.0.0.1) takes none of the upload: listed, not in the sum (in it, it was a
+// quarter of the sum with four players). The numbers are the messages' own bytes, before the compression and without the
+// network's headers: good to compare two, three and four players, not the line's exact speed.
+void Server::ReportTraffic() {
+    uint64_t seconds = m_trafficMs ? (NowMs() - m_trafficMs) / 1000 : 0;
+    m_trafficMs = NowMs();
+    std::string list;
+    uint64_t total = 0;
+    for (Player& o : m_players) {
+        if (!o.joined) continue;
+        char ip[64] = "";
+        if (o.peer) enet_address_get_host_ip(&o.peer->address, ip, sizeof(ip));
+        bool here = !strcmp(ip, "127.0.0.1");
+        const char* note = here ? (o.isHost ? " (хост, этот ПК, не в сумме)" : " (этот ПК, не в сумме)") : o.isHost ? " (хост)" : "";
+        if (o.sentBytes) list += Format("%s%s%s %llu КБ", list.empty() ? "" : ", ", o.name.c_str(), note,
+                                        (unsigned long long)(o.sentBytes / 1024));
+        if (!here) total += o.sentBytes;
+        o.sentBytes = 0;
+    }
+    if (seconds && JoinedCount() > 1 && total)
+        LOGI("Отдано в сеть за %llu с: %llu КБ, %llu кбит/с до сжатия (%s)", (unsigned long long)seconds,
+             (unsigned long long)(total / 1024), (unsigned long long)(total * 8 / 1000 / seconds), list.c_str());
 }
 
 Player* Server::FindByPeer(ENetPeer* peer) {

@@ -1,8 +1,13 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace coop::ui {
+
+// The keys under a call in the middle of the screen: Y and N, or right and left on the D-pad with the game set to a pad
+// (they are its own yes and no to people in the street, and answer the calls too: core::PadAnswers). No `no`: Y alone
+std::string AnswerHint(const char* yes, const char* no = nullptr);
 
 // Window-procedure level input. The game reads the keyboard only through window messages
 // (WM_KEYDOWN/UP) and the mouse through DirectInput, so:

@@ -45,6 +45,10 @@ struct NetVehicle {
     bool apart = false;           // mirror: not here for our player's school (SetApart)
     bool noCollision = false;     // mirror: its collision is off in its owner's game (F_NO_COLLISION)
     uint64_t bumpMs = 0;           // mirror: our player's car last touched it then
+    // mirror: its owner handed it to another player (not ours) and that game announces it under a number of its own in a
+    // moment: kept until then for that announcement (CreateMirror takes it over as it stands), else it goes then
+    uint64_t handedUntil = 0;
+    uint8_t handedTo = 0xFF;
 
     bool hasState = false;
     VehicleState state;
@@ -87,6 +91,11 @@ public:
     bool IsMirror(const NetVehicle& nv) const;
     // a mirror this game keeps when its owner deletes it: an ordinary car by this game's player (HandleRemove)
     bool KeepsWhenDeleted(const NetVehicle& nv) const;
+    // a vehicle of a player who leaves stays in this game as its own (OnPeerLeave)
+    bool KeptOnLeave(const NetVehicle& nv, uint8_t leaver) const;
+    // a person of the leaving player's who sits in v stays here: with a vehicle of that player's by what happens to the
+    // vehicle, anywhere else by `heir` (Peds, whichever module hears of the leave first)
+    bool OccupantKept(game::CVehicle* v, uint8_t leaver, bool heir);
     // Applies a state received from the vehicle's driver (Players module, G_PLAYER_DRIVER).
     void ApplyDriverState(uint8_t from, uint16_t netId, const VehicleState& st);
     // a partner (re)started its game: announce our vehicles again
@@ -138,6 +147,9 @@ private:
     std::map<uint16_t, NetVehicle> m_byId;
     std::map<game::CVehicle*, uint16_t> m_byPtr;
     std::map<uint16_t, VehicleSpawn> m_pending;  // announced mirrors waiting for their model to stream in
+    std::set<game::CVehicle*> m_keptOfLeaver;    // what OnPeerLeave kept of m_keptLeaver's at m_keptMs (OccupantKept)
+    uint8_t m_keptLeaver = 0xFF;
+    uint64_t m_keptMs = 0;
     std::map<game::CVehicle*, uint8_t> m_giveAway;  // to hand over after the population code (vehicle -> player)
     std::set<int> m_local;                           // handles of KeepLocal's cars
     uint16_t m_nextId = 1;

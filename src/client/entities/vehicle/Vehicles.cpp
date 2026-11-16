@@ -456,6 +456,29 @@ static bool ShownAnywhere(uint16_t netId, bool script) {
 
 bool Vehicles::CreateMirror(const VehicleSpawn& sp) {
     if (Find(sp.netId)) return true;  // announced again meanwhile and made already
+    // The car another game handed to this one's owner a moment ago (HandleHandover): ours of it stays as it stands, under
+    // its new number. Deleted at the hand-over and made again by this announcement, it vanished and came back in front of
+    // our player (three or four players, 10.11 audit).
+    NetVehicle* handed = nullptr;
+    float handedD = 12.0f;
+    for (auto& [id, old] : m_byId) {
+        if (!old.handedUntil || old.handedTo != sp.owner || old.model != sp.model || !Alive(old)) continue;
+        if (float d = (old.veh->GetPosition() - sp.pos).Length(); d < handedD) handedD = d, handed = &old;
+    }
+    if (handed) {
+        NetVehicle nv = *handed;
+        uint16_t was = nv.netId;
+        m_byId.erase(was);
+        nv.netId = sp.netId;
+        nv.owner = sp.owner;
+        nv.script = sp.script;
+        nv.hasState = false;  // its new owner's clock is another one
+        nv.handedUntil = 0, nv.handedTo = 0xFF;
+        m_byPtr[nv.veh] = sp.netId;
+        m_byId[sp.netId] = nv;
+        LOGI("Vehicle %04X (model %d) is the one player %d was handed (%04X here): ours stays", sp.netId, sp.model, sp.owner, was);
+        return true;
+    }
     if (!ShownAnywhere(sp.netId, sp.script) && FarFromUs(sp.pos, sp.area, kTrafficIn)) return false;  // waits in m_pending
     bool adopted = false;
     CVehicle* v = FindAdoptable(sp.model, sp.pos);
@@ -535,7 +558,18 @@ void Vehicles::SetApart(NetVehicle& nv, bool on) {
     nv.apart = on;
     if (on) nv.veh->Flags() &= ~0x81u;  // CEntity: m_bUsesCollision, m_bIsVisible
     else nv.veh->Flags() |= nv.noCollision ? 0x80u : 0x81u;
-    LOGI("Vehicle %04X (model %d) of the other game's school: %s", nv.netId, nv.model, on ? "not here for our lesson" : "back");
+    LOGI("Vehicle %04X (model %d) of the other game: %s", nv.netId, nv.model, on ? "not here (our school or mod shop)" : "back");
+}
+
+// Two players who drove into a mod shop together: each game moves its own car to the one spot of the shop's room
+// (CARMOD1-3, an interior's area), and the copy of the other one's car stood inside ours there: the two flew up or turned
+// over (10.11). While our player drives at the shop's menu (its fixed camera, our car in that room), a car of the other
+// game in the same room is not here, as at a school. A stadium's race in an interior keeps them both: no fixed camera.
+static bool InShopWithUs(CVehicle* v) {
+    CPlayerPed* me = FindPlayerPed(0);
+    CVehicle* ours = me && me->InVehicle() ? me->Vehicle() : nullptr;
+    if (!ours || ours == v || ours->Driver() != me || ours->AreaCode() == 0 || cam::Mode() != 15) return false;  // MODE_FIXED
+    return v->AreaCode() == ours->AreaCode() && (v->GetPosition() - ours->GetPosition()).Length() < 12.0f;
 }
 
 // A car of the other game this player took, left by the door that player went in at: that game keeps its own instance for
@@ -721,7 +755,14 @@ void Vehicles::HandleHandover(uint8_t from, Reader& r) {
         if (nv->owner == Net().MyId() && IsVehicleValid(nv->veh)) Announce(*nv);
         return;
     }
-    if (to != Net().MyId() || !IsVehicleValid(nv->veh)) return Forget(id, true);
+    if (to != Net().MyId() || !IsVehicleValid(nv->veh)) {
+        // to a third player: that game announces it as its own in a moment, and ours waits for it (CreateMirror)
+        if (to != Net().MyId() && IsVehicleValid(nv->veh) && Net().Peers().count(to)) {
+            nv->handedUntil = NowMs() + 1500, nv->handedTo = to;
+            return;
+        }
+        return Forget(id, true);
+    }
     TakeOver(*nv, from);
 }
 
@@ -995,6 +1036,11 @@ void Vehicles::ApplyMirror(NetVehicle& nv, float dt) {
 
 void Vehicles::OnPreProcess() {
     if (!Net().Online() || !core::IsPlayerReady()) return;
+    // handed to another player whose announcement never came (it had no copy of it): gone, as it went at the hand-over
+    std::vector<uint16_t> late;
+    for (auto& [id, nv] : m_byId)
+        if (nv.handedUntil && NowMs() > nv.handedUntil) late.push_back(id);
+    for (uint16_t id : late) Forget(id, true);
     for (auto it = m_pending.begin(); it != m_pending.end();)
         it = CreateMirror(it->second) ? m_pending.erase(it) : std::next(it);
     float dt = TimeStep() / 50.0f;
@@ -1010,9 +1056,9 @@ void Vehicles::OnPreProcess() {
             continue;
         }
         if (IsMirror(nv)) {
-            SetApart(nv, school && nv.script && !(me->InVehicle() && me->Vehicle() == nv.veh));
+            SetApart(nv, !(me->InVehicle() && me->Vehicle() == nv.veh) && ((school && nv.script) || InShopWithUs(nv.veh)));
             ApplyMirror(nv, dt);
-            if (nv.createdByUs && !HasPlayerInside(nv.veh) && !ShownAnywhere(id, nv.script) &&
+            if (nv.createdByUs && !nv.handedUntil && !HasPlayerInside(nv.veh) && !ShownAnywhere(id, nv.script) &&
                 FarFromUs(nv.veh->GetPosition(), TrueArea(nv.veh), kTrafficOut))
                 far.push_back(id);
         }
@@ -1268,15 +1314,16 @@ void Vehicles::OnPeerLeave(uint8_t id) {
     // The vehicles of the leaving player stay in the world and become ours (its scripts are gone with it). They are
     // networked again under our own ids: its ids, kept, came again from its game when it rejoined (it counts from 1).
     // With other games left only one keeps them (WeInherit), and it announces them.
-    bool heir = WeInherit(id);
-    CPlayerPed* me = FindPlayerPed(0);
+    m_keptOfLeaver.clear();
+    m_keptLeaver = id, m_keptMs = NowMs();
     std::vector<uint16_t> ids, gone;
     for (auto& [vid, nv] : m_byId)
         if (nv.owner == id) {
-            if (!heir && !(me && me->InVehicle() && me->Vehicle() == nv.veh)) {
+            if (!KeptOnLeave(nv, id)) {
                 gone.push_back(vid);
                 continue;
             }
+            m_keptOfLeaver.insert(nv.veh);
             nv.owner = Net().MyId();
             nv.script = false;
             Release(nv);
@@ -1284,6 +1331,34 @@ void Vehicles::OnPeerLeave(uint8_t id) {
         }
     for (uint16_t vid : ids) Forget(vid, false);
     for (uint16_t vid : gone) Forget(vid, true);
+}
+
+// The one our player sits in is ours. Of the rest the heir's game (WeInherit) keeps all but those another player who stays
+// sits in: that player's game keeps them, as ours keeps ours. The heir kept those too, and two games announced one car as
+// their own (three or four players, 10.11 audit). That player by its own word (its state) or its copy in the seat here:
+// the copy sits down a moment after its player and gets out a moment before, and by the copy alone the two games took
+// those moments differently.
+// shortcut: two players who stay both in it still keep it both, as before; one keeper would need the old id kept
+bool Vehicles::KeptOnLeave(const NetVehicle& nv, uint8_t leaver) const {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (me && me->InVehicle() && me->Vehicle() == nv.veh) return true;
+    if (!WeInherit(leaver)) return false;
+    if (!IsVehicleValid(nv.veh)) return true;
+    for (auto& [pid, rp] : Players::Instance().All()) {
+        if (pid == leaver) continue;
+        if (rp.hasState && NowMs() - rp.stateRecvMs < 3000 && rp.mode != RemotePlayer::Mode::OnFoot && rp.vehNetId == nv.netId) return false;
+        if (rp.ped && IsPedValid(rp.ped) && rp.ped->InVehicle() && rp.ped->Vehicle() == nv.veh) return false;
+    }
+    return true;
+}
+
+// A staying player rode as a passenger in a car of the leaving player's that one of its people drove: that player's game
+// kept the car and, not the heir, deleted its driver (10.11 audit). Who sits in a vehicle of the leaving player's goes
+// with the vehicle: asked before our own OnPeerLeave by its record, after it by what that kept.
+bool Vehicles::OccupantKept(CVehicle* v, uint8_t leaver, bool heir) {
+    if (NetVehicle* nv = Find(v); nv && nv->owner == leaver) return KeptOnLeave(*nv, leaver);
+    if (m_keptLeaver == leaver && NowMs() - m_keptMs < 200 && m_keptOfLeaver.count(v)) return true;
+    return heir;
 }
 
 void Vehicles::OnSessionStart() {

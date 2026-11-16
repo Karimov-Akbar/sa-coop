@@ -16,6 +16,7 @@
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
 #include "entities/player/Players.h"
+#include "entities/skin/OwnSkins.h"
 #include "features/anims/Emotes.h"
 #include "shared/game/Anim.h"
 #include "shared/game/Game.h"
@@ -90,6 +91,9 @@ void* g_cam = nullptr;
 int g_size = 0;  // the picture's side
 bool g_camFailed = false;
 uint16_t g_want = 0;  // the emote asked for (0: standing)
+int g_model = -1;     // the skins' window: that ped model standing instead of our CJ (-1: ours)
+int g_heldModel = -1; // the model asked for to show, let go when another is shown
+int g_askedModel = -1;  // the shown model this preview had loaded (it was not in memory): the only one it lets go
 float g_pixels = 0.0f;  // how big the window shows the picture
 uint64_t g_wantMs = 0, g_lastMs = 0;
 bool g_drawn = false;
@@ -110,6 +114,61 @@ bool g_camSet = false;
 float g_face = 0.0f, g_faceTo = 0.0f;
 uint64_t g_faceAtMs = 0;
 
+// The thing in the hand (EmoteThing, 12.11): a copy of its model's own object, put on our body's bone as the game's hold
+// task puts the real one (CTaskSimpleHoldEntity::SetPedPosition: the bone's matrix, moved by the offset in its axes)
+struct Thing {
+    uint16_t emote = 0;
+    int model = -1, bone = 0;
+    float offset[3] = {0, 0, 0};
+    void* obj = nullptr;  // the copy: an RpAtomic (an object's model), an RpClump (a weapon's)
+    bool asked = false;   // its model asked for here, to be let go again
+};
+Thing g_thing;
+
+void FreeThing() {
+    if (g_thing.obj) {
+        if (Field<uint8_t>(g_thing.obj, 0) == 2) {
+            Call<0x74A310>(g_thing.obj);  // RpClumpDestroy, its frames with it
+        } else {
+            void* frame = Field<void*>(g_thing.obj, 0x04);  // RwObject::parent
+            Call<0x749DC0>(g_thing.obj);                     // RpAtomicDestroy
+            if (frame) Call<0x7F05A0>(frame);                // RwFrameDestroy
+        }
+    }
+    if (g_thing.asked) Call<0x409C10>(g_thing.model);  // CStreaming::SetModelIsDeletable
+    g_thing = Thing{};
+}
+
+// that emote's thing, made once its model is in memory (asked for meanwhile); null: none to show
+void* MakeThing(uint16_t emote) {
+    if (g_thing.emote != emote) {
+        FreeThing();
+        g_thing.emote = emote;
+        g_thing.model = emote ? EmoteThing(emote, g_thing.bone, g_thing.offset) : -1;
+    }
+    if (g_thing.model < 0 || g_thing.obj) return g_thing.obj;
+    if (!IsModelLoaded(g_thing.model)) {
+        if (!g_thing.asked) RequestModel(g_thing.model, 2), g_thing.asked = true;  // STREAMING_GAME_REQUIRED, in the background
+        return nullptr;
+    }
+    void* info = ModelInfoOf(g_thing.model);
+    void* src = info ? Field<void*>(info, 0x1C) : nullptr;  // CBaseModelInfo::m_pRwObject
+    if (!src) return nullptr;
+    if (Field<uint8_t>(src, 0) == 2) {
+        g_thing.obj = Call<0x749F70, void*>(src);  // RpClumpClone
+    } else {
+        void* a = Call<0x749E60, void*>(src);              // RpAtomicClone
+        void* f = a ? Call<0x7F0410, void*>() : nullptr;  // RwFrameCreate
+        if (a && f) {
+            Call<0x74BF20>(a, f);  // RpAtomicSetFrame
+            g_thing.obj = a;
+        } else if (a) {
+            Call<0x749DC0>(a);
+        }
+    }
+    return g_thing.obj;
+}
+
 void Stand(void* clump, float delta) {
     if (void* idle = Call<0x4D42F0, void*>("IDLE_stance", (void*)anim::Block(0))) anim::Blend(clump, idle, anim::F_LOOPED, delta);
 }
@@ -122,8 +181,7 @@ void FreeBody(Body& b) {
     b = Body{};
 }
 
-bool MakeBody(Body& b, CPed* ped) {
-    void* src = ped ? ped->RwObject() : nullptr;
+bool MakeBody(Body& b, void* src) {  // a copy of that clump: a ped's, or a model's (the skins' window)
     if (!src || Field<uint8_t>(src, 0) != 2) return false;  // rpCLUMP
     if (b.from == src && b.clump) return true;
     FreeBody(b);
@@ -145,10 +203,9 @@ bool MakeBody(Body& b, CPed* ped) {
     // from the sum of both weights (FrameUpdateCallBackSkinned 0x4D2B90) and a sitting CJ sank twice as deep
     Field<CVector*>(Field<void*>(c, Ref<uint32_t>(0xB5F878)), 0x0C) = &b.shift;  // CAnimBlendClumpData::m_PedPosition
     b.clump = c, b.hier = h, b.from = src;
-    // the clavicles, upper arms and the "breasts" between them: without one of them the game's code writes before the
-    // bones' matrices (RpHAnimIDGetIndex gives -1)
-    b.shoulders = true;
-    for (int bone : {21, 22, 31, 32, 301, 302}) b.shoulders = b.shoulders && Call<0x7C51A0, int>(h, bone) >= 0;
+    // turned as the game turns CJ's only on a skin rigged as his: on anyone else's (a skin worn) the turn pulled the chest
+    // up to the shoulders (11.11), and without the bones it writes before the bones' matrices
+    b.shoulders = ShoulderHelpers(c);
     Stand(c, 1000.0f);
     return true;
 }
@@ -238,6 +295,7 @@ bool MakeCamera() {
 void FreeAll() {
     FreeBody(g_body[0]);
     FreeBody(g_body[1]);
+    FreeThing();
     FreeCamera();
     g_seenSet = g_camSet = false;
 }
@@ -298,10 +356,39 @@ struct States {
     }
 };
 
+// a ped model's own clump, the one its peds are copies of (CBaseModelInfo::m_pRwObject); asked for while it loads
+void* ModelClump(int model) {
+    void* info = ModelInfoOf(model);
+    if (!info) return nullptr;
+    if (!IsModelLoaded(model)) {
+        if (skin::IsOwn(model)) return nullptr;
+        RequestModel(model, 2);  // GAME_REQUIRED, in the background
+        g_askedModel = model;
+        return nullptr;
+    }
+    return Field<void*>(info, 0x1C);
+}
+
+void LetModelGo() {
+    CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
+    int held = std::exchange(g_heldModel, -1);
+    bool ours = std::exchange(g_askedModel, -1) == held;
+    // CStreaming::SetModelIsDeletable takes GAME_REQUIRED off whoever set it, so only from the model this preview loaded.
+    // male01, the men's tab's first row, is the game's own from its start (CStreaming::LoadInitialPeds): let go here, it
+    // was unloaded, and CPopulation::AddPedInCar, falling back to male01 for a random car's driver, made a ped without a
+    // clump (crash 0x749B7B in RpClumpForAllAtomics, 12.11 and 15.11). Not the worn one, not an own skin either.
+    if (held > 0 && ours && !skin::IsOwn(held) && (!me || me->ModelIndex() != held)) Call<0x409C10>(held);
+}
+
 void Draw() {
     CPlayerPed* me = core::IsPlayerReady() ? FindPlayerPed(0) : nullptr;
-    if (!me || !MakeCamera() || !MakeBody(g_body[0], me)) return;
-    const Emote* e = g_want ? Find(g_want) : nullptr;
+    void* src = me ? me->RwObject() : nullptr;
+    if (g_model >= 0) {
+        if (g_heldModel != g_model) LetModelGo(), g_heldModel = g_model;
+        src = ModelClump(g_model);
+    }
+    if (!me || !src || !MakeCamera() || !MakeBody(g_body[0], src)) return;
+    const Emote* e = g_model < 0 && g_want ? Find(g_want) : nullptr;
     bool pair = e && e->kind == PAIR;
     if (pair) {
         // the other player's body: its copy here, the nearest one; ours again while there is none
@@ -310,7 +397,7 @@ void Draw() {
         for (auto& [id, rp] : Players::Instance().All())
             if (rp.ped && rp.ped->RwObject() && (rp.ped->GetPosition() - me->GetPosition()).Length() < best)
                 other = rp.ped, best = (rp.ped->GetPosition() - me->GetPosition()).Length();
-        if (!MakeBody(g_body[1], other)) pair = false;
+        if (!MakeBody(g_body[1], other->RwObject())) pair = false;
     } else {
         FreeBody(g_body[1]);
     }
@@ -344,6 +431,19 @@ void Draw() {
         lo = Min(lo, b.lo), hi = Max(hi, b.hi);
     }
     if (lo.x > hi.x) return;
+    // the thing on our body's hand (no pair's emote has one, nor the skins' window)
+    void* thing = !pair && g_model < 0 ? MakeThing(g_want) : nullptr;
+    if (thing) {
+        int i = Call<0x7C51A0, int>(g_body[0].hier, g_thing.bone);  // RpHAnimIDGetIndex
+        auto* m = Field<RwMat*>(g_body[0].hier, 0x08);             // the bones' matrices, in the picture's world
+        if (i < 0 || !m) {
+            thing = nullptr;
+        } else {
+            RwMat at = m[i];
+            at.pos = at.pos + at.right * g_thing.offset[0] + at.up * g_thing.offset[1] + at.at * g_thing.offset[2];
+            SetFrame(Field<void*>(thing, 0x04), at);  // the atomic's frame, the clump's
+        }
+    }
 
     // where it faces: forward of the line from its right thigh to its left one, taken once 0.4 s into the emote (a dance
     // that spins does not turn the camera with it)
@@ -434,6 +534,8 @@ void Draw() {
             States::Set(8, 1);   // the bodies write their depth
             States::Set(12, 0);  // and blend only where their materials ask
             for (int i = 0; i < bodies; ++i) Call<0x749B70>(g_body[i].clump, (void*)&RenderAtomic, nullptr);  // RpClumpForAllAtomics
+            if (thing && Field<uint8_t>(thing, 0) == 2) Call<0x749B70>(thing, (void*)&RenderAtomic, nullptr);
+            else if (thing) RenderAtomic(thing, nullptr);
         }
         Call<0x7EE180>(g_cam);  // RwCameraEndUpdate
         g_drawn = true;
@@ -463,6 +565,9 @@ public:
         if (g_wantMs && NowMs() - g_wantMs > 2000) PreviewHide();
     }
     void OnGameShutdown() override { PreviewHide(); }
+    // its copies are skinned clumps: left to the engine's stop they crash the closing game (Core's HookShutdownRenderWare).
+    // The pause menu holds the process step that lets an unwanted preview go.
+    void OnGameExit() override { FreeAll(); }
 };
 AnimPreview g_module;
 struct Reg {
@@ -472,13 +577,24 @@ struct Reg {
 
 void PreviewShow(const Emote* e, float pixels) {
     if (!g_wantMs) g_lastMs = NowMs();
+    if (g_model >= 0) FreeAll(), LetModelGo(), g_model = -1;  // from the skins' window: our CJ again
     g_want = e ? e->id : 0;
+    g_pixels = pixels;
+    g_wantMs = NowMs();
+}
+
+void PreviewModel(int model, float pixels) {
+    if (!g_wantMs) g_lastMs = NowMs();
+    if (model != g_model) FreeBody(g_body[0]), g_seenSet = g_camSet = false;  // another body, framed anew
+    g_model = model, g_want = 0;
     g_pixels = pixels;
     g_wantMs = NowMs();
 }
 
 void PreviewHide() {
     FreeAll();
+    LetModelGo();
+    g_model = -1;
     g_wantMs = 0;
 }
 

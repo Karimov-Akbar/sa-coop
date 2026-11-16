@@ -19,6 +19,7 @@
 #include "shared/config/Config.h"
 #include "shared/lib/core/Core.h"
 #include "shared/ui/chat/Chat.h"
+#include "shared/ui/input/Input.h"
 
 namespace coop::teleport {
 
@@ -168,7 +169,7 @@ bool Key(bool yes) {
 std::string Text(std::string& hint) {
     DropStale();
     if (g_asking.empty()) return "";
-    hint = TR("Y - да, N - нет", "Y: yes, N: no");
+    hint = ui::AnswerHint(TR("да", "yes"), TR("нет", "no"));
     return Format(g_asking.front().bring ? TR("%s зовёт вас к себе", "%s asks you over") : TR("%s просит переместиться к вам", "%s asks to come over"),
                   Net().PeerName(g_asking.front().who).c_str());
 }
