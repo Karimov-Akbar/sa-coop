@@ -3,408 +3,431 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Karimov-Akbar/sa-coop/releases/latest"><img src="https://img.shields.io/github/v/release/Karimov-Akbar/sa-coop" alt="Релиз"></a>
-  <a href="https://github.com/Karimov-Akbar/sa-coop/releases"><img src="https://img.shields.io/github/downloads/Karimov-Akbar/sa-coop/total" alt="Скачивания"></a>
-  <a href="https://github.com/Karimov-Akbar/sa-coop/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Karimov-Akbar/sa-coop/build.yml?branch=main" alt="Сборка"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Karimov-Akbar/sa-coop" alt="Лицензия MIT"></a>
+  <a href="https://github.com/Karimov-Akbar/sa-coop/releases/latest"><img src="https://img.shields.io/github/v/release/Karimov-Akbar/sa-coop" alt="Release"></a>
+  <a href="https://github.com/Karimov-Akbar/sa-coop/releases"><img src="https://img.shields.io/github/downloads/Karimov-Akbar/sa-coop/total" alt="Downloads"></a>
+  <a href="https://github.com/Karimov-Akbar/sa-coop/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Karimov-Akbar/sa-coop/build.yml?branch=main" alt="Build"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Karimov-Akbar/sa-coop" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/GTA_San_Andreas-1.0_US-orange" alt="GTA San Andreas 1.0 US">
-  <a href="https://t.me/cavalier_mods"><img src="https://img.shields.io/badge/%D0%9D%D0%BE%D0%B2%D0%BE%D1%81%D1%82%D0%B8-Telegram-26A5E4?logo=telegram&logoColor=white" alt="Новости в Telegram"></a>
-  <a href="https://dalink.to/itscavalier"><img src="https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C_%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82-DonationAlerts-F57507" alt="Поддержать проект"></a>
+  <a href="https://t.me/cavalier_mods"><img src="https://img.shields.io/badge/News-Telegram-26A5E4?logo=telegram&logoColor=white" alt="News on Telegram"></a>
+  <a href="https://dalink.to/itscavalier"><img src="https://img.shields.io/badge/Support_the_project-DonationAlerts-F57507" alt="Support the project"></a>
   <a href="https://github.com/sponsors/Karimov-Akbar"><img src="https://img.shields.io/badge/GitHub-Sponsors-EA4AAA?logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
 </p>
 
-<p align="center"><b>Русский</b> · <a href="README.en.md">English</a></p>
+<p align="center"><b>English</b> · <a href="README.ru.md">Русский</a></p>
 
-SA:COOP - мод для GTA San Andreas, с которым сюжет можно пройти вдвоём, втроём или вчетвером по сети. Один игрок
-становится хостом: игра идёт по его сохранению, и миссии запускает он. Остальные подключаются к нему и играют в том же
-мире своими персонажами, со своими деньгами, навыками и внешностью.
+SA:COOP is a mod for GTA San Andreas that lets two, three or four players go through the story together over the
+network. One player is the host: the game runs on their save, and they start the missions. The others connect to them
+and play in the same world as characters of their own, with their own money, skills and look.
 
-![CJ и напарник в зелёной куртке у стены, которую они закрасили граффити](docs/images/hero.jpg)
+![CJ and the partner in a green jacket at a wall they have just tagged](docs/images/hero.jpg)
 
-## Что умеет мод
+## What the mod does
 
-### Сюжет вместе
+### The story together
 
-Миссию запускает хост, но начинается она, только когда в маркер встали все игроки. Хост видит, кого ждут, и
-клавишей Y может начать сразу: отставших перенесёт к нему. Если напарник пришёл в маркер первым, хост видит
-приглашение и по Y сразу оказывается рядом с ним. Напарники видят те же тексты, субтитры, метки на
-радаре, маркеры, гоночные чекпоинты и таймеры, причём тексты идут на языке их собственной игры. Реплики, которые
-персонажи говорят в миссиях вне катсцен, они тоже слышат. Оружие, которое миссия выдаёт CJ, получают и напарники.
-Если сюжет отбирает у CJ всё оружие, напарники рядом с хостом тоже его теряют. Награду за миссию получают все. Враги
-нападают на всех, и ранить их может каждый.
+The host starts a mission, but it only begins once all players stand in the marker. The host sees whom it waits
+for and can start at once with Y: the players who are away are brought over. If the partner reaches the marker
+first, the host gets an invitation and presses Y to be there at once. The partners see the same texts,
+subtitles, radar blips, markers, race checkpoints and timers, and the texts come in the language of each partner's
+own game. The partners also hear the lines characters say during missions outside cutscenes. Weapons the mission
+gives CJ go to the partners as well. When the story takes all of CJ's weapons, partners near the host lose theirs
+too. Every player gets the mission reward. Enemies attack everyone, and any player can hurt them.
 
-Если после катсцены миссия переносит CJ в другое место, напарник оказывается рядом с хостом. Ограничения миссии на
-розыск действуют на напарника рядом с хостом, а вдали от него розыск идёт как обычно. Звёзды, которые миссия даёт CJ,
-получает и напарник рядом с хостом. Ворота и здания, которые миссия открывает или меняет, меняются и у напарника.
-Части карты, которые миссия добавляет, тоже появляются у всех, например поле конопли в «Are You Going To San
-Fierro?». Снимки, которые нужны миссии, может делать и напарник. Убитый во время миссии напарник возвращается рядом с
-хостом. Сцены миссий на движке игры напарник смотрит той же камерой, что и хост.
+If the mission moves CJ somewhere else after a cutscene, the partner ends up next to the host. The mission's limits
+on the wanted level apply to a partner near the host, and away from the host the wanted level works as usual. The
+stars a mission gives CJ go to a partner near the host too. The gates and buildings a mission opens or changes change
+for the partner too, as do the parts of the map a mission adds, such as the weed field in "Are You Going To San
+Fierro?". The partner can also take the photos a mission asks for. A partner killed during a mission comes back next
+to the host. The partner watches a mission's in-engine scenes through the same camera as the host.
 
-Напарник участвует в самих миссиях. Он ставит заряды в «Dam and Blast» и жучок в «Amphibious Assault», везёт
-мотоцикл на фуру в «Cop Wheels» и бросает ящики с поезда в «Catalyst». Он видит дым, лучи прожекторов и искры миссий,
-а от его выстрелов поднимается тревога. Ящики в ограблении дома с Райдером может носить и грузить в фургон любой
-игрок. В конкурсе лоурайдеров и в танце на пляже напарник играет рядом с хостом, и его очки идут в общий счёт.
+The partner takes part in the missions themselves. They plant the charges in "Dam and Blast" and the bug in
+"Amphibious Assault", drive a bike onto the truck in "Cop Wheels" and throw crates off the train in "Catalyst". They
+see the missions' smoke, searchlight beams and sparks, and their shots raise the alarm. Any player can carry the
+crates in the house robbery with Ryder and load them into the van. In the lowrider contest and the beach dance the
+partner plays next to the host, and their points go into the shared score.
 
-Если хост сел на мотоцикл или в машину без свободного места, напарник сразу садится в такой же транспорт. Втроём и
-вчетвером его получает первый напарник, а остальные садятся к нему, пока там есть места. В сюжетных
-миссиях он получает свой самолёт или вертолёт, например Hydra в «Vertical Bird», а в миссиях Торено ещё и свой
-реактивный ранец. В миссиях Зеро у напарника свой пулемёт рядом с турелью хоста или своя игрушка на радиоуправлении:
-с пулемётом или, в «New Model Army», с магнитом. Если напарник далеко от магазина Зеро, игрушку он получает у его
-двери. Когда хост стреляет с вертолёта или машины, как в «The Da Nang Thang» и «Reuniting the Families», напарник
-стреляет рядом с другой стороны. В «Reuniting the Families» втроём и вчетвером у напарников своя такая же машина:
-первый ведёт её за машиной Свита, остальные стреляют с неё. Если хост дошёл до цели миссии, а напарник ещё в пути,
-миссия ждёт его до 45 секунд.
-
-<p align="center">
-  <img src="docs/images/jetpack.gif" width="49%" alt="Хост и напарник с реактивными ранцами взлетают из шахты в «Black Project»">
-  <img src="docs/images/rc-plane.gif" width="49%" alt="Самолётик напарника на радиоуправлении летит над улицей Сан-Фиерро в миссии Зеро">
-  <img src="docs/images/lowrider.gif" width="49%" alt="Конкурс лоурайдеров на экране напарника: прыгает его лоурайдер, за ним лоурайдер хоста">
-  <img src="docs/images/dance.gif" width="49%" alt="Хост и напарник танцуют рядом на пляже">
-</p>
-
-### Катсцены
-
-Катсцены идут у всех одновременно, и напарник в них рядом с CJ. Он ходит вместе с ним: идёт за CJ шагом, не
-перескакивает с места на место, а на месте слушает разговор и поворачивается к тому, кто говорит. Путь для 130
-катсцен рассчитан заранее по карте игры, и у второго и третьего напарника пути свои. В поездках напарник сидит с CJ в
-машине, если в ней есть место. Пропустить катсцену можно только всем вместе: один нажимает Enter, остальные
-соглашаются тем же Enter или отказываются клавишей Esc.
-
-<p align="center"><img src="docs/images/cutscenes.gif" alt="Напарник в зелёной куртке рядом с CJ в трёх катсценах"></p>
-
-### Общий мир
-
-У всех игроков одни и те же прохожие, люди внутри зданий, машины и полиция, одинаковые время суток и погода. Прохожие
-переговариваются и ругаются у всех одинаково, а полицейские заграждения с барьерами видны всем. Когда один игрок
-уезжает, прохожие и машины рядом с другим переходят в его игру и никуда не пропадают. Сбитые фонари и знаки,
-разбитые стёкла и ящики, огонь, территории банд, двери зданий, которые открывает миссия, и ворота Pay 'n' Spray и
-мастерских выглядят у всех одинаково. Подковы, устрицы, снимки и граффити засчитываются в общий мир. Новые прохожие
-и машины не появляются перед глазами другого игрока. Банды из игр разных игроков дерутся между собой, полиция
-гонится за тем, кого разыскивают, а бойцы SWAT спускаются с вертолёта по тросу у всех. Полицейские на всех экранах
-двигаются одинаково: держат пистолет двумя руками, стреляют присев и обходят цель боком. Пулемёт полицейского
-вертолёта стреляет у всех, а полицейские машины не исчезают у напарника, когда хост погиб. Тела убитых и обломки
-машин после взрывов лежат у всех в одних и тех же местах. Шары на бильярдном столе, мишени тира и другие предметы
-занятий видны другим игрокам.
-
-### Машины
-
-Каждый водит сам или садится пассажиром к другому. В Shamal и других самолётах без пассажирских мест, а ещё в
-вертолётах и лодках, где мест не осталось, клавиша G сажает на борт к водителю: на лодке вы сидите на её сиденьях, а с
-видом от оружия (клавиша смены камеры) встаёте и стреляете, в самолёте первый сидит рядом с пилотом,
-а клавиша входа высаживает, из самолёта в воздухе с парашютом. Пассажир стреляет из окна: правая кнопка мыши высовывает его с
-оружием, левая стреляет. Пассажир стреляет так и из РПГ и самонаводящейся ракетницы, только без наведения на цель.
-Водитель тоже целится и стреляет куда угодно, пока держит правую кнопку мыши, в том числе на мотоцикле. Радио в
-машине у всех одно: станцию переключает водитель, а пассажиры слышат ту же песню с того же места. Тюнинг и
-повреждения видны другим игрокам. Работают шасси и сопла самолётов, башни танка и пожарной машины, гидравлика, гудок,
-прожектор полицейского вертолёта, прицепы, эвакуатор и тягач в аэропорту. Взрывы, ракеты, гранаты, выстрелы танка,
-вода из пожарной машины, стрельба NPC из машин, поезда и радиоуправляемые модели видны всем. Машину в гараже у дома
-может оставить и забрать любой игрок, а хранит её мир хоста.
+If the host gets on a bike or into a vehicle with no seat left, the partner is put straight into the same kind of
+vehicle. With three or four players the first partner gets it, and the others ride with them while there are seats.
+In story missions the partner gets a plane or a helicopter of their own, such as the Hydra in "Vertical
+Bird", and in Toreno's missions a jetpack of their own as well. In Zero's missions the partner gets a minigun of their
+own next to the host's turret or an RC toy of their own: one with a gun or, in "New Model Army", with a magnet. A
+partner far from Zero's shop gets the toy at its door. When the host is a gunner on a helicopter or a car, as in "The
+Da Nang Thang" and "Reuniting the Families", the partner shoots beside them from the other side. In "Reuniting the
+Families" with three or four players the partners get a car like Sweet's of their own: the first one drives it behind
+Sweet, the others shoot from it. If the host reaches a mission's objective while the partner is still on the way, the
+mission waits for the partner up to 45 seconds.
 
 <p align="center">
-  <img src="docs/images/drift.gif" width="49%" alt="Чёрная спортивная машина срывается с места и идёт в занос на повороте">
-  <img src="docs/images/drive-by.gif" width="49%" alt="CJ за рулём и напарник рядом, потом из окон машины стреляют на ходу">
+  <img src="docs/images/jetpack.gif" width="49%" alt="The host and the partner fly up the shaft with jetpacks in Black Project">
+  <img src="docs/images/rc-plane.gif" width="49%" alt="The partner's radio-controlled plane flies over a San Fierro street in a mission for Zero">
+  <img src="docs/images/lowrider.gif" width="49%" alt="The lowrider contest on the partner's screen: their lowrider hops, the host's lowrider is behind it">
+  <img src="docs/images/dance.gif" width="49%" alt="The host and the partner dance side by side on the beach">
 </p>
 
-### Своя прокачка
+### Cutscenes
 
-Еда и спортзал, навыки оружия, одежда, стрижки, тату и деньги у каждого свои. Навыки вождения машины, мотоцикла,
-велосипеда и самолёта общие: у всех самый высокий навык среди игроков. Статистика в меню тоже общая. Подработка или испытание,
-пройденные одним игроком, засчитываются всем вместе с наградой. Список экспорта в порту общий: машина, сданная одним,
-вычёркивается у всех, а деньги за неё получают все. Что игрок делает в закусочной, спортзале, парикмахерской или
-тату-салоне, другие видят у себя, как и поднос с едой, сигарету, телефон у уха, прыжок с парашютом, стиль боя,
-выученный в спортзале, присед с кувырками, перезарядку и проход в двери магазинов. Если игрок сменит модель
-персонажа, например скинселектором, другие тоже увидят новую модель.
+Cutscenes play for all players at the same time, and the partner is next to CJ in them. The partner walks with him:
+follows CJ at a walking pace without jumping from spot to spot, and while standing listens to the conversation and
+turns to whoever is talking. The paths for 130 cutscenes are worked out in advance from the game's map, and the second
+and third partner have paths of their own. During drives the partner rides in the car with CJ if there is a seat. A
+cutscene can only be skipped by everyone together: one player presses Enter, and the others agree with Enter or
+refuse with Esc.
 
-Друг приходит в мир хоста своим CJ, в той одежде и с теми тату, что у него в его игре. Если он подключился из главного
-меню, облик берётся из его последнего сохранения. Когда хост сохраняет игру, прогресс друга сохраняется у хоста тоже.
-Уроки и медали автошколы и других школ, уровни подработок, спортзал, уникальные трюки и бизнесы напарника остаются при
-нём и после того, как мир хоста загружается заново. Когда хост загружает сохранение, оружие напарника возвращается к
-тому, что было при этом сохранении.
+<p align="center"><img src="docs/images/cutscenes.gif" alt="The partner in a green jacket next to CJ in three cutscenes"></p>
 
-![Напарник в своей одежде боксирует в спортзале](docs/images/boxing.jpg)
+### A shared world
 
-### Урон по напарнику
+All players have the same pedestrians, people inside buildings, cars and police, the same time of day and the same
+weather. Pedestrians chat and swear the same way for everyone, and police roadblocks with their barriers are seen by
+all. When one player drives away, the pedestrians and cars near another player move over to that player's game
+instead of vanishing. Knocked-down lamp posts and signs, broken glass and crates, fire, gang territories, the building
+doors a mission opens and the doors of Pay 'n' Spray and mod shops look the same for everyone. Horseshoes, oysters,
+snapshots and tags count toward the shared world. New pedestrians and cars no longer appear right in front of another
+player. Gang members from different players' games fight each other, the police chase whoever is wanted, and SWAT
+officers slide down ropes from the helicopter for everyone. Police officers move the same way on every screen: they
+hold a pistol in both hands, crouch to shoot and sidestep around their target. The police helicopter's gun fires on
+every screen, and police cars no longer vanish for the partner when the host dies. Bodies and wrecks thrown by
+explosions lie in the same places for everyone. Pool balls, shooting range targets and other activity objects are
+seen by the other players.
 
-Хост может разрешить урон по напарнику галочкой в окне F9, перед тем как создать игру. Тогда игроки ранят
-и убивают друг друга пулями, кулаками, взрывами, огнём и машиной. Без галочки они друг для друга неуязвимы,
-и тихое убийство ножом со спины тоже не срабатывает.
-Сбитый с ног игрок падает и поднимается на всех экранах. Рядом есть галочка «Общая жизнь»: с ней гибель
-любого из вас проваливает сюжетную миссию хоста. Без неё погибший хост через пару секунд встаёт рядом с ближайшим
-напарником, и миссия идёт дальше. Провалится она, только если погибли все.
+### Cars
 
-### Русский и английский
-
-Окно SA:COOP, чат и подсказки есть на русском и английском. Язык переключается вверху окна F9, и каждый
-выбирает его себе сам: у хоста может быть русский, а у напарника английский.
-
-### Анимации
-
-Клавиша U открывает окно анимаций. В нём 234 анимации: эмоции, позы, действия и танцы из игры, 16 анимаций вдвоём
-(рукопожатия, приветствия банды, рука на плечо, сделка, подарок, спор, поцелуй) и 72 анимации из паков других
-авторов, среди них танцы, брейк и паркур. Во вкладках основные анимации, как на RP-серверах SA-MP: сесть,
-лечь, курить, есть, телефон, жесты. При курении, питье, еде, разговоре по телефону и съёмке у CJ в руке сигарета,
-бутылка, банка, бургер, телефон или фотоаппарат. Выбранная анимация сразу показывается в окне на копии вашего CJ, а другие игроки
-видят её на вашем персонаже. Анимацию вдвоём напарник принимает клавишей Y, и его CJ встаёт напротив вашего. Позы,
-стойки, танцы и сидения держатся, пока не нажмёте пробел или F. Короткие анимации останавливает любое движение. Свои
-анимации из файлов .ifp кладутся в папку `coop/anims`: другой игрок видит их, если у него лежит такой же файл.
-Анимации паков мод привозит сам, они грузятся отдельно и ничего в игре не заменяют. Когда вы пишете в чат, CJ коротко
-жестикулирует, как в разговоре.
-
-<p align="center"><img src="docs/images/animations.gif" alt="Окно анимаций с копией CJ, потом CJ танцует на Грув-стрит"></p>
-
-### Скины
-
-Клавиша F4 открывает окно скинов. В нём обычные люди игры по вкладкам (мужчины, женщины, банды, служба), паки скинов
-других авторов, которые мод привозит сам (новые члены Families, Ballas, Vagos и Aztecas, бета-версии прохожих и вырезанные
-из игры прохожие), и ваши свои скины. Выбранный скин сразу показывается в окне, а надетый видят все игроки. Он остаётся после загрузки
-сохранения и в катсценах: в роли CJ у всех хост в своём скине, он двигает губами, пока CJ говорит, а напарники стоят
-рядом в своих. «Вернуть CJ»
-возвращает CJ с его одеждой. Свои скины кладутся в папку `coop/skins` парами файлов .dff и .txd с одним именем.
-Другой игрок видит такой скин, если у него лежат такие же файлы. В скине персонаж говорит голосом своего человека и
-ходит его походкой. Своему скину их задаёт строка из `peds.ide` игры в файле `coop/skins/peds.ide`. В катсценах и
-сюжетных диалогах у героя в скине свой голос, женский или мужской по скину, а имя CJ не звучит ни в речи, ни в
-субтитрах. Эти голоса лежат в архиве в папке `coop/voices`, без неё звучит голос CJ.
-
-### Подработки и занятия вместе
-
-Подработки (такси, скорая, пожарные, полиция, сутенёр, курьер), гонки, школы, тир, грузоперевозки и карьер каждый
-проходит в своей игре. Подработку в машине начинает тот, кто за рулём. Подработку, гонку, стадион, карьер, смену парковщика или
-тир можно пройти вместе: в первые 20 секунд после начала нажмите Y, и другим игрокам придёт приглашение (Y: да,
-N: нет). Согласившиеся видят её метки, чекпоинты, таймеры и подсказки, могут ехать рядом и помогать, например тушить
-машины или стрелять по преступникам, а в конце получают столько же денег. Уровни подработки остаются у того, кто её
-начал, а награду за полное прохождение получают все. Поездки такси, украденное, рейсы грузовиков и задания карьера
-для награды считаются общими.
-
-В совместной гонке, в том числе сюжетной, соревнуется и второй игрок: у него свои чекпоинты и своё место на экране.
-Кто едет с гонщиком, видит его место в гонке. Бильярд вдвоём идёт на деньги: проигравший отдаёт ставку победителю. В
-школу можно идти вдвоём разом: пока вы учитесь, машины другого не видно и она не мешает.
+Each player drives on their own or rides as a passenger with another. On the Shamal and other planes without passenger
+seats, and on helicopters and boats with no seat left, the G key takes you aboard with the driver: on a boat you sit on
+its seats and stand up to shoot in the gun's view (the camera change key), on a plane the first one sits beside the
+pilot, and the enter key takes you off, out of a plane in the air with a parachute. A passenger can
+shoot from the window: the right mouse button leans out with the gun, the left one fires. A passenger fires the RPG and the heat-seeking
+launcher that way too, only without the lock-on. The driver also aims and fires anywhere while holding the right
+mouse button, on a motorbike as well. Everyone in a car hears one radio: the driver changes the station, and the
+passengers hear the same song from the same point. Tuning and damage are visible to the other players. Plane landing
+gear and nozzles, tank and fire truck turrets, hydraulics, the horn, the police helicopter's searchlight, trailers,
+the tow truck and the airport tug all work. Explosions, rockets, grenades, tank shells, fire truck water, NPC
+drive-bys, trains and RC toys are seen by everyone. Any player can leave a car in the garage at a safe house or take
+one out, and the host's world keeps them.
 
 <p align="center">
-  <img src="docs/images/firefighters.gif" width="49%" alt="Две пожарные машины игроков тушат горящую машину">
-  <img src="docs/images/ambulance.gif" width="49%" alt="Скорая напарника привозит больного к больнице, рядом стоит вторая скорая">
-  <img src="docs/images/courier.gif" width="49%" alt="Напарник на BMX развозит пакеты курьером по Лос-Сантосу">
-  <img src="docs/images/pool.gif" width="49%" alt="Хост и напарник играют в бильярд">
+  <img src="docs/images/drift.gif" width="49%" alt="A black sports car pulls away and drifts through a bend">
+  <img src="docs/images/drive-by.gif" width="49%" alt="CJ drives with the partner beside him, then guns fire from the car's windows on the move">
 </p>
 
-Занятие можно превратить в соревнование. В первые 20 секунд после начала нажмите U, и другим игрокам придёт вызов
-(Y: да, N: нет). Кто первым согласится, играет то же самое в своей игре. Пока соревнование идёт, вверху экрана видны
-результаты обоих, а в конце каждый узнаёт, кто победил. Соревноваться можно в баскетболе, бильярде, блэкджеке, рулетке,
-колесе фортуны, танцах в клубе, конкурсе лоурайдеров, на стадионах, в гонках и триатлоне.
+### Your own progress
+
+Food and the gym, weapon skills, clothes, haircuts, tattoos and money are separate for each player. Driving,
+motorbike, cycling and flying skills are shared: everyone has the best of the players' skills. The stats in the menu
+are shared too. A side job or challenge completed by one player counts for everyone, reward included. The export list
+at the docks is shared: a car one player delivers is crossed out for everyone, and everyone gets the money. What a
+player does at a diner, the gym, a barber's or a tattoo parlour, the other players see as well, along with a tray of
+food, a cigarette, a phone at the ear, a parachute jump, a fighting style learned at the gym, crouching with its
+rolls, reloading and walking in through shop doors. If a player changes their character model, for example with a
+skin selector, the others see the new model too.
+
+The friend comes into the host's world as their own CJ, in the clothes and with the tattoos their CJ has in their own
+game. If the friend joined from the main menu, the look comes from their latest save. When the host saves the game,
+the friend's progress is saved on the host's side as well. The partner's school lessons and medals, side job levels,
+gym, unique stunt jumps and businesses stay with the partner after the host's world is loaded again. When the host
+loads a save, the partner's weapons become what they were at that save.
+
+![The partner in their own clothes boxes at the gym](docs/images/boxing.jpg)
+
+### Friendly fire
+
+Before creating the game, the host can allow friendly fire with a checkbox in the F9 window. Then the players can
+hurt and kill each other with bullets, fists, explosions, fire and cars. Without the checkbox they cannot harm
+each other, and a stealth kill with a knife from behind does not work either. A player knocked down falls and gets up
+on every screen. Next to it is the "Shared life" checkbox: with it, any player's death fails the host's story mission.
+Without it, a host who dies gets up next to the nearest partner a couple of seconds later and the mission goes on. It
+fails only when everyone dies.
+
+### Russian and English
+
+The SA:COOP window, the chat and the hints come in Russian and English. The language switch is at the top of the
+F9 window, and each player picks their own: the host can play in Russian while the partner plays in English.
+
+### Animations
+
+The U key opens the animations window. It holds 234 animations: emotions, poses, actions and dances from the game,
+16 animations for two (handshakes, gang greetings, a hand on the shoulder, a deal, a gift, an argument, a kiss) and 72
+animations from other authors' packs, among them dances, breakdance and parkour. The tabs hold the main
+animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. Smoking, drinking, eating,
+the phone and the camera put a cigarette, a bottle, a can, a burger, a phone or a camera in CJ's hand. The chosen animation shows
+at once in the window on a copy of your CJ, and the other players see it on your character. Your partner accepts an
+animation for two with Y, and their CJ steps in front of yours. Poses, stances, dances and sitting last until you press
+Space or F. A short animation stops at any movement. Your own animations from .ifp files go into the `coop/anims`
+folder: another player sees them if they have the same file. The mod brings the pack animations along, and they load
+on their own and replace nothing in the game. When you write in the chat, CJ gestures for a moment as if talking.
+
+<p align="center"><img src="docs/images/animations.gif" alt="The animations window with a copy of CJ, then CJ dances on Grove Street"></p>
+
+### Skins
+
+The F4 key opens the skins window. It holds the game's ordinary people in tabs (men, women, gangs, service), skin
+packs by other authors that the mod brings along (new Families, Ballas, Vagos and Aztecas members, gangs of San Fierro
+and Las Venturas, bikers, beta pedestrians and pedestrians cut from the game) and your own skins. The chosen skin shows at once in the window, and all players see the one you wear. It stays after loading a
+save and in cutscenes, where the host plays CJ in its skin for everyone and moves its lips while CJ talks, and the
+partners stand by in theirs. "CJ again" brings CJ
+back in his clothes. Your own skins go into the `coop/skins` folder as a .dff and a .txd file of one name. Another
+player sees such a skin if they have the same files. A skin speaks with its person's voice and walks its walk. For
+your own skin a line of the game's `peds.ide` in `coop/skins/peds.ide` gives them. In cutscenes and story dialogue
+the hero in a skin has a voice of their own, female or male by the skin, and CJ's name is heard neither in speech nor
+in subtitles. These voices are in the archive's `coop/voices` folder, without it CJ's voice plays.
 
 <p align="center">
-  <img src="docs/images/club.gif" width="49%" alt="Соревнование в танцах: хост и напарник танцуют в клубе, вверху очки обоих">
-  <img src="docs/images/8-track.gif" width="49%" alt="Соревнование на стадионе 8-Track: напарник в гонке, вверху табло, потом машина хоста">
+  <img src="docs/images/skins.gif" width="49%" alt="The F4 skins window: previews of pack skins, then the chosen Families skin on CJ in his house">
+  <img src="docs/images/skin-cutscene.gif" width="49%" alt="A cutscene with Big Smoke: the host plays CJ in a woman's skin, the partners stand by in their own skins">
 </p>
 
-### Остальное
+### Side jobs and activities together
 
-Есть текстовый чат и голос, причём чем дальше напарник, тем тише его слышно. Метку на карте другие игроки видят у
-себя на радаре (если напарников больше одного, метка напарника цвета его стрелки), а купленный дом появляется у всех.
-Цвет стрелки каждый выбирает себе в окне F9 или командой `/blip`, и хост тоже. Тем же цветом другие видят ник игрока в
-чате и над головой и его метку на карте, даже вдвоём, а путь до неё на радаре идёт линией этого цвета. Своя метка и путь
-к ней у игрока тоже его цвета. Над головой напарника видны его здоровье, броня, оружие и звёзды
-розыска, а когда он ведёт игрушку на радиоуправлении, всё это видно над игрушкой. Войну за территорию рядом с хостом
-ведёт хост, а провоцировать её убийствами бандитов можно вместе. Напарник дальше 100 м от хоста может начать свою
-войну, и хост увидит в чате, за какой район она идёт и чем кончилась. Чит-коды на погоду, трафик, прохожих и скорость
-игры действуют у всех, а на оружие, деньги и здоровье только у того, кто их ввёл. Хост может запретить напарникам
-чит-коды галочкой в окне F9. Тематические коды вроде пляжной
-вечеринки меняют прохожих у всех, а одежду и катану получает только тот, кто ввёл код.
+Side jobs (taxi, paramedic, firefighter, vigilante, pimp, courier), races, schools, the shooting range, trucking and
+the quarry are played by each player in their own game. A vehicle side job is started by whoever drives. A side job, a
+race, a stadium event, the quarry, a valet shift or a shooting range round can be played together: within 20 seconds
+of its start press Y, and the other players get an invitation (Y: yes, N: no). Whoever accepts sees its markers,
+checkpoints, timers and hints, can ride along and help, for example put out burning cars or shoot the criminals, and
+gets the same money at its end. The job's levels stay with the player who started it, and the reward for completing
+the job goes to everyone. Taxi fares, stolen goods, trucking runs and quarry jobs count together for the reward.
 
-![Чат игроков и подпись над другим игроком со здоровьем и оружием](docs/images/chat.jpg)
+In a joint race, a story race too, the second player races as well, with their own checkpoints and their own place on
+the screen. Whoever rides with a racer sees the racer's place. Pool for two is played for money: the loser gives the
+stake to the winner. Two players can be at one school at once: during a lesson the other player's car is not shown
+and does not get in the way.
 
-## Установка
+<p align="center">
+  <img src="docs/images/firefighters.gif" width="49%" alt="The players' two fire trucks put out a burning car">
+  <img src="docs/images/ambulance.gif" width="49%" alt="The partner's ambulance brings a patient to the hospital, a second ambulance stands nearby">
+  <img src="docs/images/courier.gif" width="49%" alt="The partner delivers packages on a BMX as a courier in Los Santos">
+  <img src="docs/images/pool.gif" width="49%" alt="The host and the partner play pool">
+</p>
 
-Нужна GTA San Andreas версии 1.0 US, чистая или сборка с модами. Если игра куплена в Steam или Rockstar Games
-Launcher, её сначала надо откатить до 1.0 US, например программой GTA SA Downgrader.
+An activity can be turned into a contest. Within 20 seconds of its start press U, and the other players get a
+challenge (Y: yes, N: no). Whoever accepts first plays the same in their own game. While the contest is on, both
+results are shown at the top of the screen, and at the end each player learns who won. Contests work for basketball,
+pool, blackjack, roulette, the wheel of fortune, dancing in a club, the lowrider contest, the stadium events, races and
+triathlons.
 
-1. Скачайте архив `SA-COOP.zip` со страницы [Releases](../../releases) и распакуйте его в папку игры, чтобы
-   `coop.asi`, `install.bat` и папка `coop` оказались рядом с `gta_sa.exe`.
-2. Запустите `install.bat`. В чистой игре он поставит загрузчик ASI-плагинов, а в сборке, где загрузчик уже
-   есть (например, из Widescreen Fix), ничего не изменит.
-3. Запустите игру. Окно SA:COOP откроется в главном меню, а потом его можно вызвать клавишей F9. Впишите ник.
+<p align="center">
+  <img src="docs/images/club.gif" width="49%" alt="A dance contest: the host and the partner dance in a club, both scores at the top">
+  <img src="docs/images/8-track.gif" width="49%" alt="An 8-Track stadium contest: the partner races with the contest board at the top, then the host's car">
+</p>
 
-Подробная инструкция для игроков лежит в архиве в файле `Инструкция.txt`.
+### Everything else
 
-Чтобы обновиться, распакуйте новый архив поверх старых файлов. Настройки и прогресс напарника останутся, а
-`install.bat` второй раз запускать не нужно. Обновиться нужно всем игрокам: разные версии мода друг к другу не
-подключаются.
+There is text chat and voice chat, and the farther away the partner is, the quieter they sound. A waypoint one player
+sets on the map shows up on the other players' radar (with more than one partner, a partner's one in the colour of its
+arrow), and a house one player buys appears for everyone.
+Everyone picks the colour of their arrow in the F9 window or with `/blip`, the host too. The others see that player's
+nickname in the chat and over their head and their waypoint in it as well, with two players too, and the radar route to
+that waypoint in that colour. The player's own waypoint and route to it are in their colour too. Above the
+partner's head you see their health, armour, weapon and wanted stars, shown over their RC toy while they fly one.
+Turf wars near the host are the host's, and all players' kills of rival gang members provoke them. A partner more
+than 100 m from the host can start a war of their own, and the host sees in the chat which district it is for and how
+it ended. Cheats for the weather, traffic, pedestrians and game speed work for everyone, while weapon, money and
+health cheats only work for the player who typed them. The host can forbid cheat codes to the partners with a box
+in the F9 window. Theme cheats such as the beach party change the pedestrians
+for everyone, but only the player who typed the code gets the outfit and the katana.
 
-## Как играть
+![The players' chat and the name tag over another player with their health and weapon](docs/images/chat.jpg)
 
-Хост нажимает F9, открывает вкладку «Создать игру», выбирает сохранение и нажимает «Создать сервер». Если он уже
-в игре, сервер создаётся из текущей игры. Рядом с паролем хост выбирает, сколько будет игроков: 2, 3 или 4. Галочка
-«Урон по напарнику» над кнопкой разрешает игрокам ранить друг друга. Через пару секунд в окне появится код вида
-`XXXX-XXXX-XXXX`. Его нужно отправить друзьям. В коде зашит внешний IP хоста, поэтому отправляйте его только тем, с кем
-играете.
+## Installation
 
-Друг на вкладке «Подключиться» вставляет код и нажимает «Подключиться». После этого у него загружается мир хоста.
-Язык переключается вверху окна, там, где RU и EN.
+You need GTA San Andreas version 1.0 US, either clean or a modded build. If your game comes from Steam or the
+Rockstar Games Launcher, downgrade it to 1.0 US first, for example with GTA SA Downgrader.
 
-<p align="center"><img src="docs/images/menu.jpg" alt="Окно SA:COOP: вкладка «Создать игру», выбрано 4 игрока" width="600"></p>
+1. Download `SA-COOP.zip` from the [Releases](../../releases) page and unpack it into the game folder so that
+   `coop.asi`, `install.bat` and the `coop` folder end up next to `gta_sa.exe`.
+2. Run `install.bat`. In a clean game it installs an ASI plugin loader, and in a build that already has one (for
+   example, the one Widescreen Fix brings) it changes nothing.
+3. Start the game. The SA:COOP window opens in the main menu, and later you can bring it up with F9. Enter your
+   nickname. To switch the window to English, click EN at the top of it.
 
-Сюжет можно начать и с самого начала: последний пункт в списке сохранений называется «Новая игра». Пролог хост
-проходит один, а друг подключается сразу и ждёт. Когда CJ сядет на велосипед, друг появится рядом с ним, и для
-него тоже найдётся велосипед. Деньги, оружие, навыки и внешность друга в новой игре тоже начинаются с нуля. Когда
-хост вернётся к старому сохранению, у друга будет всё, что он набрал в той игре. Оружие друга при загрузке сохранения
-становится таким, каким было при этом сохранении.
+The archive also contains a detailed player guide in Russian, `Инструкция.txt`.
 
-Hamachi и Radmin не нужны. Сервер сам открывает порт через UPnP или пробивает NAT. Если у провайдеров не проходит
-ни то, ни другое, хост может включить ретранслятор строкой `turn` в `coop\server.ini`, как описано в инструкции.
+To update, unpack the new archive over the old files. Your settings and the partners' progress stay, and you don't
+need to run `install.bat` again. All players need to update: different versions of the mod do not connect to each
+other.
 
-Когда хост создаёт игру, мод проверяет брандмауэр Windows. Если тот не пустит друзей к серверу, Windows спросит
-разрешение на изменения, и после «Да» мод разрешит `coop-server.exe` во всех сетях. Без этого друг видит «Сервер не
-отвечает», даже по локальной сети. Если антивирус удалил или заблокировал `coop.asi` или `coop-server.exe`,
-добавьте папку игры в исключения и распакуйте архив заново.
+## How to play
 
-## Клавиши
+The host presses F9, opens the "Host a game" tab, picks a save and clicks "Start the server". If the host is
+already in the game, the server is created from the current game. Beside the password the host chooses how many will
+play: 2, 3 or 4. The "Friendly fire" checkbox above the button lets the players hurt each other. A couple of seconds
+later the window shows a code like `XXXX-XXXX-XXXX`, which the host sends to the friends. The code contains the host's
+external IP address, so only send it to the people you play with.
 
-| Клавиша | Что делает |
+The friend opens the "Join a game" tab, pastes the code and clicks "Connect". After that, the host's world loads
+on the friend's side.
+
+<p align="center"><img src="docs/images/menu.jpg" alt="The SA:COOP window in Russian: the Host a game tab with 4 players chosen" width="600"></p>
+
+The picture shows the window in Russian. EN at the top switches it to English.
+
+You can also start the story from the very beginning: the last item in the save list is "New game". The host
+plays the prologue alone, while the friend connects right away and waits. When CJ gets on the bike, the friend
+appears next to him, and there is a bike for the friend too. The friend's money, weapons, skills and look start
+over in a new game too. When the host goes back to an older save, the friend has everything they had in that game.
+When the host loads a save, the friend's weapons become what they were at that save.
+
+You don't need Hamachi or Radmin. The server opens its port through UPnP or punches through NAT. If neither works
+with your internet providers, the host can turn on a relay with the `turn` line in `coop\server.ini`, as the
+guide describes.
+
+When the host creates a game, the mod checks Windows Firewall. If it would keep friends from the server, Windows
+asks to allow changes, and after "Yes" the mod allows `coop-server.exe` on every network. Without that the friend
+sees "The server does not answer", even on a home network. If an antivirus removed or blocked `coop.asi` or
+`coop-server.exe`, add the game folder to its exclusions and unpack the archive again.
+
+## Keys
+
+| Key | What it does |
 |---|---|
-| F9 | окно SA:COOP |
-| T | чат: Enter отправляет сообщение, Esc закрывает |
-| B | голосовая связь, пока клавиша зажата (режим меняется в окне F9) |
-| G | сесть пассажиром в ближайшую машину через ближайшую дверь |
-| Треугольник (удерживать) | на геймпаде: сесть пассажиром |
-| Y / N | да или нет на вопрос в середине экрана (/tp, приглашение, вызов). У хоста в маркере миссии Y начинает её сразу |
-| Крестовина вправо / влево | на геймпаде: то же, что Y и N |
-| Правая кнопка мыши | в машине с оружием: высунуться и целиться, стрелять левой кнопкой |
-| F2 | игроки: деньги, передача денег и оружия, а если игроков больше двух, ещё номера игроков и /tp и /tphere кнопками |
-| U | анимации: эмоции, позы, действия, танцы, анимации вдвоём и свои |
-| F4 | скины: обычные люди игры и свои |
-| F7 | спрятать интерфейс и вернуть его |
-| Enter / Esc | в катсцене: предложить пропуск и согласиться / отказаться |
+| F9 | the SA:COOP window |
+| T | chat: Enter sends a message, Esc closes the chat |
+| B | voice chat while the key is held (the mode is set in the F9 window) |
+| G | get into the nearest car as a passenger, by the nearest door |
+| Triangle (hold) | on a gamepad: get in as a passenger |
+| Y / N | yes or no to a question in the middle of the screen (/tp, an invitation, a challenge). In a mission marker the host starts the mission at once with Y |
+| D-pad right / left | on a gamepad: the same as Y and N |
+| Right mouse button | in a vehicle with a gun: lean out and aim, fire with the left button |
+| F2 | the players: money, giving money and weapons, and with more than two players their numbers and /tp and /tphere by a click |
+| U | animations: emotions, poses, actions, dances, animations for two and your own |
+| F4 | skins: the game's ordinary people and your own |
+| F7 | hide the interface and bring it back |
+| Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
-В чате работают команды `/help`, `/players`, `/tp` (переместиться к напарнику, если он не в здании) и `/tphere`
-(позвать напарника к себе). Если игроков больше двух, после команды пишется номер игрока: `/tp 2`, `/tphere 3`. Номера
-видны в окне F2. На `/tp` и `/tphere` напарник отвечает Y или N. Хост может выгнать игрока командой
-`/kick <ник> [причина]`, а при создании игры запретить напарникам `/tp` и `/tphere`.
-Команда `/anims` открывает окно анимаций, а `/anims` с номером сразу включает анимацию с этим номером.
+The chat supports the `/help`, `/players`, `/tp` (go to your partner unless they are inside a building) and `/tphere`
+(bring your partner over) commands. With more than two players the command takes the player's number: `/tp 2`,
+`/tphere 3`. The F2 window shows the numbers. Your partner answers `/tp` and `/tphere` with Y or N. The host can kick a player
+with `/kick <nickname> [reason]` and, creating the game, turn `/tp` and `/tphere` off for partners.
+The `/anims` command opens the animations window, and `/anims` with a number plays that animation at once.
 
-<p align="center"><img src="docs/images/players.jpg" alt="Окно F2: хост и три напарника с номерами, деньгами и кнопками" width="600"></p>
+<p align="center"><img src="docs/images/players.jpg" alt="The F2 window in Russian: the host and three partners with their numbers, money and buttons" width="600"></p>
 
-Клавиши чата, посадки пассажиром, списка игроков и голоса меняются в окне F9, кнопка «Клавиши». Там же
-выбирается, как работает микрофон: пока клавиша зажата, включается и выключается нажатием, всегда включён или
-выключен. Это пригодится, если T мешает вводить чит-коды. В `coop\coop.ini`, в разделе `[game]`, можно убрать метку напарника с радара (`partner_blip = 0`)
-и подпись над его головой (`name_tags = 0`), например чтобы искать друг друга в перестрелке. Путь по дорогам до
-метки на карте или цели миссии, который в машине рисуется на радаре, выключает `gps = 0`.
+The chat, passenger, player list and voice keys can be changed in the F9 window, the "Keys" button. The microphone's
+mode is picked there too: while the key is held, a press turns it on and off, always on or off. The `[game]` section
+of `coop\coop.ini` can hide the partner's radar mark (`partner_blip = 0`) and the name tag over their head
+(`name_tags = 0`), for a shoot-out where you have to find each other. `gps = 0` there turns off the road route to
+the map waypoint or the mission's destination that the radar shows in a vehicle. Change the keys if, say, T gets in the way of typing cheat
+codes.
 
-Для записи видео в оконном режиме (`windowed = 1`) есть ещё три строки. `borderless = 1` убирает у окна рамку, и
-окно размером с экран выглядит как полноэкранная игра. `window_title = ...` задаёт окну свой заголовок, по нему
-программа записи отличит одну копию игры от другой. `clean_screen = 1` в разделе `[debug]` убирает с экрана всё,
-что рисует мод: чат, подписи над игроками и окна.
+Three more lines help to record video in windowed mode (`windowed = 1`). `borderless = 1` takes the frame off the
+window, so a window the size of the screen looks like a fullscreen game. `window_title = ...` gives the window a title
+of its own, which lets recording software tell one copy of the game from another. `clean_screen = 1` in the `[debug]`
+section clears everything the mod draws: the chat, the names over the players and the windows.
 
-## Ограничения
+## Limitations
 
-- Сюжетные миссии и гонки Сезара идут в игре хоста: без хоста в маркере миссия не начнётся. Остальных она ждёт в
-  маркере, пока хост не нажмёт Y.
-- Бильярд и соревнования идут на двоих. Остальные в это время заняты своим или смотрят.
-- Во время сюжетной миссии хоста напарник не может сесть в поезд хоста. Вне миссий в поезд, которым не управляет
-  другой игрок, можно сесть и вести его.
-- Сюжетный прогресс (новые районы, качалки) напарник получает загрузкой мира хоста. Она идёт в маркере
-  следующей миссии или, если миссий нет, через 10 минут и занимает пару секунд, а место, оружие и прокачка
-  напарника сохраняются.
-- Профиль напарника хранится у хоста под его ником. С другим ником деньги и навыки начинаются заново.
-- Отношения с подругами у напарника не сохраняются: они идут от мира хоста. Доход от бизнеса напарника лежит
-  в общем мире, и забрать его может любой игрок, как и доход хоста.
-- Продавца Ammu-Nation, стрелков тира, крупье и других людей, которых ставят скрипты магазинов и занятий, каждая
-  игра создаёт для своего игрока сама. У разных игроков они могут выглядеть по-разному.
-- Сбитое и сломанное на улицах держится несколько минут, потом карта ставит всё на место, как в обычной игре.
-- Если хост и напарник оба за «симметричным» NAT (так бывает в мобильном интернете), без ретранслятора по коду не
-  подключиться. Тогда нужен `turn` или проброшенный у хоста порт 7788/UDP.
-- Поддерживается только `gta_sa.exe` версии 1.0 US. Сборки у игроков могут отличаться, но моды, которые
-  меняют сюжет или сохранения, нужны всем. Если `data\script\main.scm` у напарника не такой, как у хоста,
-  мир хоста у него не загрузится, и мод скажет об этом в чате.
-- Свою музыку (User Track Player) каждый слышит свою. Если водитель включил свою, пассажир слышит свою, а без
-  неё радио у него выключено.
-- Моды через modloader работают. Модели, текстуры и эффекты каждый видит свои. Машину, которую мод добавляет
-  под новым номером, видит только тот, у кого этот мод стоит.
-- Работают CLEO, SilentPatch, лимит-аджастер fastman92 и мод вида от первого лица (BoPoH, First Person Mod 3.0) со
-  своими скинами. Если игру запускает SA-MP, мод выключается сам и ему не мешает.
+- The partner's girlfriend progress is not kept: it comes from the host's world. The income of the partner's
+  businesses lies in the shared world, and any player can pick it up, as with the host's.
+- Story missions and Cesar's races run in the host's game: a mission does not begin without the host in the marker.
+  It waits there for the others until the host presses Y.
+- Pool and contests are for two. The others meanwhile do something of their own or watch.
+- During the host's story mission the partner cannot get into the host's trains. Outside missions any player can
+  get into a train another player is not driving and drive it.
+- The partner gets story progress (new areas, gyms) by loading the host's world. This happens in the next
+  mission's marker, or after 10 minutes without missions, and takes a couple of seconds. The partner keeps their
+  position, weapons and progress.
+- The host keeps the partner's profile under the partner's nickname. With a different nickname, money and skills
+  start over.
+- The Ammu-Nation clerk, the shooting range's shooters, the casino dealers and other people that shop and activity
+  scripts place are made by each game for its own player. Different players may see them looking different.
+- Whatever gets knocked down or broken on the streets stays that way for a few minutes, then the map puts
+  everything back, as in the normal game.
+- If the host and the partner are both behind a "symmetric" NAT (common with mobile internet), the invite code cannot
+  connect them without a relay. Then you need `turn` or port 7788/UDP forwarded to the host's computer.
+- Each player hears their own User Track Player. When the driver plays their own music, the passenger hears
+  their own, or the radio is off for them if they have none.
+- Only `gta_sa.exe` version 1.0 US is supported. The players' builds may differ, but mods that change the story or
+  the saves are needed by everyone. If the partner's `data\script\main.scm` differs from the host's, the host's
+  world does not load for them, and the mod says so in the chat.
+- Mods installed through modloader work. Each player sees their own models, textures and effects. A car that a mod
+  adds under a new ID is only visible to the player who has that mod.
+- CLEO, SilentPatch, fastman92's limit adjuster and the first-person mod (BoPoH's First Person Mod 3.0) with own skins
+  work. When SA-MP starts the game, the mod turns itself off and stays out of its way.
 
-## Ошибки и предложения
+## Bugs and ideas
 
-Об ошибках, вылетах и идеях пишите в [Issues](../../issues/new/choose). Там откроется короткая форма: что
-случилось, как это повторить, версия мода и какая у вас игра. Также доступна [телеграмм группа](https://t.me/sacoop_forum), если возникают трудности с отправкой на Github
+Report bugs, crashes and ideas in [Issues](../../issues/new/choose). A short form opens there: what happened, how
+to make it happen again, the mod version and which game you have. The form is in Russian, but you can answer in
+English. A [Telegram group](https://t.me/sacoop_forum) is also available if you encounter difficulties sending to GitHub.
 
-К сообщению об ошибке приложите `coop\coop.log` из папки игры того, у кого она случилась. Если игра вылетела,
-нужен ещё `coop\crash.log`, а если не получается подключиться, то `coop\server-data\server.log` хоста. Лог
-прошлого запуска лежит рядом, в `coop\coop.old.log`: он нужен, если после вылета игру уже запустили снова.
+With a bug report, attach `coop\coop.log` from the game folder of the player who had the problem. If the game
+crashed, also attach `coop\crash.log`, and if you cannot connect, attach the host's `coop\server-data\server.log`.
+The log of the previous run is kept as `coop\coop.old.log`: send it if the game was started again after a crash.
 
-## Сборка из исходников
+## Building from source
 
-Нужны Windows, Python 3.10 или новее и PowerShell. Компилятор (llvm-mingw) скачивается скриптом в папку
-`toolchain`:
+You need Windows, Python 3.10 or newer and PowerShell. A script downloads the compiler (llvm-mingw) into the
+`toolchain` folder:
 
 ```
 powershell -ExecutionPolicy Bypass -File tools/get-toolchain.ps1
-python tools/build.py          # coop.dll, coop-server.exe и vorbisFile.dll в build/release/bin
-python tools/build.py dist     # то же и готовый архив dist/SA-COOP.zip
-python tools/fsd_check.py      # проверка зависимостей между слоями
-python tools/i18n_check.py     # проверка, что у каждого текста игры есть английский
+python tools/build.py          # coop.dll, coop-server.exe and vorbisFile.dll in build/release/bin
+python tools/build.py dist     # the same plus the ready archive dist/SA-COOP.zip
+python tools/fsd_check.py      # checks the dependencies between the layers
+python tools/i18n_check.py     # checks that every text of the game has its English one
 ```
 
-Каждый пуш собирается в GitHub Actions, и архив сохраняется в артефактах сборки. Тег вида `v0.2.0` выпускает
-релиз и прикладывает к нему `SA-COOP.zip`.
+GitHub Actions builds every push and keeps the archive in the build artifacts. A tag like `v0.2.0` publishes a
+release with `SA-COOP.zip` attached.
 
-## Как устроен проект
+## Project layout
 
-Исходники разложены по Feature-Sliced Design. Каждая из трёх программ устроена как отдельное приложение со
-слоями `app`, `pages`, `widgets`, `features`, `entities` и `shared`, а общий для них код лежит в `src/common`.
+The sources follow Feature-Sliced Design. Each of the three programs is a separate application with the layers
+`app`, `pages`, `widgets`, `features`, `entities` and `shared`, and the code they share lives in `src/common`.
 
 ```
 src/
-├── client/        coop.asi, работает внутри игры
-│   ├── app/       точка входа, главный цикл, патчи игры
-│   ├── pages/     окно F9
-│   ├── widgets/   оверлей поверх игры
-│   ├── features/  сюжет и катсцены, прокачка, гаражи, голос, погода и другое
-│   ├── entities/  сессия, игрок, машина, пед, миссия, профиль
-│   └── shared/    обёртки движка, сеть, рисование и ввод, конфиг
-├── server/        coop-server.exe, сервер на 2-4 игрока
-├── loader/        vorbisFile.dll, загрузчик ASI для чистой игры
-└── common/        протокол, сеть, лог и утилиты для всех трёх
+├── client/        coop.asi, runs inside the game
+│   ├── app/       entry point, main loop, game patches
+│   ├── pages/     the F9 window
+│   ├── widgets/   the overlay on top of the game
+│   ├── features/  story and cutscenes, progress, garages, voice, weather and more
+│   ├── entities/  session, player, vehicle, ped, mission, profile
+│   └── shared/    engine wrappers, network, drawing and input, config
+├── server/        coop-server.exe, the server for 2 to 4 players
+├── loader/        vorbisFile.dll, the ASI loader for a clean game
+└── common/        protocol, network, log and utilities for all three
 ```
 
-Слой подключает только слои ниже себя и свой слайс. Это проверяет `tools/fsd_check.py`. Подробно о том, как
-мод устроен внутри и почему сделан именно так, написано в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+A layer only includes the layers below it and its own slice, which `tools/fsd_check.py` checks. How the mod works
+inside and why it is built this way is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (in Russian).
 
-## Сторонний код
+## Third-party code
 
-- [ENet](http://enet.bespin.org) (лицензия MIT): сетевой транспорт, `third_party/enet`.
-- [MinHook](https://github.com/TsudaKageyu/minhook) (лицензия BSD 2-Clause): перехват функций, `third_party/minhook`.
-- [Font Awesome Free](https://fontawesome.com) (лицензия CC BY 4.0): иконка микрофона голосового чата,
+- [ENet](http://enet.bespin.org) (MIT license): network transport, `third_party/enet`.
+- [MinHook](https://github.com/TsudaKageyu/minhook) (BSD 2-Clause license): function hooking, `third_party/minhook`.
+- [Font Awesome Free](https://fontawesome.com) (CC BY 4.0 license): the voice chat's microphone icon,
   `src/client/features/voice/ui/microphone.svg`.
-- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw): компилятор, скачивается при сборке.
-- Анимации вкладки «Паки» (`package/coop/packs`) взяты из модов других авторов, из каждого только новые анимации:
-  «Отдать честь» от KOT33 ([LibertyCity](https://libertycity.net/files/gta-san-andreas/94399-salute.html)), приветствие из GTA V от Alexander (Skone Modding)
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/98406-military-greeting-mod-gta-v-to-sa.html)), рэп от Aleksey_Move
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/79275-animation-rapping.html)), позы от Androsz и mrandres5555
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132610-new-static-animations.html)), позы на земле от Ruslan Konorov
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132637-static-animations.html)), действия из GTA LCS в переделке Mystertv и Junior_Djjr
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/140391-new-idle-animations-from-gta-lcs.html)), диско-танцы от GRAF MC
-  ([1](https://libertycity.net/files/gta-san-andreas/119882-anim-dance.html), [2](https://libertycity.net/files/gta-san-andreas/127294-anim-dance-v2.html)), танцы с вечеринки от ATField02_GR
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/242533-new-dance-animations.html)), брейк и трюки от Arch
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/26294-new-moves-breakdance-somersaults-and-more.html)), акробатика от Spirit
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/34680-acrostreet-and-tricking-mod-v1.html)), паркур от Paul_Cortez
-  ([вики MTA](https://wiki.multitheftauto.com/wiki/EngineLoadIFP)).
-- Скины вкладки «Паки» окна F4 (`package/coop/skinpacks`) взяты из модов других авторов с их разрешения, из каждого только
-  новые модели: банды Families, Ballas, Vagos и Aztecas от CemeteryBlunts с материалами Endochronic, Cleon77, INNOCENT KILLAZ,
-  Flaqko, Vados, Qube, Thiago555aug и Junior_Djjr ([1](https://libertycity.net/files/gta-san-andreas/207900-hq-families-pack-rosa-quality.html),
+- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw): the compiler, downloaded during the build.
+- The Packs tab's animations (`package/coop/packs`) come from other authors' mods, only the new animations of each:
+  Salute by KOT33 ([LibertyCity](https://libertycity.net/files/gta-san-andreas/94399-salute.html)), the GTA V greeting by Alexander (Skone Modding)
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/98406-military-greeting-mod-gta-v-to-sa.html)), rap by Aleksey_Move
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/79275-animation-rapping.html)), poses by Androsz and mrandres5555
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132610-new-static-animations.html)), poses on the ground by Ruslan Konorov
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132637-static-animations.html)), idle actions from GTA LCS converted by Mystertv and Junior_Djjr
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/140391-new-idle-animations-from-gta-lcs.html)), disco dances by GRAF MC
+  ([1](https://libertycity.net/files/gta-san-andreas/119882-anim-dance.html), [2](https://libertycity.net/files/gta-san-andreas/127294-anim-dance-v2.html)), party dances by ATField02_GR
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/242533-new-dance-animations.html)), breakdance and tricks by Arch
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/26294-new-moves-breakdance-somersaults-and-more.html)), acrobatics by Spirit
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/34680-acrostreet-and-tricking-mod-v1.html)), parkour by Paul_Cortez
+  ([MTA wiki](https://wiki.multitheftauto.com/wiki/EngineLoadIFP)).
+- The skins of the F4 window's Packs tab (`package/coop/skinpacks`) come from other authors' mods with their permission,
+  only the new models of each: the Families, Ballas, Vagos and Aztecas gangs by CemeteryBlunts with assets by Endochronic,
+  Cleon77, INNOCENT KILLAZ, Flaqko, Vados, Qube, Thiago555aug and Junior_Djjr ([1](https://libertycity.net/files/gta-san-andreas/207900-hq-families-pack-rosa-quality.html),
   [2](https://libertycity.net/files/gta-san-andreas/206135-hq-ballas-pack-rosa-quality.html), [3](https://libertycity.net/files/gta-san-andreas/203021-hq-vagos-pack-rosa-quality.html),
-  [4](https://libertycity.net/files/gta-san-andreas/210958-hq-aztecas-pack-rosa-quality.html)), вырезанные из игры прохожие от
-  Jéssica Natália, Junior_Djjr и falsenail ([LibertyCity](https://libertycity.net/files/gta-san-andreas/179162-restored-unused-peds-unoffical-update.html)),
-  бета-версии прохожих от Camel, Shiro_Mori, Бабайки, Felo23, lk_1997_kl, Pobeda1945X2, Artur$MD, Cleoude и badboy_zay в сборке Elmos
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/231970-beta-peds-restored.html)), банды San Fierro Rifa, Da Nang Boys,
-  триады, итальянская и русская мафия и Angels of Death MC из пака wizvich с материалами CemeteryBlunts, SlingShot753, TylerNixon,
-  DannyMODS, OgGato, DanXVII, MinnieMan121249, Persh, Stacks, Exocemetry, Jeansowaty и Thiago555aug
+  [4](https://libertycity.net/files/gta-san-andreas/210958-hq-aztecas-pack-rosa-quality.html)), pedestrians cut from the game by
+  Jéssica Natália, Junior_Djjr and falsenail ([LibertyCity](https://libertycity.net/files/gta-san-andreas/179162-restored-unused-peds-unoffical-update.html)),
+  beta pedestrians by Camel, Shiro_Mori, Babayka, Felo23, lk_1997_kl, Pobeda1945X2, Artur$MD, Cleoude and badboy_zay put together by Elmos
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/231970-beta-peds-restored.html)), the San Fierro Rifa, Da Nang Boys,
+  Triads, Italian and Russian Mafia and Angels of Death MC gangs of wizvich's pack with assets by CemeteryBlunts, SlingShot753,
+  TylerNixon, DannyMODS, OgGato, DanXVII, MinnieMan121249, Persh, Stacks, Exocemetry, Jeansowaty and Thiago555aug
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html)).
-- Адреса и структуры движка сверялись с проектами [gta-reversed](https://github.com/gta-reversed/gta-reversed)
-  и [plugin-sdk](https://github.com/DK22Pac/plugin-sdk).
+- Engine addresses and structures were checked against [gta-reversed](https://github.com/gta-reversed/gta-reversed)
+  and [plugin-sdk](https://github.com/DK22Pac/plugin-sdk).
 
-## Лицензия
+## License
 
-Код SA:COOP распространяется по лицензии MIT (файл [LICENSE](LICENSE)). У ENet, MinHook и иконки Font Awesome свои
-лицензии. Их тексты лежат в `third_party` и в архиве в папке `coop\licenses`.
+The SA:COOP code is released under the MIT license (see [LICENSE](LICENSE)). ENet, MinHook and the Font Awesome
+icon have their own licenses, and their texts are in `third_party` and in the `coop\licenses` folder of the archive.
 
-SA:COOP не связан с Rockstar Games и Take-Two Interactive. Для игры нужна своя копия GTA San Andreas, файлов
-игры в репозитории нет.
+SA:COOP is not affiliated with Rockstar Games or Take-Two Interactive. You need your own copy of GTA San Andreas,
+and the repository contains no game files.
