@@ -25,8 +25,9 @@ and play in the same world as characters of their own, with their own money, ski
 
 ### The story together
 
-The host starts a mission, but it only begins once all players stand in the marker. If the partner reaches the
-marker first, the host gets an invitation and presses Y to be there at once. The partners see the same texts,
+The host starts a mission, but it only begins once all players stand in the marker. The host sees whom it waits
+for and can start at once with Y: the players who are away are brought over. If the partner reaches the marker
+first, the host gets an invitation and presses Y to be there at once. The partners see the same texts,
 subtitles, radar blips, markers, race checkpoints and timers, and the texts come in the language of each partner's
 own game. The partners also hear the lines characters say during missions outside cutscenes. Weapons the mission
 gives CJ go to the partners as well. When the story takes all of CJ's weapons, partners near the host lose theirs
@@ -46,12 +47,15 @@ crates in the house robbery with Ryder and load them into the van. In the lowrid
 partner plays next to the host, and their points go into the shared score.
 
 If the host gets on a bike or into a vehicle with no seat left, the partner is put straight into the same kind of
-vehicle. In story missions the partner gets a plane or a helicopter of their own, such as the Hydra in "Vertical
+vehicle. With three or four players the first partner gets it, and the others ride with them while there are seats.
+In story missions the partner gets a plane or a helicopter of their own, such as the Hydra in "Vertical
 Bird", and in Toreno's missions a jetpack of their own as well. In Zero's missions the partner gets a minigun of their
 own next to the host's turret or an RC toy of their own: one with a gun or, in "New Model Army", with a magnet. A
 partner far from Zero's shop gets the toy at its door. When the host is a gunner on a helicopter or a car, as in "The
-Da Nang Thang" and "Reuniting the Families", the partner shoots beside them from the other side. If the host reaches a
-mission's objective while the partner is still on the way, the mission waits for the partner up to 45 seconds.
+Da Nang Thang" and "Reuniting the Families", the partner shoots beside them from the other side. In "Reuniting the
+Families" with three or four players the partners get a car like Sweet's of their own: the first one drives it behind
+Sweet, the others shoot from it. If the host reaches a mission's objective while the partner is still on the way, the
+mission waits for the partner up to 45 seconds.
 
 <p align="center">
   <img src="docs/images/jetpack.gif" width="49%" alt="The host and the partner fly up the shaft with jetpacks in Black Project">
@@ -88,8 +92,11 @@ seen by the other players.
 
 ### Cars
 
-Each player drives on their own or rides as a passenger with another. A passenger can shoot from the window: the
-right mouse button leans out with the gun, the left one fires. A passenger fires the RPG and the heat-seeking
+Each player drives on their own or rides as a passenger with another. On the Shamal and other planes without passenger
+seats, and on helicopters and boats with no seat left, the G key takes you aboard with the driver: on a boat you sit on
+its seats and stand up to shoot in the gun's view (the camera change key), on a plane the first one sits beside the
+pilot, and the enter key takes you off, out of a plane in the air with a parachute. A passenger can
+shoot from the window: the right mouse button leans out with the gun, the left one fires. A passenger fires the RPG and the heat-seeking
 launcher that way too, only without the lock-on. The driver also aims and fires anywhere while holding the right
 mouse button, on a motorbike as well. Everyone in a car hears one radio: the driver changes the station, and the
 passengers hear the same song from the same point. Tuning and damage are visible to the other players. Plane landing
@@ -128,8 +135,8 @@ Before creating the game, the host can allow friendly fire with a checkbox in th
 hurt and kill each other with bullets, fists, explosions, fire and cars. Without the checkbox they cannot harm
 each other, and a stealth kill with a knife from behind does not work either. A player knocked down falls and gets up
 on every screen. Next to it is the "Shared life" checkbox: with it, any player's death fails the host's story mission.
-Without it, a host who dies gets up next to a partner a couple of seconds later and the mission goes on. It fails only
-when everyone dies.
+Without it, a host who dies gets up next to the nearest partner a couple of seconds later and the mission goes on. It
+fails only when everyone dies.
 
 ### Russian and English
 
@@ -138,17 +145,31 @@ F9 window, and each player picks their own: the host can play in Russian while t
 
 ### Animations
 
-The U key opens the animations window. It holds 250 animations: emotions, poses, actions and dances from the game,
-16 animations for two (handshakes, gang greetings, a hand on the shoulder, a deal, a gift, an argument, a kiss) and 88
-animations from other authors' packs, among them Fortnite dances, breakdance and parkour. The tabs hold the main
-animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. The chosen animation shows
+The U key opens the animations window. It holds 234 animations: emotions, poses, actions and dances from the game,
+16 animations for two (handshakes, gang greetings, a hand on the shoulder, a deal, a gift, an argument, a kiss) and 72
+animations from other authors' packs, among them dances, breakdance and parkour. The tabs hold the main
+animations of SA-MP role play servers: sitting, lying, smoking, eating, the phone, gestures. Smoking, drinking, eating,
+the phone and the camera put a cigarette, a bottle, a can, a burger, a phone or a camera in CJ's hand. The chosen animation shows
 at once in the window on a copy of your CJ, and the other players see it on your character. Your partner accepts an
 animation for two with Y, and their CJ steps in front of yours. Poses, stances, dances and sitting last until you press
 Space or F. A short animation stops at any movement. Your own animations from .ifp files go into the `coop/anims`
 folder: another player sees them if they have the same file. The mod brings the pack animations along, and they load
-on their own and replace nothing in the game.
+on their own and replace nothing in the game. When you write in the chat, CJ gestures for a moment as if talking.
 
 <p align="center"><img src="docs/images/animations.gif" alt="The animations window with a copy of CJ, then CJ dances on Grove Street"></p>
+
+### Skins
+
+The F4 key opens the skins window. It holds the game's ordinary people in tabs (men, women, gangs, service), skin
+packs by other authors that the mod brings along (new Families, Ballas, Vagos and Aztecas members, beta pedestrians and
+pedestrians cut from the game) and your own skins. The chosen skin shows at once in the window, and all players see the one you wear. It stays after loading a
+save and in cutscenes, where the host plays CJ in its skin for everyone and moves its lips while CJ talks, and the
+partners stand by in theirs. "CJ again" brings CJ
+back in his clothes. Your own skins go into the `coop/skins` folder as a .dff and a .txd file of one name. Another
+player sees such a skin if they have the same files. A skin speaks with its person's voice and walks its walk. For
+your own skin a line of the game's `peds.ide` in `coop/skins/peds.ide` gives them. In cutscenes and story dialogue
+the hero in a skin has a voice of their own, female or male by the skin, and CJ's name is heard neither in speech nor
+in subtitles. These voices are in the archive's `coop/voices` folder, without it CJ's voice plays.
 
 ### Side jobs and activities together
 
@@ -186,12 +207,17 @@ triathlons.
 ### Everything else
 
 There is text chat and voice chat, and the farther away the partner is, the quieter they sound. A waypoint one player
-sets on the map shows up on the other players' radar, and a house one player buys appears for everyone. Above the
+sets on the map shows up on the other players' radar (with more than one partner, a partner's one in the colour of its
+arrow), and a house one player buys appears for everyone.
+Everyone picks the colour of their arrow in the F9 window or with `/blip`, the host too. The others see that player's
+nickname in the chat and over their head and their waypoint in it as well, with two players too, and the radar route to
+that waypoint in that colour. The player's own waypoint and route to it are in their colour too. Above the
 partner's head you see their health, armour, weapon and wanted stars, shown over their RC toy while they fly one.
 Turf wars near the host are the host's, and all players' kills of rival gang members provoke them. A partner more
 than 100 m from the host can start a war of their own, and the host sees in the chat which district it is for and how
 it ended. Cheats for the weather, traffic, pedestrians and game speed work for everyone, while weapon, money and
-health cheats only work for the player who typed them. Theme cheats such as the beach party change the pedestrians
+health cheats only work for the player who typed them. The host can forbid cheat codes to the partners with a box
+in the F9 window. Theme cheats such as the beach party change the pedestrians
 for everyone, but only the player who typed the code gets the outfit and the katana.
 
 ![The players' chat and the name tag over another player with their health and weapon](docs/images/chat.jpg)
@@ -253,9 +279,12 @@ sees "The server does not answer", even on a home network. If an antivirus remov
 | B | voice chat while the key is held (the mode is set in the F9 window) |
 | G | get into the nearest car as a passenger, by the nearest door |
 | Triangle (hold) | on a gamepad: get in as a passenger |
+| Y / N | yes or no to a question in the middle of the screen (/tp, an invitation, a challenge). In a mission marker the host starts the mission at once with Y |
+| D-pad right / left | on a gamepad: the same as Y and N |
 | Right mouse button | in a vehicle with a gun: lean out and aim, fire with the left button |
 | F2 | the players: money, giving money and weapons, and with more than two players their numbers and /tp and /tphere by a click |
 | U | animations: emotions, poses, actions, dances, animations for two and your own |
+| F4 | skins: the game's ordinary people and your own |
 | F7 | hide the interface and bring it back |
 | Enter / Esc | in a cutscene: offer to skip it, agree / refuse |
 
@@ -284,7 +313,7 @@ section clears everything the mod draws: the chat, the names over the players an
 - The partner's girlfriend progress is not kept: it comes from the host's world. The income of the partner's
   businesses lies in the shared world, and any player can pick it up, as with the host's.
 - Story missions and Cesar's races run in the host's game: a mission does not begin without the host in the marker.
-  With three or four players it begins once they all stand in the marker.
+  It waits there for the others until the host presses Y.
 - Pool and contests are for two. The others meanwhile do something of their own or watch.
 - During the host's story mission the partner cannot get into the host's trains. Outside missions any player can
   get into a train another player is not driving and drive it.
@@ -306,6 +335,8 @@ section clears everything the mod draws: the chat, the names over the players an
   world does not load for them, and the mod says so in the chat.
 - Mods installed through modloader work. Each player sees their own models, textures and effects. A car that a mod
   adds under a new ID is only visible to the player who has that mod.
+- CLEO, SilentPatch, fastman92's limit adjuster and the first-person mod (BoPoH's First Person Mod 3.0) with own skins
+  work. When SA-MP starts the game, the mod turns itself off and stays out of its way.
 
 ## Bugs and ideas
 
@@ -369,12 +400,22 @@ inside and why it is built this way is described in [docs/ARCHITECTURE.md](docs/
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132610-new-static-animations.html)), poses on the ground by Ruslan Konorov
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/132637-static-animations.html)), idle actions from GTA LCS converted by Mystertv and Junior_Djjr
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/140391-new-idle-animations-from-gta-lcs.html)), disco dances by GRAF MC
-  ([1](https://libertycity.net/files/gta-san-andreas/119882-anim-dance.html), [2](https://libertycity.net/files/gta-san-andreas/127294-anim-dance-v2.html)), Fortnite dances by Sergio Persson
-  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/168251-dances-from-fortnite-music-v.2.html)), party dances by ATField02_GR
+  ([1](https://libertycity.net/files/gta-san-andreas/119882-anim-dance.html), [2](https://libertycity.net/files/gta-san-andreas/127294-anim-dance-v2.html)), party dances by ATField02_GR
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/242533-new-dance-animations.html)), breakdance and tricks by Arch
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/26294-new-moves-breakdance-somersaults-and-more.html)), acrobatics by Spirit
   ([LibertyCity](https://libertycity.net/files/gta-san-andreas/34680-acrostreet-and-tricking-mod-v1.html)), parkour by Paul_Cortez
   ([MTA wiki](https://wiki.multitheftauto.com/wiki/EngineLoadIFP)).
+- The skins of the F4 window's Packs tab (`package/coop/skinpacks`) come from other authors' mods with their permission,
+  only the new models of each: the Families, Ballas, Vagos and Aztecas gangs by CemeteryBlunts with assets by Endochronic,
+  Cleon77, INNOCENT KILLAZ, Flaqko, Vados, Qube, Thiago555aug and Junior_Djjr ([1](https://libertycity.net/files/gta-san-andreas/207900-hq-families-pack-rosa-quality.html),
+  [2](https://libertycity.net/files/gta-san-andreas/206135-hq-ballas-pack-rosa-quality.html), [3](https://libertycity.net/files/gta-san-andreas/203021-hq-vagos-pack-rosa-quality.html),
+  [4](https://libertycity.net/files/gta-san-andreas/210958-hq-aztecas-pack-rosa-quality.html)), pedestrians cut from the game by
+  Jéssica Natália, Junior_Djjr and falsenail ([LibertyCity](https://libertycity.net/files/gta-san-andreas/179162-restored-unused-peds-unoffical-update.html)),
+  beta pedestrians by Camel, Shiro_Mori, Babayka, Felo23, lk_1997_kl, Pobeda1945X2, Artur$MD, Cleoude and badboy_zay put together by Elmos
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/231970-beta-peds-restored.html)), the San Fierro Rifa, Da Nang Boys,
+  Triads, Italian and Russian Mafia and Angels of Death MC gangs of wizvich's pack with assets by CemeteryBlunts, SlingShot753,
+  TylerNixon, DannyMODS, OgGato, DanXVII, MinnieMan121249, Persh, Stacks, Exocemetry, Jeansowaty and Thiago555aug
+  ([LibertyCity](https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html)).
 - Engine addresses and structures were checked against [gta-reversed](https://github.com/gta-reversed/gta-reversed)
   and [plugin-sdk](https://github.com/DK22Pac/plugin-sdk).
 
